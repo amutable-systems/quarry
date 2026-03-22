@@ -201,7 +201,7 @@ func TestStore_AddGetUnlinkKey(t *testing.T) {
 
 	// Getting the key after unlink should fail.
 	_, err = store.GetKey(ctx, keyID)
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, keystore.ErrNoSuchKey)
 }
 
 func TestStore_GetKey_NotFound(t *testing.T) {
@@ -213,7 +213,7 @@ func TestStore_GetKey_NotFound(t *testing.T) {
 	defer store.Close() //nolint:errcheck // test code
 
 	_, err = store.GetKey(ctx, keystore.KeyID("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, keystore.ErrNoSuchKey)
 }
 
 func TestStore_GetKey_InvalidKeyID(t *testing.T) {
@@ -237,7 +237,7 @@ func TestStore_UnlinkKey_NotFound(t *testing.T) {
 	defer store.Close() //nolint:errcheck // test code
 
 	err = store.UnlinkKey(ctx, keystore.KeyID("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, keystore.ErrNoSuchKey)
 }
 
 func TestStore_UnlinkKey_InvalidKeyID(t *testing.T) {
@@ -288,7 +288,7 @@ func TestStore_GetSigner_NotFound(t *testing.T) {
 	defer store.Close() //nolint:errcheck // test code
 
 	_, err = store.GetSigner(ctx, keystore.KeyID("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, keystore.ErrNoSuchKey)
 }
 
 func TestStore_MultipleKeys(t *testing.T) {
@@ -325,7 +325,7 @@ func TestStore_MultipleKeys(t *testing.T) {
 
 	// The removed key should be gone.
 	_, err = store.GetKey(ctx, keyIDs[2])
-	require.Error(t, err)
+	require.ErrorIs(t, err, keystore.ErrNoSuchKey)
 
 	// The rest should still work.
 	for i, keyID := range keyIDs {
@@ -335,6 +335,24 @@ func TestStore_MultipleKeys(t *testing.T) {
 		_, err := store.GetKey(ctx, keyID)
 		assert.NoError(t, err)
 	}
+}
+
+func TestStore_AddKey_Duplicate(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	key := generateTestKey(t)
+
+	_, err = store.AddKey(ctx, key)
+	require.NoError(t, err)
+
+	// Adding the same key again should fail.
+	_, err = store.AddKey(ctx, key)
+	assert.ErrorIs(t, err, keystore.ErrKeyAlreadyExists)
 }
 
 func TestStoreFromFd(t *testing.T) {

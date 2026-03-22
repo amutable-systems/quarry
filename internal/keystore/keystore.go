@@ -6,7 +6,9 @@ import (
 	"context"
 	"crypto"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"regexp"
 	"sync"
@@ -16,6 +18,16 @@ import (
 
 	"go.amutable.dev/quarry/internal/pathrsext"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
+)
+
+var (
+	// ErrNoSuchKey is returned by the key store if the given [KeyID] is
+	// missing.
+	ErrNoSuchKey = errors.New("key not found")
+
+	// ErrKeyAlreadyExists is returned by the key store if a key being added
+	// matches an existing [KeyID] in the store.
+	ErrKeyAlreadyExists = errors.New("key already in store")
 )
 
 var keyIDRegex = sync.OnceValue(func() *regexp.Regexp {
@@ -89,8 +101,12 @@ func (ks *Store) AddKey(_ context.Context, key *GenericKey) (_ KeyID, Err error)
 		return BadKeyID, fmt.Errorf("could not flush key data for key %s: %w", keyID, err)
 	}
 	if err := pathrsext.AttachIntoRoot(ks.storeDir, keySubpath, keyFile); err != nil {
-		// TODO: Detect EEXIST and return a custom error.
-		return BadKeyID, fmt.Errorf("could not link keyfile to subpath %q: %w", keySubpath, err)
+		// TODO: Should this be idempotent...? It's a bit ugly...
+		err = fmt.Errorf("could not link keyfile to subpath %q: %w", keySubpath, err)
+		if errors.Is(err, fs.ErrExist) {
+			err = fmt.Errorf("%w: %w", ErrKeyAlreadyExists, err)
+		}
+		return BadKeyID, err
 	}
 	if err := ks.sync(); err != nil {
 		return BadKeyID, err
@@ -108,8 +124,11 @@ func (ks *Store) GetKey(_ context.Context, keyID KeyID) (_ *GenericKey, Err erro
 
 	keyFile, err := ks.storeDir.Open(keySubpath)
 	if err != nil {
-		// TODO: Detect ENOENT and return a custom error.
-		return nil, fmt.Errorf("could not open key file for key %s: %w", keyID, err)
+		err = fmt.Errorf("could not open key file for key %s: %w", keyID, err)
+		if errors.Is(err, fs.ErrNotExist) {
+			err = fmt.Errorf("%w: %w", ErrNoSuchKey, err)
+		}
+		return nil, err
 	}
 	defer funchelpers.VerifyClose(&Err, keyFile)
 
@@ -130,8 +149,12 @@ func (ks *Store) UnlinkKey(_ context.Context, keyID KeyID) error {
 		return fmt.Errorf("could not compute subpath for key %s: %w", keyID, err)
 	}
 	if err := ks.storeDir.RemoveFile(keySubpath); err != nil {
-		// TODO: Detect ENOENT and return a custom error.
-		return fmt.Errorf("failed to unlink key %s: %w", keyID, err)
+		// TODO: Should this be idempotent...?
+		err = fmt.Errorf("failed to unlink key %s: %w", keyID, err)
+		if errors.Is(err, fs.ErrNotExist) {
+			err = fmt.Errorf("%w: %w", ErrNoSuchKey, err)
+		}
+		return err
 	}
 	return ks.sync()
 }

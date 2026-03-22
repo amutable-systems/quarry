@@ -74,7 +74,7 @@ func TestInsecure_Store_AddGetUnlinkKey(t *testing.T) {
 
 	// Getting the key after unlink should fail.
 	_, err = store.GetKey(ctx, keyID)
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, keystore.ErrNoSuchKey)
 }
 
 func TestInsecure_Store_GetSigner(t *testing.T) {
@@ -146,7 +146,7 @@ func TestInsecure_Store_MultipleKeys(t *testing.T) {
 
 	// The removed key should be gone.
 	_, err = store.GetKey(ctx, keyIDs[2])
-	assert.Error(t, err) //nolint:testifylint // assert is fine for error path checks
+	assert.ErrorIs(t, err, keystore.ErrNoSuchKey) //nolint:testifylint // assert is fine for error path checks
 
 	// The rest should still work.
 	for i, keyID := range keyIDs {
