@@ -1,0 +1,54 @@
+version: "2"
+
+run:
+  build-tags:
+    - insecure # internal/keystore/internal
+
+linters:
+  enable:
+    - asasalint
+    - asciicheck
+    - containedctx
+    - contextcheck
+    - errcheck
+    - errorlint
+    - exhaustive
+    - forcetypeassert
+    - godot
+    - goprintffuncname
+    - govet
+    - importas
+    - ineffassign
+    - makezero
+    - misspell
+    - musttag
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - noctx
+    - nolintlint
+    - prealloc
+    - revive
+    - staticcheck
+    - testifylint
+    - unconvert
+    - unparam
+    - unused
+    - usetesting
+  settings:
+    govet:
+      enable:
+        - nilness
+    testifylint:
+      enable-all: true
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    gofumpt:
+      extra-rules: true
+    goimports:
+      local-prefixes:
+        - go.amutable.dev/quarry
