@@ -88,7 +88,7 @@ func (ks *Store) AddKey(_ context.Context, key *GenericKey) (_ KeyID, Err error)
 		return BadKeyID, fmt.Errorf("could not compute subpath for key %s: %w", keyID, err)
 	}
 
-	keyFile, err := ks.storeDir.Create(".", unix.O_TMPFILE|unix.O_RDWR, 0o600)
+	keyFile, err := ks.storeDir.Create(".", unix.O_TMPFILE|unix.O_NOFOLLOW|unix.O_RDWR, 0o600)
 	if err != nil {
 		return BadKeyID, fmt.Errorf("could not open temporary file for new key data: %w", err)
 	}
