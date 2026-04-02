@@ -16,6 +16,7 @@ import (
 	"cyphar.com/go-pathrs"
 	"golang.org/x/sys/unix"
 
+	"go.amutable.dev/quarry/internal/keystore/keyopts"
 	"go.amutable.dev/quarry/internal/pathrsext"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 )
@@ -74,6 +75,24 @@ func (ks *Store) sync() (Err error) {
 	return err
 }
 
+// GenerateKey generates a new key with the named driver. This is mostly a
+// shorthand for [Driver.GenerateKey] and [Store.AddKey].
+func (ks *Store) GenerateKey(ctx context.Context, driverName string, opts ...keyopts.GenerateOption) (_ KeyID, _ *GenericKey, Err error) {
+	driver, ok := GetDriver(driverName)
+	if !ok {
+		return BadKeyID, nil, fmt.Errorf("cannot generate key: unknown driver %s", driverName)
+	}
+	key, err := driver.GenerateKey(ctx, opts...)
+	if err != nil {
+		return BadKeyID, nil, err
+	}
+	keyID, err := ks.AddKey(ctx, key)
+	if err != nil {
+		return BadKeyID, nil, err
+	}
+	return keyID, key, nil
+}
+
 // AddKey adds the given [GenericKey] to the key store and returns the [KeyID]
 // of the key.
 func (ks *Store) AddKey(_ context.Context, key *GenericKey) (_ KeyID, Err error) {
@@ -113,6 +132,10 @@ func (ks *Store) AddKey(_ context.Context, key *GenericKey) (_ KeyID, Err error)
 	}
 	return keyID, nil
 }
+
+// TODO: Should we add HasKey? There is no stat() for libpathrs (because it
+// would be just as expensive as resolve), but it lets us avoid parsing
+// JSON...?
 
 // GetKey looks up the key with the given [KeyID] in the keystore and returns a
 // [GenericKey] if the key exists.

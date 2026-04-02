@@ -337,6 +337,89 @@ func TestStore_MultipleKeys(t *testing.T) {
 	}
 }
 
+func TestStore_GenerateKey(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	keyID, key, err := store.GenerateKey(ctx, testDriverName)
+	require.NoError(t, err)
+	assert.True(t, keyID.IsValid())
+	require.NotNil(t, key)
+	assert.Equal(t, testDriverName, key.Driver)
+	assert.Equal(t, keystore.KeyTypeEd25519, key.KeyType())
+
+	// The returned key ID should match the key's own ID.
+	gotID, err := key.ID()
+	require.NoError(t, err)
+	assert.Equal(t, keyID, gotID)
+
+	// The key should be retrievable from the store.
+	retrieved, err := store.GetKey(ctx, keyID)
+	require.NoError(t, err)
+	retrievedID, err := retrieved.ID()
+	require.NoError(t, err)
+	assert.Equal(t, keyID, retrievedID)
+	assert.Equal(t, key.Driver, retrieved.Driver)
+	assert.Equal(t, key.KeyType(), retrieved.KeyType())
+
+	// The generated key should produce a working signer.
+	signer, err := key.GetSigner(ctx)
+	require.NoError(t, err)
+	msg := []byte("generate key test")
+	sig, err := signer.Sign(rand.Reader, msg, crypto.Hash(0))
+	require.NoError(t, err)
+
+	pubKey, ok := signer.Public().(ed25519.PublicKey)
+	require.True(t, ok, "expected ed25519.PublicKey")
+	assert.True(t, ed25519.Verify(pubKey, msg, sig))
+}
+
+func TestStore_GenerateKey_UnknownDriver(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	keyID, key, err := store.GenerateKey(ctx, "nonexistent-driver")
+	assert.Error(t, err) //nolint:testifylint // assert is fine for error path checks
+	assert.Equal(t, keystore.BadKeyID, keyID)
+	assert.Nil(t, key)
+	assert.Contains(t, err.Error(), "nonexistent-driver")
+}
+
+func TestStore_GenerateKey_Multiple(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	// Generate several keys via GenerateKey.
+	var keyIDs []keystore.KeyID //nolint:prealloc // test code
+	for range 3 {
+		keyID, _, err := store.GenerateKey(ctx, testDriverName)
+		require.NoError(t, err)
+		keyIDs = append(keyIDs, keyID)
+	}
+
+	// All keys should be distinct and retrievable.
+	seen := make(map[keystore.KeyID]struct{})
+	for _, keyID := range keyIDs {
+		assert.NotContains(t, seen, keyID, "duplicate key ID generated")
+		seen[keyID] = struct{}{}
+
+		_, err := store.GetKey(ctx, keyID)
+		assert.NoError(t, err)
+	}
+}
+
 func TestStore_AddKey_Duplicate(t *testing.T) {
 	ctx := context.Background()
 
