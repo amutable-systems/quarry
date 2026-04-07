@@ -218,6 +218,160 @@ func TestSignRole_AllRoleTypes(t *testing.T) {
 	})
 }
 
+func TestSignRole_ReplacesExistingSignature(t *testing.T) {
+	ctx := context.Background()
+	key := generateInsecureKey(ctx, t)
+
+	meta := tufmetadata.Root()
+
+	// Sign once.
+	sig1, err := tufext.SignRole(ctx, meta, key)
+	require.NoError(t, err)
+	require.Len(t, meta.Signatures, 1)
+
+	// Modify the metadata so the second signature is different.
+	meta.Signed.Version = 2
+
+	// Sign again with the same key.
+	sig2, err := tufext.SignRole(ctx, meta, key)
+	require.NoError(t, err)
+
+	// There should still be exactly one signature, not two.
+	require.Len(t, meta.Signatures, 1)
+	assert.Equal(t, sig2.KeyID, meta.Signatures[0].KeyID)
+	assert.Equal(t, sig2.Signature, meta.Signatures[0].Signature)
+
+	// The new signature should differ from the old one (since the payload changed).
+	assert.NotEqual(t, sig1.Signature, sig2.Signature)
+
+	// Verify the new signature is valid against the updated payload.
+	verifyTUFSignature(t, tufmetadata.ROOT, key, meta)
+}
+
+func TestSignRole_ReplacesExistingSignature_PreservesOtherKeys(t *testing.T) {
+	ctx := context.Background()
+
+	key1 := generateInsecureKey(ctx, t)
+	key2 := generateInsecureKey(ctx, t)
+
+	meta := tufmetadata.Root()
+
+	// Sign with both keys.
+	_, err := tufext.SignRole(ctx, meta, key1)
+	require.NoError(t, err)
+	_, err = tufext.SignRole(ctx, meta, key2)
+	require.NoError(t, err)
+	require.Len(t, meta.Signatures, 2)
+
+	// Modify the metadata and re-sign with key1 only.
+	meta.Signed.Version = 2
+	sig1New, err := tufext.SignRole(ctx, meta, key1)
+	require.NoError(t, err)
+
+	// Should still have exactly two signatures.
+	require.Len(t, meta.Signatures, 2)
+
+	// key2's signature should be first (unchanged), key1's new signature should be second.
+	key2ID, err := key2.ID()
+	require.NoError(t, err)
+	assert.Equal(t, string(key2ID), meta.Signatures[0].KeyID)
+	assert.Equal(t, sig1New.KeyID, meta.Signatures[1].KeyID)
+
+	// The new key1 signature should verify against the updated payload.
+	verifyTUFSignature(t, tufmetadata.ROOT, key1, meta)
+}
+
+func TestSignRole_ReplacesExistingSignature_DuplicateKeyIDs(t *testing.T) {
+	ctx := context.Background()
+	key := generateInsecureKey(ctx, t)
+	keyID, err := key.ID()
+	require.NoError(t, err)
+
+	t.Run("Garbled", func(t *testing.T) {
+		meta := tufmetadata.Root()
+
+		// Manually inject multiple garbled signatures with the same key ID,
+		// simulating a malformed state from an external tool.
+		meta.Signatures = []tufmetadata.Signature{
+			{KeyID: string(keyID), Signature: []byte("garbled-1")},
+			{KeyID: string(keyID), Signature: []byte("garbled-2")},
+			{KeyID: string(keyID), Signature: []byte("garbled-3")},
+		}
+
+		sig, err := tufext.SignRole(ctx, meta, key)
+		require.NoError(t, err)
+
+		// All three garbled entries should be replaced by a single valid signature.
+		require.Len(t, meta.Signatures, 1)
+		assert.Equal(t, sig.KeyID, meta.Signatures[0].KeyID)
+		assert.Equal(t, sig.Signature, meta.Signatures[0].Signature)
+
+		verifyTUFSignature(t, tufmetadata.ROOT, key, meta)
+	})
+
+	t.Run("RealDuplicates", func(t *testing.T) {
+		meta := tufmetadata.Root()
+
+		// Produce a real signature, then manually duplicate it in the slice.
+		realSig, err := tufext.SignRole(ctx, meta, key)
+		require.NoError(t, err)
+		require.Len(t, meta.Signatures, 1)
+
+		meta.Signatures = append(meta.Signatures,
+			tufmetadata.Signature{KeyID: realSig.KeyID, Signature: realSig.Signature},
+			tufmetadata.Signature{KeyID: realSig.KeyID, Signature: realSig.Signature},
+		)
+		require.Len(t, meta.Signatures, 3)
+
+		// Re-sign with the same key -- should collapse all three into one.
+		meta.Signed.Version = 2
+		sig, err := tufext.SignRole(ctx, meta, key)
+		require.NoError(t, err)
+
+		require.Len(t, meta.Signatures, 1)
+		assert.Equal(t, sig.KeyID, meta.Signatures[0].KeyID)
+		assert.Equal(t, sig.Signature, meta.Signatures[0].Signature)
+		assert.NotEqual(t, realSig.Signature, sig.Signature, "signature should differ after payload change")
+
+		verifyTUFSignature(t, tufmetadata.ROOT, key, meta)
+	})
+
+	t.Run("InterleavedWithOtherKeys", func(t *testing.T) {
+		key2 := generateInsecureKey(ctx, t)
+		key3 := generateInsecureKey(ctx, t)
+		key2ID, err := key2.ID()
+		require.NoError(t, err)
+		key3ID, err := key3.ID()
+		require.NoError(t, err)
+
+		meta := tufmetadata.Root()
+
+		// Manually build a [key1, key2, key1, key3, key1] signature list.
+		meta.Signatures = []tufmetadata.Signature{
+			{KeyID: string(keyID), Signature: []byte("old-1")},
+			{KeyID: string(key2ID), Signature: []byte("key2-sig")},
+			{KeyID: string(keyID), Signature: []byte("old-2")},
+			{KeyID: string(key3ID), Signature: []byte("key3-sig")},
+			{KeyID: string(keyID), Signature: []byte("old-3")},
+		}
+
+		sig, err := tufext.SignRole(ctx, meta, key)
+		require.NoError(t, err)
+
+		// Result should be [key2, key3, key1] -- other keys preserve
+		// relative order, key1 duplicates all removed, new sig appended.
+		require.Len(t, meta.Signatures, 3)
+		assert.Equal(t, string(key2ID), meta.Signatures[0].KeyID)
+		assert.EqualValues(t, []byte("key2-sig"), meta.Signatures[0].Signature)
+		assert.Equal(t, string(key3ID), meta.Signatures[1].KeyID)
+		assert.EqualValues(t, []byte("key3-sig"), meta.Signatures[1].Signature)
+		assert.Equal(t, sig.KeyID, meta.Signatures[2].KeyID)
+		assert.Equal(t, sig.Signature, meta.Signatures[2].Signature)
+
+		verifyTUFSignature(t, tufmetadata.ROOT, key, meta)
+	})
+}
+
 func TestSignRole_BadDriver(t *testing.T) {
 	ctx := context.Background()
 

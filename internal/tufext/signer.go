@@ -7,6 +7,7 @@ import (
 	"crypto"
 	"crypto/rand"
 	"fmt"
+	"slices"
 
 	"github.com/secure-systems-lab/go-securesystemslib/cjson"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
@@ -18,7 +19,7 @@ import (
 // [keystore.GenericKey].
 //
 // NOTE: Unlike the built-in signing support provided by go-tuf via
-// [tufmetadata.Metadata.Sign], this function support the usage of
+// [tufmetadata.Metadata.Sign], this function supports the usage of
 // hardware-backed private keys as long as there is a [keystore.Driver]
 // implemented for the hardware keystore.
 func SignRole[T tufmetadata.Roles](ctx context.Context, meta *tufmetadata.Metadata[T], key *keystore.GenericKey) (*tufmetadata.Signature, error) {
@@ -51,6 +52,8 @@ func SignRole[T tufmetadata.Roles](ctx context.Context, meta *tufmetadata.Metada
 	//
 	// TODO: We should figure out how to make the signing cancellable for
 	// hardware-backed keys...
+	// TODO: Should we even pass rand.Reader here? Doing so means that ECDSA
+	// will use randomised signatures rather than deterministic signatures...
 	sigBytes, err := crypto.SignMessage(signer, rand.Reader, payload, signerOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign with key %s: %w", keyID, err)
@@ -59,6 +62,11 @@ func SignRole[T tufmetadata.Roles](ctx context.Context, meta *tufmetadata.Metada
 		KeyID:     string(keyID),
 		Signature: sigBytes,
 	}
+	// Remove any pre-existing signatures with the same key and add our new
+	// signature.
+	meta.Signatures = slices.DeleteFunc(meta.Signatures, func(oldSig tufmetadata.Signature) bool {
+		return oldSig.KeyID == sig.KeyID
+	})
 	meta.Signatures = append(meta.Signatures, sig)
 	return &sig, nil
 }
