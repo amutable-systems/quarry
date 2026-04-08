@@ -12,6 +12,7 @@ import (
 
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
+	"go.amutable.dev/quarry/internal/cryptoext"
 	"go.amutable.dev/quarry/internal/keystore"
 )
 
@@ -47,7 +48,7 @@ func parseGenericKey(key *keystore.GenericKey) (crypto.PrivateKey, error) {
 	// Sanity check to make sure that the parsed key actually matches the key
 	// type and public key included in the generic section of GenericKey. This
 	// is done implicitly by using the stdlib equal check.
-	checkPubKey := privKey.(keystore.CommonPrivateKey).Public().(keystore.CommonPublicKey) //nolint:forcetypeassert // guaranteed by the stdlib
+	checkPubKey := privKey.(cryptoext.CommonPrivateKey).Public().(cryptoext.CommonPublicKey) //nolint:forcetypeassert // guaranteed by the stdlib
 	if !checkPubKey.Equal(pubKey) {
 		err := fmt.Errorf("saved public key for key id %s (%v) does not match private key", keyID, key.Public)
 		checkTufKey, err2 := tufmetadata.KeyFromPublicKey(checkPubKey)
@@ -74,7 +75,7 @@ func toGenericKey(privKey crypto.PrivateKey) (*keystore.GenericKey, error) {
 		return nil, fmt.Errorf("failed to JSON marshal private key: %w", err)
 	}
 
-	pubKey := privKey.(keystore.CommonPrivateKey).Public() //nolint:forcetypeassert // guaranteed by the stdlib
+	pubKey := privKey.(cryptoext.CommonPrivateKey).Public() //nolint:forcetypeassert // guaranteed by the stdlib
 	tufKey, err := tufmetadata.KeyFromPublicKey(pubKey)
 	if err != nil {
 		return nil, fmt.Errorf("unsupported public key type %T: %w", pubKey, err)

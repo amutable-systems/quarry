@@ -15,21 +15,6 @@ import (
 // PublicKey is the TUF representation of public keys ("KEY").
 type PublicKey = tufmetadata.Key
 
-// CommonPrivateKey is [crypto.PrivateKey] but it includes the methods that the
-// standard library guarantees are implemented by the standard library.
-type CommonPrivateKey interface {
-	crypto.PrivateKey
-	Public() crypto.PublicKey
-	Equal(x crypto.PrivateKey) bool
-}
-
-// CommonPublicKey is [crypto.PublicKey] but it includes the methods that the
-// standard library guarantees are implemented by the standard library.
-type CommonPublicKey interface {
-	crypto.PublicKey
-	Equal(x crypto.PublicKey) bool
-}
-
 // KeyType is a combination of the TUF "KEYTYPE" and "SCHEME" values, to allow
 // for the marking of key types without including the public key portion.
 type KeyType struct {

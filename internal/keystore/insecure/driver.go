@@ -14,6 +14,7 @@ import (
 	"crypto/rand"
 	"fmt"
 
+	"go.amutable.dev/quarry/internal/cryptoext"
 	"go.amutable.dev/quarry/internal/keystore"
 	"go.amutable.dev/quarry/internal/keystore/keyopts"
 )
@@ -41,7 +42,7 @@ func (d *driver) ImportKey(_ context.Context, key any, opts ...keyopts.ImportOpt
 	if len(opts) != 0 {
 		panic("TODO: implement ImportOption")
 	}
-	privKey, ok := key.(keystore.CommonPrivateKey)
+	privKey, ok := key.(cryptoext.CommonPrivateKey)
 	if !ok {
 		return nil, fmt.Errorf("keystore driver %s: unsupported private key %T", d.Name(), key)
 	}
