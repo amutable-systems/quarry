@@ -125,7 +125,8 @@ func (TofuRootTrust) FetchRoot(ctx context.Context, repo *Repository) (_ []byte,
 
 // InlineRootTrust is used for cases where it makes sense to embed the
 // root.json directly inside some structure or configuration rather than
-// referencing some external value.
+// referencing some external value (the most obvious examples being [RepoLink]
+// and drop-in config fragments).
 type InlineRootTrust struct {
 	RootJSON json.RawMessage `json:"root.json"`
 	// TODO: UnrecognizedFields?
