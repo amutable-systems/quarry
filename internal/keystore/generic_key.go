@@ -10,6 +10,8 @@ import (
 	"fmt"
 
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
+
+	"go.amutable.dev/quarry/internal/cryptoext"
 )
 
 // PublicKey is the TUF representation of public keys ("KEY").
@@ -20,6 +22,28 @@ type PublicKey = tufmetadata.Key
 type KeyType struct {
 	Type   string `json:"keytype"`
 	Scheme string `json:"scheme"`
+}
+
+// PublicKeyType returns the [KeyType] for a given [tufmetadata.Key] public
+// key.
+func PublicKeyType(pk PublicKey) KeyType {
+	return KeyType{
+		Type:   pk.Type,
+		Scheme: pk.Scheme,
+	}
+}
+
+// PublicKeyVerifier returns a [cryptoext.Verifier] for the given public key.
+func PublicKeyVerifier(tufKey *PublicKey) (cryptoext.Verifier, error) {
+	keyID, err := tufKey.ID()
+	if err != nil {
+		keyID = string(BadKeyID)
+	}
+	pubKey, err := tufKey.ToPublicKey()
+	if err != nil {
+		return nil, fmt.Errorf("could not convert key %s into crypto.PublicKey: %w", keyID, err)
+	}
+	return cryptoext.NewVerifier(pubKey)
 }
 
 // SignerOpts returns the necessary signing options for the given key type.
@@ -70,12 +94,10 @@ func (k *GenericKey) String() string {
 	return string(k.niceID())
 }
 
-// KeyType returns the [KeyType] subset of a TUF "KEY" structure.
+// KeyType returns the [KeyType] subset of a TUF "KEY" structure. It is
+// shorthand for [PublicKeyType].
 func (k *GenericKey) KeyType() KeyType {
-	return KeyType{
-		Type:   k.Public.Type,
-		Scheme: k.Public.Scheme,
-	}
+	return PublicKeyType(k.Public)
 }
 
 func (k *GenericKey) driver() (Driver, error) {
