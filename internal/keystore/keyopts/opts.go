@@ -18,6 +18,19 @@ func (fn generateOptionFunc) ApplyKeyGenerate(state any) (bool, error) {
 }
 */
 
+// RotateOption is an option to be used with RotateKey.
+type RotateOption interface {
+	ApplyKeyRotate(any) (bool, error)
+}
+
+/*
+type rotateOptionFunc func(any) (bool, error)
+
+func (fn rotateOptionFunc) ApplyKeyRotate(state any) (bool, error) {
+	return fn(state)
+}
+*/
+
 // ImportOption an option to be used with ImportKey.
 type ImportOption interface {
 	ApplyKeyImport(any) (bool, error)

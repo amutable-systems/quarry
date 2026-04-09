@@ -420,6 +420,116 @@ func TestStore_GenerateKey_Multiple(t *testing.T) {
 	}
 }
 
+func TestStore_RotateKey(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	// Generate an initial key to rotate.
+	oldKeyID, oldKey, err := store.GenerateKey(ctx, testDriverName)
+	require.NoError(t, err)
+
+	// Rotate the key.
+	newKeyID, newKey, err := store.RotateKey(ctx, oldKeyID)
+	require.NoError(t, err)
+	assert.True(t, newKeyID.IsValid())
+	require.NotNil(t, newKey)
+	assert.Equal(t, testDriverName, newKey.Driver)
+	assert.Equal(t, oldKey.KeyType(), newKey.KeyType())
+
+	// The new key should have a different ID.
+	assert.NotEqual(t, oldKeyID, newKeyID)
+
+	// The returned key ID should match the key's own ID.
+	gotID, err := newKey.ID()
+	require.NoError(t, err)
+	assert.Equal(t, newKeyID, gotID)
+
+	// The new key should be retrievable from the store.
+	retrieved, err := store.GetKey(ctx, newKeyID)
+	require.NoError(t, err)
+	retrievedID, err := retrieved.ID()
+	require.NoError(t, err)
+	assert.Equal(t, newKeyID, retrievedID)
+	assert.Equal(t, newKey.Driver, retrieved.Driver)
+	assert.Equal(t, newKey.KeyType(), retrieved.KeyType())
+
+	// The old key should still exist in the store.
+	_, err = store.GetKey(ctx, oldKeyID)
+	require.NoError(t, err)
+
+	// The rotated key should produce a working signer.
+	signer, err := newKey.GetSigner(ctx)
+	require.NoError(t, err)
+	msg := []byte("rotate key test")
+	sig, err := signer.Sign(rand.Reader, msg, crypto.Hash(0))
+	require.NoError(t, err)
+
+	pubKey, ok := signer.Public().(ed25519.PublicKey)
+	require.True(t, ok, "expected ed25519.PublicKey")
+	assert.True(t, ed25519.Verify(pubKey, msg, sig))
+}
+
+func TestStore_RotateKey_NotFound(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	keyID, key, err := store.RotateKey(ctx, keystore.KeyID("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))
+	assert.ErrorIs(t, err, keystore.ErrNoSuchKey) //nolint:testifylint // assert is fine for error path checks
+	assert.Equal(t, keystore.BadKeyID, keyID)
+	assert.Nil(t, key)
+}
+
+func TestStore_RotateKey_InvalidKeyID(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	keyID, key, err := store.RotateKey(ctx, keystore.KeyID("invalid"))
+	assert.Error(t, err) //nolint:testifylint // assert is fine for error path checks
+	assert.Equal(t, keystore.BadKeyID, keyID)
+	assert.Nil(t, key)
+}
+
+func TestStore_RotateKey_BadDriver(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	// Add a key with a clobbered driver name.
+	key := generateTestKey(t)
+	keyID, err := store.AddKey(ctx, key)
+	require.NoError(t, err)
+
+	// Clobber the driver in the store by re-adding with a bad driver.
+	// We can't modify the stored key directly, so instead we create a key
+	// with a bad driver, add it, and try to rotate it.
+	badKey := generateTestKey(t)
+	badKey.Driver = "doesnotexist"
+	badKeyID, err := store.AddKey(ctx, badKey)
+	require.NoError(t, err)
+	_ = keyID // keep linter happy
+
+	rotatedID, rotatedKey, err := store.RotateKey(ctx, badKeyID)
+	assert.Error(t, err) //nolint:testifylint // assert is fine for error path checks
+	assert.Equal(t, keystore.BadKeyID, rotatedID)
+	assert.Nil(t, rotatedKey)
+	assert.Contains(t, err.Error(), "doesnotexist")
+}
+
 func TestStore_AddKey_Duplicate(t *testing.T) {
 	ctx := context.Background()
 
