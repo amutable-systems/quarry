@@ -8,7 +8,9 @@ import (
 	"net/url"
 )
 
-// Repository represents a TUF repository that [tufclient] fetches.
+// Repository represents a TUF repository that [tufclient] fetches. It may have
+// been explicitly configured with [tufclient/config] or may have been derived
+// from a [RepoLink].
 type Repository struct {
 	// Name is the "logical" name of the repository, which uniquely identifies
 	// the repository and thus must remain unchanged for the life of the
