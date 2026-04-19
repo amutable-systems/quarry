@@ -1,0 +1,316 @@
+// Copyright (C) 2026 Amutable GmbH
+
+//go:build insecure
+
+package tufrepo_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
+
+	"go.amutable.dev/quarry/internal/keystore"
+	_ "go.amutable.dev/quarry/internal/keystore/insecure"
+	"go.amutable.dev/quarry/internal/tufext"
+	"go.amutable.dev/quarry/internal/tufrepo"
+)
+
+// bootstrap is a fully-signed initial TUF repository, along with the
+// [keystore.Store] and role keys that were used to sign it. All tests that
+// need a live transaction start from a [bootstrap].
+type bootstrap struct {
+	repo  *tufrepo.Repository
+	store *keystore.Store
+
+	// storeDir is the on-disk directory backing `store`. Tests that want to
+	// introspect keystore state (e.g. by counting files) can use this.
+	storeDir string
+
+	// initialRefTime is the wall-clock time at bootstrap time -- used by
+	// tests that want to assert on expiry/version relationships.
+	initialRefTime time.Time
+
+	// Role keys used to seed the repository. The ed25519 [keystore.KeyID] is
+	// derived from the TUF [tufmetadata.Key] and is stable across the
+	// lifetime of the bootstrap.
+	rootKey, targetsKey, snapshotKey, timestampKey *keystore.GenericKey
+
+	// delegatedKeys is indexed by delegated role name, populated by
+	// [withDelegation].
+	delegatedKeys map[string]*keystore.GenericKey
+}
+
+// bootstrapOption configures [bootstrapRepo].
+type bootstrapOption func(*bootstrapConfig)
+
+type bootstrapConfig struct {
+	delegations []string
+}
+
+// withDelegation instructs [bootstrapRepo] to create a (properly signed and
+// properly referenced) delegated targets role with the given name. The name
+// must be unique across all [withDelegation] options passed to a single
+// [bootstrapRepo] call.
+func withDelegation(name string) bootstrapOption {
+	return func(c *bootstrapConfig) {
+		for _, existing := range c.delegations {
+			if existing == name {
+				panic("withDelegation: duplicate delegation name " + name)
+			}
+		}
+		c.delegations = append(c.delegations, name)
+	}
+}
+
+// bootstrapRepo creates a fully-signed, consistent initial TUF repository with
+// root, top-level targets, snapshot, and timestamp roles. Each role is signed
+// by a single insecure-driver ed25519 key stored in the returned [keystore.Store].
+func bootstrapRepo(t *testing.T, opts ...bootstrapOption) *bootstrap {
+	t.Helper()
+	ctx := context.Background()
+
+	var cfg bootstrapConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	repo := newTestRepo(t)
+	store, storeDir := newTestKeystore(t)
+
+	rootKey := generateInsecureKey(ctx, t, store)
+	targetsKey := generateInsecureKey(ctx, t, store)
+	snapshotKey := generateInsecureKey(ctx, t, store)
+	timestampKey := generateInsecureKey(ctx, t, store)
+
+	refTime := time.Now().UTC()
+
+	// Top-level targets (possibly with delegations).
+	targets := tufmetadata.Targets(refTime.Add(tufrepo.DefaultTargetsExpiry))
+	delegatedKeys := make(map[string]*keystore.GenericKey, len(cfg.delegations))
+	if len(cfg.delegations) > 0 {
+		targets.Signed.Delegations = &tufmetadata.Delegations{
+			Keys:  map[string]*tufmetadata.Key{},
+			Roles: []tufmetadata.DelegatedRole{},
+		}
+		for _, roleName := range cfg.delegations {
+			key := generateInsecureKey(ctx, t, store)
+			keyID, err := key.ID()
+			require.NoError(t, err)
+			targets.Signed.Delegations.Keys[string(keyID)] = &key.Public
+			targets.Signed.Delegations.Roles = append(targets.Signed.Delegations.Roles, tufmetadata.DelegatedRole{
+				Name:      roleName,
+				KeyIDs:    []string{string(keyID)},
+				Threshold: 1,
+				Paths:     []string{roleName + "/*"},
+			})
+			delegatedKeys[roleName] = key
+		}
+	}
+	signMeta(ctx, t, targets, targetsKey)
+	_, _, err := repo.PutVersionedFile(ctx, tufmetadata.TARGETS, targets)
+	require.NoError(t, err)
+
+	// Root, referencing all top-level role keys.
+	root := tufmetadata.Root(refTime.Add(tufrepo.DefaultRootExpiry))
+	require.NoError(t, root.Signed.AddKey(&rootKey.Public, tufmetadata.ROOT))
+	require.NoError(t, root.Signed.AddKey(&targetsKey.Public, tufmetadata.TARGETS))
+	require.NoError(t, root.Signed.AddKey(&snapshotKey.Public, tufmetadata.SNAPSHOT))
+	require.NoError(t, root.Signed.AddKey(&timestampKey.Public, tufmetadata.TIMESTAMP))
+	signMeta(ctx, t, root, rootKey)
+	_, _, err = repo.PutVersionedFile(ctx, tufmetadata.ROOT, root)
+	require.NoError(t, err)
+
+	// Build snapshot metadata referencing every target (including delegations).
+	snapshot := tufmetadata.Snapshot(refTime.Add(tufrepo.DefaultSnapshotExpiry))
+	snapshot.Signed.Meta = map[string]*tufmetadata.MetaFiles{}
+	targetsMeta, err := tufrepo.HashMetaFile(ctx, targets)
+	require.NoError(t, err)
+	snapshot.Signed.Meta[tufmetadata.TARGETS+".json"] = targetsMeta
+
+	for _, roleName := range cfg.delegations {
+		delegated := tufmetadata.Targets(refTime.Add(tufrepo.DefaultTargetsExpiry))
+		signMeta(ctx, t, delegated, delegatedKeys[roleName])
+		_, _, err := repo.PutVersionedFile(ctx, roleName, delegated)
+		require.NoError(t, err)
+
+		meta, err := tufrepo.HashMetaFile(ctx, delegated)
+		require.NoError(t, err)
+		snapshot.Signed.Meta[roleName+".json"] = meta
+	}
+	signMeta(ctx, t, snapshot, snapshotKey)
+	_, _, err = repo.PutVersionedFile(ctx, tufmetadata.SNAPSHOT, snapshot)
+	require.NoError(t, err)
+
+	// Timestamp, referencing the snapshot.
+	timestamp := tufmetadata.Timestamp(refTime.Add(tufrepo.DefaultTimestampExpiry))
+	snapshotMeta, err := tufrepo.HashMetaFile(ctx, snapshot)
+	require.NoError(t, err)
+	timestamp.Signed.Meta = map[string]*tufmetadata.MetaFiles{
+		tufmetadata.SNAPSHOT + ".json": snapshotMeta,
+	}
+	signMeta(ctx, t, timestamp, timestampKey)
+	_, err = repo.PutBlob(ctx, tufmetadata.TIMESTAMP+".json",
+		bytes.NewReader(mustEncode(t, timestamp)))
+	require.NoError(t, err)
+
+	return &bootstrap{
+		repo:           repo,
+		store:          store,
+		storeDir:       storeDir,
+		initialRefTime: refTime,
+		rootKey:        rootKey,
+		targetsKey:     targetsKey,
+		snapshotKey:    snapshotKey,
+		timestampKey:   timestampKey,
+		delegatedKeys:  delegatedKeys,
+	}
+}
+
+// newTestKeystore opens a fresh [keystore.Store] backed by a temp dir. The
+// store is automatically closed at test teardown. The on-disk directory
+// path is returned so tests can introspect the store (e.g. count keys).
+func newTestKeystore(t *testing.T) (*keystore.Store, string) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := keystore.OpenStore(dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, store.Close()) })
+	return store, dir
+}
+
+// countKeystoreEntries reports the number of key files currently stored in
+// the given keystore directory.
+func countKeystoreEntries(dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	return len(entries), nil
+}
+
+// generateInsecureKey generates a new ed25519 key via the insecure driver and
+// stores it in the given [keystore.Store].
+func generateInsecureKey(ctx context.Context, t *testing.T, store *keystore.Store) *keystore.GenericKey {
+	t.Helper()
+	_, key, err := store.GenerateKey(ctx, "insecure")
+	require.NoError(t, err)
+	return key
+}
+
+// signMeta signs the given metadata with each provided key.
+func signMeta[T tufmetadata.Roles](ctx context.Context, t *testing.T, meta *tufmetadata.Metadata[T], keys ...*keystore.GenericKey) {
+	t.Helper()
+	for _, key := range keys {
+		_, err := tufext.SignRole(ctx, meta, key)
+		require.NoError(t, err)
+	}
+}
+
+// currentTimestamp fetches the live timestamp.json from the repository -- used
+// by tests to assert commit side-effects.
+func currentTimestamp(ctx context.Context, t *testing.T, repo *tufrepo.Repository) *tufmetadata.Metadata[tufmetadata.TimestampType] {
+	t.Helper()
+	ts, _, err := repo.GetLatestTimestamp(ctx)
+	require.NoError(t, err)
+	return ts
+}
+
+// decodeJSON decodes the raw JSON bytes into a fresh instance of the given
+// role type.
+func decodeJSON[T tufmetadata.Roles](t *testing.T, payload []byte) *tufmetadata.Metadata[T] {
+	t.Helper()
+	var meta tufmetadata.Metadata[T]
+	require.NoError(t, json.Unmarshal(payload, &meta))
+	return &meta
+}
+
+// mustKeyIDs extracts the stringified key IDs for the given keys. Panics via
+// [require] on error.
+func mustKeyIDs(t *testing.T, keys ...*keystore.GenericKey) []string {
+	t.Helper()
+	ids := make([]string, 0, len(keys))
+	for _, key := range keys {
+		id, err := key.ID()
+		require.NoError(t, err)
+		ids = append(ids, string(id))
+	}
+	return ids
+}
+
+// mustRootRoleKeyIDs fetches the currently-configured set of key ids for the
+// given top-level role out of the transaction's [tufmetadata.RootType] view.
+func mustRootRoleKeyIDs(ctx context.Context, t *testing.T, tx *tufrepo.Transaction, roleName string) []string {
+	t.Helper()
+	root, err := tx.RootRoleData(ctx)
+	require.NoError(t, err)
+	role, ok := root.Signed.Roles[roleName]
+	require.True(t, ok, "role %s missing from root", roleName)
+	return role.KeyIDs
+}
+
+// addTargetOp returns a [tufrepo.TxnOp] that inserts a stub target file
+// entry on the top-level targets role.
+func addTargetOp(path string, length int64) tufrepo.TxnOp {
+	return tufrepo.NewTxnOp(
+		"add target "+path,
+		func(ctx context.Context, tx *tufrepo.Transaction) error {
+			targets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+			if err != nil {
+				return err
+			}
+			if targets.Signed.Targets == nil {
+				targets.Signed.Targets = map[string]*tufmetadata.TargetFiles{}
+			}
+			targets.Signed.Targets[path] = &tufmetadata.TargetFiles{
+				Length: length,
+				Hashes: tufmetadata.Hashes{
+					"sha256": bytes.Repeat([]byte{0xAB}, 32),
+				},
+			}
+			return tx.UpdateRoleData(tufmetadata.TARGETS, targets)
+		},
+	)
+}
+
+// assertRootDelegates asserts that the transaction's current root correctly
+// verifies the given role's metadata. Use with `roleName = tufmetadata.ROOT`
+// and `meta = root` to assert root self-verification.
+func assertRootDelegates[T tufmetadata.Roles](ctx context.Context, t *testing.T, tx *tufrepo.Transaction, roleName string, meta *tufmetadata.Metadata[T]) {
+	t.Helper()
+	root, err := tx.RootRoleData(ctx)
+	require.NoError(t, err)
+	require.NoError(t, root.VerifyDelegate(roleName, meta))
+}
+
+// signedVersion extracts the Signed.Version field from any of the four TUF
+// role metadata types. Mirrors the switch in [tufrepo.metaVersion].
+func signedVersion(t *testing.T, meta any) int64 {
+	t.Helper()
+	switch m := meta.(type) {
+	case *tufmetadata.Metadata[tufmetadata.RootType]:
+		return m.Signed.Version
+	case *tufmetadata.Metadata[tufmetadata.TimestampType]:
+		return m.Signed.Version
+	case *tufmetadata.Metadata[tufmetadata.SnapshotType]:
+		return m.Signed.Version
+	case *tufmetadata.Metadata[tufmetadata.TargetsType]:
+		return m.Signed.Version
+	default:
+		t.Fatalf("signedVersion: unsupported type %T", meta)
+		return 0
+	}
+}
+
+// errReader is a throwaway [io.Reader] that returns a preset error.
+type errReader struct {
+	err error
+}
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }

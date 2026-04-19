@@ -8,6 +8,7 @@ require (
 	github.com/secure-systems-lab/go-securesystemslib v0.10.0
 	github.com/stretchr/testify v1.11.1
 	github.com/theupdateframework/go-tuf/v2 v2.4.1
+	github.com/tiendc/go-deepcopy v1.7.2
 	golang.org/x/sys v0.42.0
 )
 
