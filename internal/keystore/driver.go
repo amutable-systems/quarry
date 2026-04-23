@@ -7,6 +7,7 @@ import (
 	"crypto"
 	"errors"
 	"fmt"
+	"iter"
 	"sync"
 
 	"go.amutable.dev/quarry/internal/keystore/keyopts"
@@ -72,4 +73,13 @@ func GetDriver(name string) (Driver, bool) {
 		driver = val.(Driver) //nolint:forcetypeassert // guaranteed to be true
 	}
 	return driver, ok
+}
+
+// IterDrivers returns an iterator over the registered drivers.
+func IterDrivers() iter.Seq2[string, Driver] {
+	return func(yield func(string, Driver) bool) {
+		drivers.Range(func(key, value any) bool {
+			return yield(key.(string), value.(Driver)) //nolint:forcetypeassert // guaranteed to be true
+		})
+	}
 }
