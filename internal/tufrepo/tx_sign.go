@@ -380,7 +380,7 @@ func (tx *Transaction) bumpRevisions(ctx context.Context) (Err error) {
 	}
 	defer tx.invalidateOnError(&Err)
 
-	timeVersion := tx.RefTime.UnixMicro()
+	timeVersion := tx.RefTime.UnixMilli()
 	for roleName := range tx.dirty {
 		var newVersion int64
 		if roleName == tufmetadata.ROOT {
@@ -603,7 +603,7 @@ func (tx *Transaction) updateSnapshot(ctx context.Context) (Err error) {
 	if needsBump, err := tx.checkNeedsBump(ctx, tufmetadata.SNAPSHOT, tx.snapshot); err != nil {
 		return fmt.Errorf("could not check if role %s needs bumps: %w", tufmetadata.SNAPSHOT, err)
 	} else if needsBump {
-		tx.snapshot.Signed.Version = tx.RefTime.UnixMicro()
+		tx.snapshot.Signed.Version = tx.RefTime.UnixMilli()
 		tx.snapshot.Signed.Expires = tx.RefTime.Add(tx.expiry(tufmetadata.SNAPSHOT))
 		tx.markDirty(tufmetadata.SNAPSHOT)
 	}
@@ -627,7 +627,7 @@ func (tx *Transaction) updateTimestamp(ctx context.Context) (Err error) {
 	// TODO: Should we check if the actual timestamp data is different as well?
 
 	if tx.isDirty(tufmetadata.SNAPSHOT) || tx.isDirty(tufmetadata.ROOT) {
-		tx.timestamp.Signed.Version = tx.RefTime.UnixMicro()
+		tx.timestamp.Signed.Version = tx.RefTime.UnixMilli()
 		tx.timestamp.Signed.Expires = tx.RefTime.Add(tx.expiry(tufmetadata.TIMESTAMP))
 		tx.markDirty(tufmetadata.TIMESTAMP)
 	}
