@@ -21,6 +21,7 @@ import (
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 	"github.com/tiendc/go-deepcopy"
 
+	"go.amutable.dev/quarry/internal/generics"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufext"
 	storeopts "go.amutable.dev/quarry/internal/tufrepo/opts"
@@ -363,12 +364,12 @@ func (tx *Transaction) UpdateRoleData(roleName string, roleData any) (Err error)
 // Roles returns an iterator over all roles that are actually included in the
 // repository data.
 func (tx *Transaction) Roles(_ context.Context) iter.Seq2[string, error] {
-	return func(yield func(string, error) bool) {
+	return generics.ErrorIter(func(yield func(string) bool) error {
 		seen := make(map[string]struct{})
 		// Return the top-level roles first.
 		for _, role := range tufmetadata.TOP_LEVEL_ROLE_NAMES {
-			if !yield(role, nil) {
-				return
+			if !yield(role) {
+				return nil
 			}
 			seen[role] = struct{}{}
 		}
@@ -377,12 +378,13 @@ func (tx *Transaction) Roles(_ context.Context) iter.Seq2[string, error] {
 			if _, skip := seen[role]; skip {
 				continue
 			}
-			if !yield(role, nil) {
-				return
+			if !yield(role) {
+				return nil
 			}
 			seen[role] = struct{}{}
 		}
-	}
+		return nil
+	})
 }
 
 // DefinedRoles returns an iterator over all role names that are referenced by
@@ -391,16 +393,15 @@ func (tx *Transaction) Roles(_ context.Context) iter.Seq2[string, error] {
 // NOTE: This function does not validate that any delegated roles are actually
 // reachable from the top-level targets role.
 func (tx *Transaction) DefinedRoles(ctx context.Context) iter.Seq2[string, error] {
-	return func(yield func(string, error) bool) {
+	return generics.ErrorIter(func(yield func(string) bool) error {
 		seen := make(map[string]struct{})
 		root, err := tx.RootRoleData(ctx)
 		if err != nil {
-			yield("", err)
-			return // always terminate on error
+			return err
 		}
 		for role := range root.Signed.Roles {
-			if !yield(role, nil) {
-				return
+			if !yield(role) {
+				return nil
 			}
 			seen[role] = struct{}{}
 		}
@@ -412,12 +413,13 @@ func (tx *Transaction) DefinedRoles(ctx context.Context) iter.Seq2[string, error
 				if _, skip := seen[role.Name]; skip {
 					continue
 				}
-				if !yield(role.Name, nil) {
-					return
+				if !yield(role.Name) {
+					return nil
 				}
 			}
 		}
-	}
+		return nil
+	})
 }
 
 // ClearRole removes the given delegated role name from the set of files

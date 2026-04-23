@@ -32,18 +32,21 @@ type tufDelegatorType interface {
 // findRoleDelegators returns the set of roles which need to validate the given
 // role name in order for the repository to be valid.
 func (tx *Transaction) findRoleDelegators(ctx context.Context, roleName string) iter.Seq2[tufDelegatorType, error] {
-	return func(yield func(tufDelegatorType, error) bool) {
+	return generics.ErrorIter(func(yield func(tufDelegatorType) bool) error {
 		if roleName == tufmetadata.ROOT && tx.newRoot != nil {
 			// root.json needs to be signed by the original and new roots.
-			if !yield(tx.root, nil) {
-				return
+			if !yield(tx.root) {
+				return nil
 			}
 		}
 		if tufext.IsCoreRole(roleName) {
 			// The newest root matters for all top-level roles.
 			root, err := tx.RootRoleData(ctx)
-			yield(root, err)
-			return // top-level roles cannot be treated like delegated targets
+			if err != nil {
+				return err
+			}
+			yield(root)
+			return nil // top-level roles cannot be treated like delegated targets
 		}
 
 		// In theory, the same delegated role could be delegated to by more
@@ -60,17 +63,18 @@ func (tx *Transaction) findRoleDelegators(ctx context.Context, roleName string) 
 			if !generics.SeqAny(slices.Values(delegations.Roles), roleMatches) {
 				continue
 			}
-			if !yield(role, nil) {
-				return
+			if !yield(role) {
+				return nil
 			}
 			matches++
 		}
 		// There must be at least one delegator for this role, otherwise we
 		// might incorrectly assume that an object is signed.
 		if matches < 1 {
-			yield(nil, fmt.Errorf("could not find any delegators for role %s", roleName))
+			return fmt.Errorf("could not find any delegators for role %s", roleName)
 		}
-	}
+		return nil
+	})
 }
 
 type tufKeyVerifier struct {
@@ -103,27 +107,25 @@ func collateKeys(knownKeys map[string]*tufmetadata.Key, keyIDs []string) (map[ke
 }
 
 func computeDelegatorKeyQuorums(delegator any, roleName string) iter.Seq2[keyQuorum, error] {
-	return func(yield func(keyQuorum, error) bool) {
+	return generics.ErrorIter(func(yield func(keyQuorum) bool) error {
 		switch delegator := delegator.(type) {
 		case *tufmetadata.Metadata[tufmetadata.RootType]:
 			root := delegator
 			role, ok := root.Signed.Roles[roleName]
 			if !ok {
-				yield(keyQuorum{}, fmt.Errorf("unknown role %s: %w", roleName, fs.ErrNotExist))
-				return // error
+				return fmt.Errorf("unknown role %s: %w", roleName, fs.ErrNotExist)
 			}
 			pubKeys, err := collateKeys(root.Signed.Keys, role.KeyIDs)
 			if err != nil {
-				yield(keyQuorum{}, fmt.Errorf("role %s has invalid key data: %w", roleName, err))
-				return
+				return fmt.Errorf("role %s has invalid key data: %w", roleName, err)
 			}
 			kq := keyQuorum{
 				keys:      pubKeys,
 				threshold: role.Threshold,
 			}
 			// Root-delegated roles only have a single quorum.
-			yield(kq, nil)
-			return
+			yield(kq)
+			return nil
 
 		case *tufmetadata.Metadata[tufmetadata.TargetsType]:
 			delegations := delegator.Signed.Delegations
@@ -131,8 +133,7 @@ func computeDelegatorKeyQuorums(delegator any, roleName string) iter.Seq2[keyQuo
 				// NOTE: Should not be reachable -- findRoleDelegators will by
 				// definition not find a delegator for a role if it has no
 				// delegations.
-				yield(keyQuorum{}, fmt.Errorf("targets role has no delegations"))
-				return // error
+				return fmt.Errorf("targets role has no delegations")
 			}
 
 			var matches int
@@ -142,15 +143,14 @@ func computeDelegatorKeyQuorums(delegator any, roleName string) iter.Seq2[keyQuo
 				}
 				pubKeys, err := collateKeys(delegations.Keys, role.KeyIDs)
 				if err != nil {
-					yield(keyQuorum{}, fmt.Errorf("role %s has invalid key data: %w", roleName, err))
-					return
+					return fmt.Errorf("role %s has invalid key data: %w", roleName, err)
 				}
 				kq := keyQuorum{
 					keys:      pubKeys,
 					threshold: role.Threshold,
 				}
-				if !yield(kq, nil) {
-					return
+				if !yield(kq) {
+					return nil
 				}
 				matches++
 			}
@@ -161,15 +161,14 @@ func computeDelegatorKeyQuorums(delegator any, roleName string) iter.Seq2[keyQuo
 			// findRoleDelegators will not yield a delegator without at least
 			// one delegation matching this role name.
 			if matches < 1 {
-				yield(keyQuorum{}, fmt.Errorf("targets role has no delegations for role %s", roleName))
-				return
+				return fmt.Errorf("targets role has no delegations for role %s", roleName)
 			}
+			return nil
 
 		default:
-			yield(keyQuorum{}, fmt.Errorf("invalid delegator type %T for role %s", delegator, roleName))
-			return // error
+			return fmt.Errorf("invalid delegator type %T for role %s", delegator, roleName)
 		}
-	}
+	})
 }
 
 // checkRoleSignatures returns whether the given data (for the given role name)

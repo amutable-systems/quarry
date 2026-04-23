@@ -1,0 +1,182 @@
+// Copyright (C) 2026 Amutable GmbH
+
+package generics_test
+
+import (
+	"fmt"
+	"iter"
+	"strconv"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"go.amutable.dev/quarry/internal/generics"
+)
+
+// ExampleErrorIter demonstrates building an [iter.Seq2][T, error] from a
+// producer that signals termination by returning an error, without having to
+// yield a zero value on every error path.
+func ExampleErrorIter() {
+	parseNums := func(lines []string) iter.Seq2[int, error] {
+		return generics.ErrorIter(func(yield func(int) bool) error {
+			for i, line := range lines {
+				n, err := strconv.Atoi(line)
+				if err != nil {
+					return fmt.Errorf("line %d: %w", i, err)
+				}
+				if !yield(n) {
+					return nil
+				}
+			}
+			return nil
+		})
+	}
+
+	for n, err := range parseNums([]string{"1", "2", "oops", "4"}) {
+		if err != nil {
+			fmt.Println("error:", err)
+			break
+		}
+		fmt.Println(n)
+	}
+	// Output:
+	// 1
+	// 2
+	// error: line 2: strconv.Atoi: parsing "oops": invalid syntax
+}
+
+func TestErrorIter(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		produce  func(yield func(int) bool) error
+		wantVals []int
+		wantErr  error
+	}{
+		{
+			"AllSuccess",
+			func(yield func(int) bool) error {
+				for _, v := range []int{1, 2, 3} {
+					if !yield(v) {
+						return nil
+					}
+				}
+				return nil
+			},
+			[]int{1, 2, 3},
+			nil,
+		},
+		{
+			"Empty",
+			func(_ func(int) bool) error {
+				return nil
+			},
+			nil,
+			nil,
+		},
+		{
+			"OnlyError",
+			func(_ func(int) bool) error {
+				return errSentinel
+			},
+			nil,
+			errSentinel,
+		},
+		{
+			"ValuesThenError",
+			func(yield func(int) bool) error {
+				for _, v := range []int{1, 2} {
+					if !yield(v) {
+						return nil
+					}
+				}
+				return errSentinel
+			},
+			[]int{1, 2},
+			errSentinel,
+		},
+		{
+			"SingleValue",
+			func(yield func(int) bool) error {
+				yield(42)
+				return nil
+			},
+			[]int{42},
+			nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seq := generics.ErrorIter(tc.produce)
+
+			// Iterate twice to verify reusability.
+			for range 2 {
+				got, err := generics.CollectErrorSeq(seq)
+				assert.Equal(t, tc.wantVals, got)
+				assert.ErrorIs(t, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestErrorIter_ZeroValueOnError(t *testing.T) {
+	seq := generics.ErrorIter(func(yield func(int) bool) error {
+		yield(42)
+		return errSentinel
+	})
+
+	var pairs []intOrError
+	for v, err := range seq {
+		pairs = append(pairs, intOrError{v: v, err: err})
+	}
+
+	require.Len(t, pairs, 2)
+	assert.Equal(t, 42, pairs[0].v)
+	assert.NoError(t, pairs[0].err) //nolint:testifylint // we are checking error values directly
+	assert.Zero(t, pairs[1].v, "value yielded alongside error should be the zero value")
+	assert.ErrorIs(t, pairs[1].err, errSentinel)
+}
+
+func TestErrorIter_EarlyTermination(t *testing.T) {
+	var produced int
+	seq := generics.ErrorIter(func(yield func(int) bool) error {
+		for _, v := range []int{1, 2, 3, 4, 5} {
+			produced++
+			if !yield(v) {
+				return nil
+			}
+		}
+		return nil
+	})
+
+	for range seq {
+		break
+	}
+	assert.Equal(t, 1, produced, "producer should stop after consumer breaks")
+}
+
+func TestChained_ErrorIter_CollectErrorSeq(t *testing.T) {
+	// Parse a set of strings as ints, terminating iteration as soon as one
+	// fails to parse.
+	parseNums := func(lines []string) iter.Seq2[int, error] {
+		return generics.ErrorIter(func(yield func(int) bool) error {
+			for i, line := range lines {
+				n, err := strconv.Atoi(line)
+				if err != nil {
+					return fmt.Errorf("line %d: %w", i, err)
+				}
+				if !yield(n) {
+					return nil
+				}
+			}
+			return nil
+		})
+	}
+
+	got, err := generics.CollectErrorSeq(parseNums([]string{"1", "2", "3"}))
+	require.NoError(t, err)
+	assert.Equal(t, []int{1, 2, 3}, got)
+
+	got, err = generics.CollectErrorSeq(parseNums([]string{"1", "2", "nope", "4"}))
+	require.Error(t, err)
+	assert.Equal(t, []int{1, 2}, got)
+}
