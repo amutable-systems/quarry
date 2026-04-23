@@ -3,6 +3,7 @@
 package tufext
 
 import (
+	"context"
 	"fmt"
 	"iter"
 
@@ -72,6 +73,34 @@ func GCRoleKeys[T KeyedRoles](meta *T) error {
 		key, ok := (*keySlot)[string(keyID)]
 		if !ok {
 			return fmt.Errorf("key %s referenced by role %s but not in the key set", keyID, roleName)
+		}
+		// Only copy keys that are actually referenced.
+		keys[string(keyID)] = key
+	}
+	*keySlot = keys
+	return nil
+}
+
+// FillRoleKeys fills any missing keys in a [KeyedRoles] from the given
+// [keystore.Store]. This operation also implicitly does a [GCRoleKeys].
+func FillRoleKeys[T KeyedRoles](ctx context.Context, store *keystore.Store, meta *T) error {
+	keySlot, keyIDs, err := iterRoleKeys(meta)
+	if err != nil {
+		return err
+	}
+	if keySlot == nil || keyIDs == nil {
+		// Nothing to do.
+		return nil
+	}
+	keys := make(map[string]*tufmetadata.Key, len(*keySlot))
+	for roleName, keyID := range keyIDs {
+		key, ok := (*keySlot)[string(keyID)]
+		if !ok {
+			genericKey, err := store.GetKey(ctx, keyID)
+			if err != nil {
+				return fmt.Errorf("key %s referenced by role %s but cannot be retreived from key store: %w", keyID, roleName, err)
+			}
+			key = &genericKey.Public
 		}
 		// Only copy keys that are actually referenced.
 		keys[string(keyID)] = key
