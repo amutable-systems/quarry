@@ -8,14 +8,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"iter"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 
 	"cyphar.com/go-pathrs"
 	"golang.org/x/sys/unix"
 
+	"go.amutable.dev/quarry/internal/generics"
 	"go.amutable.dev/quarry/internal/keystore/keyopts"
 	"go.amutable.dev/quarry/internal/pathrsext"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
@@ -46,6 +50,18 @@ func (id KeyID) subpath() (string, error) {
 		return "", fmt.Errorf("invalid key id %q", id)
 	}
 	return string(id) + ".json", nil
+}
+
+func keyidFromPath(path string) (KeyID, error) {
+	id, hadSuffix := strings.CutSuffix(path, ".json")
+	if !hadSuffix {
+		return BadKeyID, fmt.Errorf("%q is not a valid keyid path: not a json file", path)
+	}
+	keyID := KeyID(id)
+	if !keyID.IsValid() {
+		return BadKeyID, fmt.Errorf("%q is not a valid keyid path: invalid key name %s", path, id)
+	}
+	return keyID, nil
 }
 
 // Store represents a quarry keystore, containing references to [GenericKey]s
@@ -215,6 +231,41 @@ func (ks *Store) UnlinkKey(_ context.Context, keyID KeyID) error {
 		return err
 	}
 	return ks.sync()
+}
+
+// ListKeyIDs returns an iterator over the set of [KeyID]s in the [Store].
+func (ks *Store) ListKeyIDs(ctx context.Context) iter.Seq2[KeyID, error] {
+	return generics.ErrorIter(func(yield func(KeyID) bool) (Err error) {
+		seekFd, err := ks.storeDir.OpenFile(".", unix.O_DIRECTORY)
+		if err != nil {
+			return err
+		}
+		defer funchelpers.VerifyClose(&Err, seekFd)
+
+		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			names, err := seekFd.Readdirnames(32)
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			for _, name := range names {
+				keyID, err := keyidFromPath(name)
+				if err != nil {
+					// TODO: Add logging...
+					continue
+				}
+				if !yield(keyID) {
+					return nil
+				}
+			}
+		}
+		return nil
+	})
 }
 
 // TODO: Do we need a DeleteKey which calls into the driver to also delete any

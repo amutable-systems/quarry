@@ -573,3 +573,171 @@ func TestStoreFromFd(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, keyID, retrievedID)
 }
+
+func TestStore_ListKeyIDs_Empty(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	var got []keystore.KeyID
+	for keyID, err := range store.ListKeyIDs(ctx) {
+		require.NoError(t, err)
+		got = append(got, keyID)
+	}
+	assert.Empty(t, got)
+}
+
+func TestStore_ListKeyIDs_Single(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	key := generateTestKey(t)
+	want, err := store.AddKey(ctx, key)
+	require.NoError(t, err)
+
+	var got []keystore.KeyID
+	for keyID, err := range store.ListKeyIDs(ctx) {
+		require.NoError(t, err)
+		got = append(got, keyID)
+	}
+	assert.Equal(t, []keystore.KeyID{want}, got)
+}
+
+func TestStore_ListKeyIDs_Multiple(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	var want []keystore.KeyID //nolint:prealloc // test code
+	for range 5 {
+		key := generateTestKey(t)
+		keyID, err := store.AddKey(ctx, key)
+		require.NoError(t, err)
+		want = append(want, keyID)
+	}
+
+	var got []keystore.KeyID
+	for keyID, err := range store.ListKeyIDs(ctx) {
+		require.NoError(t, err)
+		got = append(got, keyID)
+	}
+	// Directory order is unspecified, so compare without order.
+	assert.ElementsMatch(t, want, got)
+}
+
+func TestStore_ListKeyIDs_AfterUnlink(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	var keyIDs []keystore.KeyID //nolint:prealloc // test code
+	for range 3 {
+		key := generateTestKey(t)
+		keyID, err := store.AddKey(ctx, key)
+		require.NoError(t, err)
+		keyIDs = append(keyIDs, keyID)
+	}
+
+	// Unlink the middle key.
+	require.NoError(t, store.UnlinkKey(ctx, keyIDs[1]))
+
+	var got []keystore.KeyID
+	for keyID, err := range store.ListKeyIDs(ctx) {
+		require.NoError(t, err)
+		got = append(got, keyID)
+	}
+	assert.ElementsMatch(t, []keystore.KeyID{keyIDs[0], keyIDs[2]}, got)
+}
+
+func TestStore_ListKeyIDs_ContextCanceled(t *testing.T) {
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	// Seed a few keys so the iterator has something to walk if the ctx
+	// check were skipped.
+	for range 3 {
+		key := generateTestKey(t)
+		_, err := store.AddKey(context.Background(), key)
+		require.NoError(t, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var sawErr error
+	var yielded int
+	for _, err := range store.ListKeyIDs(ctx) {
+		if err != nil {
+			sawErr = err
+			break
+		}
+		yielded++
+	}
+	assert.ErrorIs(t, sawErr, context.Canceled) //nolint:testifylint // we want the yielded check to also run
+	assert.Zero(t, yielded, "no key IDs should be yielded once ctx is canceled")
+}
+
+func TestStore_ListKeyIDs_EarlyTermination(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	for range 5 {
+		key := generateTestKey(t)
+		_, err := store.AddKey(ctx, key)
+		require.NoError(t, err)
+	}
+
+	var count int
+	for _, err := range store.ListKeyIDs(ctx) {
+		require.NoError(t, err)
+		count++
+		break
+	}
+	assert.Equal(t, 1, count)
+}
+
+func TestStore_ListKeyIDs_Reiterate(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	defer store.Close() //nolint:errcheck // test code
+
+	var want []keystore.KeyID //nolint:prealloc // test code
+	for range 3 {
+		key := generateTestKey(t)
+		keyID, err := store.AddKey(ctx, key)
+		require.NoError(t, err)
+		want = append(want, keyID)
+	}
+
+	seq := store.ListKeyIDs(ctx)
+	for range 2 {
+		var got []keystore.KeyID
+		for keyID, err := range seq {
+			require.NoError(t, err)
+			got = append(got, keyID)
+		}
+		assert.ElementsMatch(t, want, got)
+	}
+}
