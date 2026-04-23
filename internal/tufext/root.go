@@ -50,6 +50,9 @@ func NewRootBuilder() *RootBuilder {
 //
 // TODO: Should we return the old value if we're replacing it...?
 func (builder *RootBuilder) AddRole(roleName string, threshold int, keys ...keystore.PublicKey) (*tufmetadata.Role, error) {
+	// TODO: Should we generate additional keys if there are fewer than the
+	// threshold? hardhat open-codes this but it might be a useful thing to
+	// do...
 	if threshold <= 0 || len(keys) < threshold {
 		return nil, fmt.Errorf("threshold %d is invalid with %d keys", threshold, len(keys))
 	}

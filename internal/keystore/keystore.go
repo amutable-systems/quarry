@@ -188,6 +188,9 @@ func (ks *Store) AddKey(_ context.Context, key *GenericKey) (_ KeyID, Err error)
 // would be just as expensive as resolve), but it lets us avoid parsing
 // JSON...?
 
+// TODO: We probably want to have a way of just fetching a PublicKey from a
+// keystore (maybe even having a way to store public-only keys...?).
+
 // GetKey looks up the key with the given [KeyID] in the keystore and returns a
 // [GenericKey] if the key exists.
 func (ks *Store) GetKey(_ context.Context, keyID KeyID) (_ *GenericKey, Err error) {

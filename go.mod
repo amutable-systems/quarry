@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Amutable GmbH
+
 module go.amutable.dev/quarry
 
 go 1.25.5
@@ -9,6 +11,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/theupdateframework/go-tuf/v2 v2.4.1
 	github.com/tiendc/go-deepcopy v1.7.2
+	github.com/urfave/cli/v3 v3.8.0
 	golang.org/x/sys v0.42.0
 )
 
