@@ -454,9 +454,9 @@ func (tx *Transaction) bumpRevisions(ctx context.Context) (Err error) {
 // Default expiries for different role types.
 var (
 	DefaultRootExpiry      = 2 * 365 * 24 * time.Hour // 2 years
-	DefaultTimestampExpiry = 24 * time.Hour           // 1 day
-	DefaultSnapshotExpiry  = 7 * 24 * time.Hour       // 1 week
-	DefaultTargetsExpiry   = 7 * 24 * time.Hour       // 1 week
+	DefaultTimestampExpiry = (24 + 6) * time.Hour     // 1 day
+	DefaultSnapshotExpiry  = DefaultTargetsExpiry     // 1 week
+	DefaultTargetsExpiry   = (7*24 + 6) * time.Hour   // 1 week
 )
 
 // expiry returns the duration to use when extending the expiry for the given
