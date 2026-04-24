@@ -493,6 +493,51 @@ func metaExpiry(meta any) (*time.Time, error) {
 	}
 }
 
+// BumpExpiry is shorthand to make bumping the expiry for a role (with flexible
+// policies) easier.
+//
+// The expiryFn closure is used to configure the new expiry, if it returns nil
+// then the blob is left unmodified with its original expiry. If you return a
+// non-nil new expiry, any other changes to the provided role data structure
+// are also included in the updated role data.
+//
+// If expiryFn is nil then the default expiry is used unconditionally.
+func (tx *Transaction) BumpExpiry(ctx context.Context, roleName string, expiryFn func(oldExpiry time.Time, roleData any) (*time.Time, error)) (Err error) {
+	if err := tx.valid(); err != nil {
+		return err
+	}
+	defer tx.invalidateOnError(&Err)
+
+	if expiryFn == nil {
+		expiryFn = func(_ time.Time, _ any) (*time.Time, error) {
+			expiresAfter := tx.expiry(roleName)
+			newExpiry := tx.RefTime.Add(expiresAfter)
+			return &newExpiry, nil
+		}
+	}
+
+	roleData, err := tx.RoleData(ctx, roleName)
+	if err != nil {
+		return fmt.Errorf("failed to fetch role %s data: %w", roleName, err)
+	}
+	expiresSlot, err := metaExpiry(roleData)
+	if err != nil {
+		return fmt.Errorf("could not get role %s expiry slot: %w", roleName, err)
+	}
+
+	newExpiry, err := expiryFn(*expiresSlot, roleData)
+	if err != nil {
+		return err
+	}
+	if newExpiry != nil {
+		*expiresSlot = *newExpiry
+		if err := tx.UpdateRoleData(roleName, roleData); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // bumpExpiries updates the expiries of all dirty metafiles that need to be
 // re-signed.
 //
@@ -508,34 +553,27 @@ func (tx *Transaction) bumpExpiries(ctx context.Context) (Err error) {
 	defer tx.invalidateOnError(&Err)
 
 	for roleName := range tx.dirty {
-		roleData, err := tx.RoleData(ctx, roleName)
-		if err != nil {
-			return fmt.Errorf("failed to fetch role %s data: %w", roleName, err)
-		}
-		if needsBump, err := tx.checkNeedsBump(ctx, roleName, roleData); err != nil {
-			return fmt.Errorf("failed to check if expiry bump for role %s is needed: %w", roleName, err)
-		} else if !needsBump {
-			// If the signed portion has not been modified we do not need to
-			// bump the expiries and we will not need to re-sign it either.
-			continue
-		}
+		if err := tx.BumpExpiry(ctx, roleName, func(oldExpiry time.Time, roleData any) (*time.Time, error) {
+			if needsBump, err := tx.checkNeedsBump(ctx, roleName, roleData); err != nil {
+				return nil, fmt.Errorf("failed to check if expiry bump for role %s is needed: %w", roleName, err)
+			} else if !needsBump {
+				// If the signed portion has not been modified we do not need to
+				// bump the expiries and we will not need to re-sign it either.
+				return nil, nil //nolint:nilnil // nil indicates no change needed
+			}
 
-		expiresSlot, err := metaExpiry(roleData)
-		if err != nil {
-			return fmt.Errorf("could not get role %s expiry slot: %w", roleName, err)
-		}
+			// TODO: We shouldn't update the timestamp if a TxnOp did it for us
+			// already. Unfortunately, to detect this we would need to cache
+			// the old version of every target file. The best we can do here is
+			// not *shorten* the expiry.
 
-		// TODO: We shouldn't update the timestamp if a TxnOp did it for us
-		// already. Unfortunately, to detect this we would need to cache the
-		// old version of every target file. The best we can do here is not
-		// *shorten* the expiry.
-
-		newExpiry := tx.RefTime.Add(tx.expiry(roleName))
-		if newExpiry.After(*expiresSlot) {
-			*expiresSlot = newExpiry
-		}
-		if err := tx.UpdateRoleData(roleName, roleData); err != nil {
-			return err
+			newExpiry := tx.RefTime.Add(tx.expiry(roleName))
+			if newExpiry.Before(oldExpiry) {
+				return nil, nil //nolint:nilnil // nil indicates no change needed
+			}
+			return &newExpiry, nil
+		}); err != nil {
+			return fmt.Errorf("failed to bump expiry for role %s: %w", roleName, err)
 		}
 	}
 	return nil

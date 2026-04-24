@@ -5,7 +5,10 @@
 package tufrepo_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io/fs"
 	"testing"
 	"time"
 
@@ -407,4 +410,262 @@ func TestSign_NoDelegatorForOrphanedRole(t *testing.T) {
 	_, err = tx.Sign(ctx, bs.store)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "could not find any delegators for role orphan-role")
+}
+
+// BumpExpiry must persist a non-nil new expiry for every role type the
+// metaExpiry switch covers -- the four core roles plus delegated targets.
+// The closure must also see the live expiry for that role as oldExpiry.
+func TestBumpExpiry_WritesNewExpiryForAllRoles(t *testing.T) {
+	for _, roleName := range []string{
+		tufmetadata.ROOT, tufmetadata.TIMESTAMP, tufmetadata.SNAPSHOT,
+		tufmetadata.TARGETS, "my-delegation",
+	} {
+		t.Run(roleName, func(t *testing.T) {
+			ctx := context.Background()
+			bs := bootstrapRepo(t, withDelegation("my-delegation"))
+
+			tx, err := bs.repo.TxnStart(ctx)
+			require.NoError(t, err)
+
+			origData, err := tx.RoleData(ctx, roleName)
+			require.NoError(t, err)
+			origExpires := tufrepo.SignedExpires(t, origData)
+			newExpires := origExpires.Add(99 * time.Hour)
+
+			var seenOld time.Time
+			err = tx.BumpExpiry(ctx, roleName, func(oldExpiry time.Time, _ any) (*time.Time, error) {
+				seenOld = oldExpiry
+				return &newExpires, nil
+			})
+			require.NoError(t, err)
+			assert.True(t, seenOld.Equal(origExpires),
+				"closure should see live expiry %v, got %v", origExpires, seenOld)
+
+			got, err := tx.RoleData(ctx, roleName)
+			require.NoError(t, err)
+			assert.True(t, newExpires.Equal(tufrepo.SignedExpires(t, got)),
+				"role expiry should be %v, got %v", newExpires, tufrepo.SignedExpires(t, got))
+		})
+	}
+}
+
+// A nil return from the closure must leave the role untouched -- expiry
+// unchanged, and nothing marked dirty (observed via a follow-up Sign that
+// produces no version bump).
+func TestBumpExpiry_NilReturnLeavesRoleUnchanged(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	origData, err := tx.RoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	origExpires := tufrepo.SignedExpires(t, origData)
+	origVersion := tufrepo.SignedVersion(t, origData)
+
+	err = tx.BumpExpiry(ctx, tufmetadata.TARGETS, func(time.Time, any) (*time.Time, error) {
+		return nil, nil //nolint:nilnil // nil indicates no change needed
+	})
+	require.NoError(t, err)
+
+	after, err := tx.RoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	assert.True(t, origExpires.Equal(tufrepo.SignedExpires(t, after)),
+		"expiry must not change when closure returns nil")
+
+	_, err = tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+	afterSign, err := tx.RoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	assert.Equal(t, origVersion, tufrepo.SignedVersion(t, afterSign),
+		"targets version must not bump when BumpExpiry was a no-op")
+}
+
+// An error returned from the closure must propagate verbatim and invalidate
+// the transaction.
+func TestBumpExpiry_ClosureErrorInvalidatesTransaction(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	boom := errors.New("boom")
+	err = tx.BumpExpiry(ctx, tufmetadata.TARGETS, func(time.Time, any) (*time.Time, error) {
+		return nil, boom
+	})
+	require.ErrorIs(t, err, boom)
+
+	_, err = tx.RootRoleData(ctx)
+	require.ErrorIs(t, err, boom)
+}
+
+// An unknown role name falls through RoleData to TargetsRoleData, which must
+// surface fs.ErrNotExist before the closure ever runs.
+func TestBumpExpiry_UnknownRoleError(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	err = tx.BumpExpiry(ctx, "never-existed", func(time.Time, any) (*time.Time, error) {
+		t.Fatal("closure must not run when the role cannot be fetched")
+		return nil, nil //nolint:nilnil // unreachable, closure must not run
+	})
+	require.ErrorIs(t, err, fs.ErrNotExist)
+}
+
+// A pre-invalidated transaction must reject BumpExpiry outright, without
+// invoking the closure.
+func TestBumpExpiry_RejectsInvalidatedTransaction(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	boom := errors.New("poison")
+	err = tx.Apply(ctx, tufrepo.NewTxnOp("poison", func(context.Context, *tufrepo.Transaction) error {
+		return boom
+	}))
+	require.ErrorIs(t, err, boom)
+
+	err = tx.BumpExpiry(ctx, tufmetadata.TARGETS, func(time.Time, any) (*time.Time, error) {
+		t.Fatal("closure must not run on a failed transaction")
+		return nil, nil //nolint:nilnil // unreachable, closure must not run
+	})
+	require.ErrorIs(t, err, boom)
+}
+
+// Per the doc comment, when the closure returns a non-nil expiry, any other
+// modifications the closure made to the role data must also be committed.
+// A follow-up Sign must also re-sign the role -- BumpExpiry has to dirty the
+// role for bumpExpiries's caller contract to hold.
+func TestBumpExpiry_CommitsClosureMutationsWithNewExpiry(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	origData, err := tx.RoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	origVersion := tufrepo.SignedVersion(t, origData)
+	newExpires := tufrepo.SignedExpires(t, origData).Add(42 * time.Hour)
+
+	err = tx.BumpExpiry(ctx, tufmetadata.TARGETS, func(_ time.Time, roleData any) (*time.Time, error) {
+		targets := roleData.(*tufmetadata.Metadata[tufmetadata.TargetsType]) //nolint:forcetypeassert // tx.RoleData guarantees this type for TARGETS
+		if targets.Signed.Targets == nil {
+			targets.Signed.Targets = map[string]*tufmetadata.TargetFiles{}
+		}
+		targets.Signed.Targets["foo/bar"] = &tufmetadata.TargetFiles{
+			Length: 7,
+			Hashes: tufmetadata.Hashes{"sha256": bytes.Repeat([]byte{0xCD}, 32)},
+		}
+		return &newExpires, nil
+	})
+	require.NoError(t, err)
+
+	got, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	require.Contains(t, got.Signed.Targets, "foo/bar")
+	assert.Equal(t, int64(7), got.Signed.Targets["foo/bar"].Length)
+	assert.True(t, newExpires.Equal(got.Signed.Expires))
+
+	// Sign must process the dirtied role -- version bumps and the new
+	// signatures verify against root.
+	_, err = tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+	signed, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	assert.Greater(t, signed.Signed.Version, origVersion,
+		"targets version must bump after Sign since BumpExpiry dirtied the role")
+	assertRootDelegates(ctx, t, tx, tufmetadata.TARGETS, signed)
+}
+
+// A nil expiryFn must drive the default per-role expiry via tx.expiry's
+// dispatch -- each core role gets its own default, and delegated targets
+// fall through to DefaultTargetsExpiry.
+func TestBumpExpiry_NilClosureAppliesDefaultForAllRoles(t *testing.T) {
+	for _, tc := range []struct {
+		roleName string
+		want     time.Duration
+	}{
+		{tufmetadata.ROOT, tufrepo.DefaultRootExpiry},
+		{tufmetadata.TIMESTAMP, tufrepo.DefaultTimestampExpiry},
+		{tufmetadata.SNAPSHOT, tufrepo.DefaultSnapshotExpiry},
+		{tufmetadata.TARGETS, tufrepo.DefaultTargetsExpiry},
+		{"my-delegation", tufrepo.DefaultTargetsExpiry},
+	} {
+		t.Run(tc.roleName, func(t *testing.T) {
+			ctx := context.Background()
+			bs := bootstrapRepo(t, withDelegation("my-delegation"))
+
+			tx, err := bs.repo.TxnStart(ctx)
+			require.NoError(t, err)
+
+			require.NoError(t, tx.BumpExpiry(ctx, tc.roleName, nil))
+
+			got, err := tx.RoleData(ctx, tc.roleName)
+			require.NoError(t, err)
+			want := tx.RefTime.Add(tc.want)
+			assert.True(t, want.Equal(tufrepo.SignedExpires(t, got)),
+				"expiry should be RefTime + %v = %v, got %v",
+				tc.want, want, tufrepo.SignedExpires(t, got))
+		})
+	}
+}
+
+// The "unconditional" half of the nil-closure contract: even when the current
+// expiry is farther in the future than RefTime + default, nil still clobbers
+// it. The internal bumpExpiries closure guards against shortening; this path
+// intentionally does not.
+func TestBumpExpiry_NilClosureOverwritesFutureExpiry(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	// Strictly farther than RefTime+default so nil must shorten, independent
+	// of what DefaultTargetsExpiry happens to be set to today.
+	farFuture := tx.RefTime.Add(2 * tufrepo.DefaultTargetsExpiry)
+	err = tx.BumpExpiry(ctx, tufmetadata.TARGETS, func(time.Time, any) (*time.Time, error) {
+		return &farFuture, nil
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, tx.BumpExpiry(ctx, tufmetadata.TARGETS, nil))
+
+	got, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	want := tx.RefTime.Add(tufrepo.DefaultTargetsExpiry)
+	assert.True(t, want.Equal(got.Signed.Expires),
+		"nil closure should overwrite far-future %v with %v, got %v",
+		farFuture, want, got.Signed.Expires)
+}
+
+// The mirror case: a nil return discards every modification the closure made
+// to the role data, not just the expiry.
+func TestBumpExpiry_DiscardsClosureMutationsOnNilReturn(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	err = tx.BumpExpiry(ctx, tufmetadata.TARGETS, func(_ time.Time, roleData any) (*time.Time, error) {
+		targets := roleData.(*tufmetadata.Metadata[tufmetadata.TargetsType]) //nolint:forcetypeassert // tx.RoleData guarantees this type for TARGETS
+		targets.Signed.Targets = map[string]*tufmetadata.TargetFiles{
+			"ghost": {Length: 1},
+		}
+		return nil, nil //nolint:nilnil // nil indicates no change needed
+	})
+	require.NoError(t, err)
+
+	got, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	assert.NotContains(t, got.Signed.Targets, "ghost")
 }

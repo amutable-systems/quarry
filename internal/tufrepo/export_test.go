@@ -5,6 +5,7 @@ package tufrepo
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
@@ -22,6 +23,15 @@ func HashMetaFile[T tufmetadata.Roles](ctx context.Context, meta *tufmetadata.Me
 func SignedVersion(t *testing.T, meta any) int64 {
 	t.Helper()
 	slot, err := metaVersion(meta)
+	require.NoError(t, err)
+	return *slot
+}
+
+// SignedExpires extracts the Signed.Expires field from any of the four TUF
+// role metadata types, delegating to [metaExpiry].
+func SignedExpires(t *testing.T, meta any) time.Time {
+	t.Helper()
+	slot, err := metaExpiry(meta)
 	require.NoError(t, err)
 	return *slot
 }
