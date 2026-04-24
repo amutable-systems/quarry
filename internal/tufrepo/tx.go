@@ -19,7 +19,6 @@ import (
 
 	"github.com/secure-systems-lab/go-securesystemslib/cjson"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
-	"github.com/tiendc/go-deepcopy"
 
 	"go.amutable.dev/quarry/internal/generics"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
@@ -172,16 +171,6 @@ func (tx *Transaction) isDirty(roleName string) bool {
 	return ok
 }
 
-// dupMetadata makes a deep copy of [tufmetadata.Metadata].
-func dupMetadata[T tufmetadata.Roles, M tufmetadata.Metadata[T]](metadata *M) (*M, error) {
-	var metacopy M
-	err := deepcopy.Copy(&metacopy, metadata)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make a deep copy of metadata: %w", err)
-	}
-	return &metacopy, nil
-}
-
 // RootRoleData returns the root role data for this transaction.
 //
 // This method is intended to be called from [TxnOp.ApplyToTxn].
@@ -195,7 +184,7 @@ func (tx *Transaction) RootRoleData(_ context.Context) (_ *tufmetadata.Metadata[
 	if root == nil {
 		root = tx.root
 	}
-	return dupMetadata(root)
+	return generics.DeepCopy(root)
 }
 
 // TimestampRoleData returns the timestamp role data for this transaction.
@@ -207,7 +196,7 @@ func (tx *Transaction) TimestampRoleData(_ context.Context) (_ *tufmetadata.Meta
 	}
 	defer tx.invalidateOnError(&Err)
 
-	return dupMetadata(tx.timestamp)
+	return generics.DeepCopy(tx.timestamp)
 }
 
 // SnapshotRoleData returns the snapshot role data for this transaction.
@@ -219,7 +208,7 @@ func (tx *Transaction) SnapshotRoleData(_ context.Context) (_ *tufmetadata.Metad
 	}
 	defer tx.invalidateOnError(&Err)
 
-	return dupMetadata(tx.snapshot)
+	return generics.DeepCopy(tx.snapshot)
 }
 
 // TargetsRoleData returns the targets role data for this transaction for the
@@ -237,7 +226,7 @@ func (tx *Transaction) TargetsRoleData(_ context.Context, roleName string) (_ *t
 	if !ok {
 		return nil, fmt.Errorf("unknown role %s: %w", roleName, fs.ErrNotExist)
 	}
-	return dupMetadata(data)
+	return generics.DeepCopy(data)
 }
 
 // RoleData returns the role data for any TUF role name. This is just a wrapper
@@ -294,13 +283,13 @@ func parseRoleData[T tufmetadata.Roles](roleName string, roleData any) (*tufmeta
 		}
 		parsed = &meta
 	case tufmetadata.Metadata[T]:
-		meta, err := dupMetadata(&roleData)
+		meta, err := generics.DeepCopy(&roleData)
 		if err != nil {
 			return nil, err
 		}
 		parsed = meta
 	case *tufmetadata.Metadata[T]:
-		meta, err := dupMetadata(roleData)
+		meta, err := generics.DeepCopy(roleData)
 		if err != nil {
 			return nil, err
 		}
