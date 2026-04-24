@@ -768,7 +768,7 @@ func TestTxnCommit_ClobberRollsBackVersionedBlobs(t *testing.T) {
 	for _, role := range orphanRoles {
 		data, err := tx.RoleData(ctx, role)
 		require.NoError(t, err)
-		version := signedVersion(t, data)
+		version := tufrepo.SignedVersion(t, data)
 		wouldBeOrphans = append(wouldBeOrphans, fmt.Sprintf("%d.%s.json", version, role))
 	}
 

@@ -4,7 +4,9 @@ package tufrepo
 
 import (
 	"context"
+	"testing"
 
+	"github.com/stretchr/testify/require"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 )
 
@@ -13,6 +15,15 @@ import (
 // production code.
 func HashMetaFile[T tufmetadata.Roles](ctx context.Context, meta *tufmetadata.Metadata[T]) (*tufmetadata.MetaFiles, error) {
 	return hashMetaFile(ctx, meta)
+}
+
+// SignedVersion extracts the Signed.Version field from any of the four TUF
+// role metadata types, delegating to [metaVersion].
+func SignedVersion(t *testing.T, meta any) int64 {
+	t.Helper()
+	slot, err := metaVersion(meta)
+	require.NoError(t, err)
+	return *slot
 }
 
 // ErrMismatchedRole is exported for tests that want to assert the sentinel

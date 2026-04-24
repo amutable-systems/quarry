@@ -295,25 +295,6 @@ func assertRootDelegates[T tufmetadata.Roles](ctx context.Context, t *testing.T,
 	require.NoError(t, root.VerifyDelegate(roleName, meta))
 }
 
-// signedVersion extracts the Signed.Version field from any of the four TUF
-// role metadata types. Mirrors the switch in [tufrepo.metaVersion].
-func signedVersion(t *testing.T, meta any) int64 {
-	t.Helper()
-	switch m := meta.(type) {
-	case *tufmetadata.Metadata[tufmetadata.RootType]:
-		return m.Signed.Version
-	case *tufmetadata.Metadata[tufmetadata.TimestampType]:
-		return m.Signed.Version
-	case *tufmetadata.Metadata[tufmetadata.SnapshotType]:
-		return m.Signed.Version
-	case *tufmetadata.Metadata[tufmetadata.TargetsType]:
-		return m.Signed.Version
-	default:
-		t.Fatalf("signedVersion: unsupported type %T", meta)
-		return 0
-	}
-}
-
 // errReader is a throwaway [io.Reader] that returns a preset error.
 type errReader struct {
 	err error
