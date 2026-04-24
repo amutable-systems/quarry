@@ -521,10 +521,36 @@ func (r *Repository) TxnStart(ctx context.Context) (_ *Transaction, Err error) {
 	}, nil
 }
 
+// InitTxn starts a dummy "initial" transaction that can be used for
+// initialising a new repository.
+func InitTxn(initRoot *tufmetadata.Metadata[tufmetadata.RootType]) *Transaction {
+	refTime := time.Now().UTC()
+
+	tx := &Transaction{
+		RefTime:   refTime,
+		newRoot:   initRoot,
+		snapshot:  tufmetadata.Snapshot(refTime.Add(DefaultSnapshotExpiry)),
+		timestamp: tufmetadata.Timestamp(refTime.Add(DefaultTimestampExpiry)),
+		targets: map[string]*tufmetadata.Metadata[tufmetadata.TargetsType]{
+			tufmetadata.TARGETS: tufmetadata.Targets(refTime.Add(DefaultTargetsExpiry)),
+		},
+		oldTimestampETag: storeopts.ETag(""), // equivalent to NoClobber
+	}
+	for _, roleName := range tufmetadata.TOP_LEVEL_ROLE_NAMES {
+		tx.markDirty(roleName)
+	}
+	return tx
+}
+
 // ErrClobberedTransaction is returned from [Repository.TxnCommit] if the
 // transaction fails because the top-level timestamp of the repository changed
 // since [Repository.TxnStart].
 var ErrClobberedTransaction = errors.New("transaction rejected because repository state has changed")
+
+// ErrInvalidTransactionState is returned from [Repository.TxnCommit] if a
+// transaction has an internally invalid state that means it cannot committed
+// to a repository.
+var ErrInvalidTransactionState = errors.New("transaction is in an invalid state")
 
 // timestampRevisionAttribute is the name of the attribute for the top-level
 // timestamp.json that indicates the version of this timestamp.json file.
@@ -547,6 +573,12 @@ func (r *Repository) TxnCommit(ctx context.Context, tx *Transaction) (_ *tufmeta
 
 	// TODO: We should check that all of the blobs have valid signatures to
 	// make sure the user did not forget to call Sign.
+
+	// If we got here from an InitTxn (tx.root is nil), then the root needs to
+	// have a version of 1 to create a valid repository.
+	if tx.root == nil && tx.newRoot.Signed.Version != 1 {
+		return nil, fmt.Errorf("%w: initial root version must be 1", ErrInvalidTransactionState)
+	}
 
 	type uploadedBlob struct {
 		filename string
@@ -571,7 +603,7 @@ func (r *Repository) TxnCommit(ctx context.Context, tx *Transaction) (_ *tufmeta
 	}()
 
 	// Apply all of our new data files to the root. This includes the
-	// timestamp.json so we can keep historical copies in case we want to use
+	// N.timestamp.json so we can keep historical copies in case we want to use
 	// them for something else.
 	for role := range tx.dirty {
 		roleData, err := tx.RoleData(ctx, role)

@@ -35,7 +35,9 @@ func (tx *Transaction) findRoleDelegators(ctx context.Context, roleName string) 
 	return generics.ErrorIter(func(yield func(tufDelegatorType) bool) error {
 		if roleName == tufmetadata.ROOT && tx.newRoot != nil {
 			// root.json needs to be signed by the original and new roots.
-			if !yield(tx.root) {
+			// However, if tx.root is nil then we are coming from InitTxn and
+			// there is no previous root.
+			if tx.root != nil && !yield(tx.root) {
 				return nil
 			}
 		}
@@ -381,18 +383,6 @@ func (tx *Transaction) bumpRevisions(ctx context.Context) (Err error) {
 
 	timeVersion := tx.RefTime.UnixMilli()
 	for roleName := range tx.dirty {
-		var newVersion int64
-		if roleName == tufmetadata.ROOT {
-			// root.json version numbers *must* strictly increase by one each
-			// time.
-			newVersion = tx.root.Signed.Version + 1
-		} else {
-			// TODO: Make the mechanism for updating version numbers
-			// configurable. We would need to cache an old copy of snapshot to
-			// make this work...
-			newVersion = timeVersion
-		}
-
 		roleData, err := tx.RoleData(ctx, roleName)
 		if err != nil {
 			return fmt.Errorf("failed to fetch role %s data: %w", roleName, err)
@@ -403,25 +393,34 @@ func (tx *Transaction) bumpRevisions(ctx context.Context) (Err error) {
 			// If the signed portion has not been modified we do not need to
 			// bump the version and we will not need to re-sign it either.
 			//
-			// FIXME: Is this actually correct? By not bumping anything in the
-			// signed portions, committing this to the repository will cause it
-			// to try to overwrite an existing file -- in principle this is
-			// something we should avoid doing...
-			//
 			// TODO: We almost certainly want to detect if the file is expired
 			// and bump the version and expiry automatically in that case
 			// (though ideally that should be configurable).
 			continue
 		}
 
-		// TODO: We should probably check if a TxnOp touched the version number.
-		// If the revision is newer than the old snapshot then we shouldn't
-		// modify it again...
-
 		versionSlot, err := metaVersion(roleData)
 		if err != nil {
 			return fmt.Errorf("could not get role %s version slot: %w", roleName, err)
 		}
+		var newVersion int64
+		if roleName == tufmetadata.ROOT {
+			// root.json version numbers *must* strictly increase by one each
+			// time. If tx.root == nil then we are coming from InitTxn and so
+			// we do not touch the version number.
+			newVersion = *versionSlot
+			if tx.root != nil {
+				newVersion = tx.root.Signed.Version + 1
+			}
+		} else {
+			// TODO: Make the mechanism for updating version numbers
+			// configurable. We would need to cache an old copy of snapshot to
+			// make this work...
+			newVersion = timeVersion
+		}
+		// TODO: We should probably check if a TxnOp touched the version number.
+		// If the revision is newer than the old snapshot then we shouldn't
+		// modify it again...
 		*versionSlot = newVersion
 
 		if err := tx.UpdateRoleData(roleName, roleData); err != nil {
@@ -659,15 +658,20 @@ func (tx *Transaction) Sign(ctx context.Context, store *keystore.Store) (newKeys
 	// the root was rotated purely to bump the expiry then this isn't really
 	// necessary. Then again, maybe churning keys is a good idea...?
 	if tx.isDirty(tufmetadata.ROOT) {
-		// Don't touch the new root if it is already signed.
-		if signed, err := tx.checkRoleSignatures(ctx, tufmetadata.ROOT, tx.newRoot); err != nil {
-			return nil, fmt.Errorf("failed to detect if role root is already signed: %w", err)
-		} else if !signed {
-			newTimestampKeys, err := tx.rotateRoleKeys(ctx, tufmetadata.TIMESTAMP, store)
-			if err != nil {
-				return nil, fmt.Errorf("could not rotate timestamp keys: %w", err)
+		// If tx.root is nil then we are coming from InitTxn and there is
+		// no previous root so no need to rotate anything.
+		if tx.root != nil {
+			// Don't touch the new root if it is already signed.
+			if signed, err := tx.checkRoleSignatures(ctx, tufmetadata.ROOT, tx.newRoot); err != nil {
+				return nil, fmt.Errorf("failed to detect if role root is already signed: %w", err)
+			} else if !signed {
+				newTimestampKeys, err := tx.rotateRoleKeys(ctx, tufmetadata.TIMESTAMP, store)
+				if err != nil {
+					return nil, fmt.Errorf("could not rotate timestamp keys: %w", err)
+				}
+				newKeys = append(newKeys, newTimestampKeys...)
+				// TODO: We should probably remove these on error too...?
 			}
-			newKeys = append(newKeys, newTimestampKeys...)
 		}
 		// Sign the new root data -- for online repos this should effectively
 		// be a no-op (because users should provide a pre-signed blob) but for
