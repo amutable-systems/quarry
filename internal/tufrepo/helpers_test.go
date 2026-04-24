@@ -117,13 +117,19 @@ func bootstrapRepo(t *testing.T, opts ...bootstrapOption) *bootstrap {
 	_, _, err := repo.PutVersionedFile(ctx, tufmetadata.TARGETS, targets)
 	require.NoError(t, err)
 
-	// Root, referencing all top-level role keys.
-	root := tufmetadata.Root(refTime.Add(tufrepo.DefaultRootExpiry))
-	require.NoError(t, root.Signed.AddKey(&rootKey.Public, tufmetadata.ROOT))
-	require.NoError(t, root.Signed.AddKey(&targetsKey.Public, tufmetadata.TARGETS))
-	require.NoError(t, root.Signed.AddKey(&snapshotKey.Public, tufmetadata.SNAPSHOT))
-	require.NoError(t, root.Signed.AddKey(&timestampKey.Public, tufmetadata.TIMESTAMP))
-	signMeta(ctx, t, root, rootKey)
+	// Root, referencing all top-level role keys, self-signed by the root key.
+	rootBuilder := tufext.NewRootBuilder()
+	rootBuilder.RefTime = refTime
+	_, err = rootBuilder.AddRole(tufmetadata.ROOT, 1, rootKey.Public)
+	require.NoError(t, err)
+	_, err = rootBuilder.AddRole(tufmetadata.TARGETS, 1, targetsKey.Public)
+	require.NoError(t, err)
+	_, err = rootBuilder.AddRole(tufmetadata.SNAPSHOT, 1, snapshotKey.Public)
+	require.NoError(t, err)
+	_, err = rootBuilder.AddRole(tufmetadata.TIMESTAMP, 1, timestampKey.Public)
+	require.NoError(t, err)
+	root, _, err := rootBuilder.Sign(ctx, store)
+	require.NoError(t, err)
 	_, _, err = repo.PutVersionedFile(ctx, tufmetadata.ROOT, root)
 	require.NoError(t, err)
 
