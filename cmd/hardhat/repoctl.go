@@ -43,7 +43,7 @@ var repoctlInitCommand = &cli.Command{
 		// TODO: Add flags for generating different kinds of keys.
 		&cli.StringMapFlag{
 			Name:  "keys",
-			Usage: "specify the keys used for each format (comma-separated set of keysformat is <role>=<keyid1>,<keyid2>,...)",
+			Usage: "specify the public keys used for each role (<role>=<type>:<key>,<type>:<key> -- valid types are 'keyid' and 'ed25519')",
 		},
 		// TODO: Ideally we would have an IntMapFlag...
 		&cli.StringMapFlag{
@@ -108,21 +108,10 @@ var repoctlInitCommand = &cli.Command{
 			toGenerateKeys[roleName] = threshold
 		}
 		// Collect specified keys.
-		roleKeyIDs := make(map[string][]keystore.KeyID, len(tufmetadata.TOP_LEVEL_ROLE_NAMES))
-		for roleName, keyIDsSpec := range cmd.StringMap("keys") {
-			var keyIDs []keystore.KeyID
-			for keyID := range strings.SplitSeq(keyIDsSpec, ",") {
-				// TODO: Maybe we should allow users to specify "generate"/"_"
-				// or some other special value to indicate that a key should be
-				// generated.
-				keyID := keystore.KeyID(keyID)
-				if !keyID.IsValid() {
-					return fmt.Errorf("specified key %q for role %s is an invalid key id", keyID, roleName)
-				}
-				keyIDs = append(keyIDs, keyID)
-			}
-			roleKeyIDs[roleName] = keyIDs
-			toGenerateKeys[roleName] -= len(keyIDs) // already have those keys
+		rolePubKeys := make(map[string][]string, len(tufmetadata.TOP_LEVEL_ROLE_NAMES))
+		for roleName, pubKeysSpec := range cmd.StringMap("keys") {
+			rolePubKeys[roleName] = strings.Split(pubKeysSpec, ",")
+			toGenerateKeys[roleName] -= len(rolePubKeys[roleName]) // already have those keys
 		}
 		// Generate remaining keys.
 		newKeyIDs := make(map[string][]keystore.KeyID, len(tufmetadata.TOP_LEVEL_ROLE_NAMES))
@@ -150,7 +139,7 @@ var repoctlInitCommand = &cli.Command{
 					return fmt.Errorf("failed to generate key %d (of %d) for role %s: %w", n+1, toGenerate, roleName, err)
 				}
 				newKeyIDs[roleName] = append(newKeyIDs[roleName], keyID)
-				roleKeyIDs[roleName] = append(roleKeyIDs[roleName], keyID)
+				rolePubKeys[roleName] = append(rolePubKeys[roleName], "keyid:"+string(keyID))
 			}
 		}
 
@@ -163,17 +152,16 @@ var repoctlInitCommand = &cli.Command{
 		if cmd.IsSet("expire-after") {
 			builder.ExpireAfter = cmd.Duration("expire-after")
 		}
-		for roleName, keyIDs := range roleKeyIDs {
-			publicKeys := make([]keystore.PublicKey, 0, len(keyIDs))
-			for _, keyID := range keyIDs {
-				// TODO: We need a mechanism to only fetch public keys.
-				key, err := store.GetKey(ctx, keyID)
+		for roleName, pubKeySpecs := range rolePubKeys {
+			pubKeys := make([]keystore.PublicKey, 0, len(pubKeySpecs))
+			for _, pubKeySpec := range pubKeySpecs {
+				pubKey, err := parsePublicKey(ctx, store, pubKeySpec)
 				if err != nil {
-					return fmt.Errorf("could not get key %s for role %s: %w", keyID, roleName, err)
+					return fmt.Errorf("invalid public key %s for role %s: %w", pubKeySpec, roleName, err)
 				}
-				publicKeys = append(publicKeys, key.Public)
+				pubKeys = append(pubKeys, *pubKey)
 			}
-			if _, err := builder.AddRole(roleName, roleThresholds[roleName], publicKeys...); err != nil {
+			if _, err := builder.AddRole(roleName, roleThresholds[roleName], pubKeys...); err != nil {
 				return fmt.Errorf("could not configure role %s keys: %w", roleName, err)
 			}
 		}
