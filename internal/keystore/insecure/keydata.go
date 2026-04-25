@@ -1,6 +1,6 @@
-// Copyright (C) 2026 Amutable GmbH
-
 //go:build insecure
+
+// Copyright (C) 2026 Amutable GmbH
 
 package insecure
 

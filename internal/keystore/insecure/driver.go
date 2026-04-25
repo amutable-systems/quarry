@@ -1,6 +1,6 @@
-// Copyright (C) 2026 Amutable GmbH
-
 //go:build insecure
+
+// Copyright (C) 2026 Amutable GmbH
 
 // Package insecure implements a very insecure [keystore.Driver] with raw
 // PKCS#8-encoded private keys. This driver is INSECURE and should only be used
