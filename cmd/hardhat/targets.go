@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/opencontainers/go-digest"
@@ -33,7 +35,16 @@ func openat(dirFile *os.File, path string, flags int) (*os.File, error) {
 	})
 }
 
-func addToTargets(ctx context.Context, builder *tufext.TargetsBuilder, file *os.File) error { //nolint:unparam // ctx might be used in the future
+func stripComponents(path string, toStrip int) string {
+	path = filepath.Clean(path) //nolint:forbidigo // lexical paths
+	components := strings.SplitN(path, "/", toStrip+1)
+	if len(components) <= toStrip {
+		return "."
+	}
+	return components[toStrip]
+}
+
+func addToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalPath string, file *os.File) error { //nolint:unparam // ctx might be used in the future
 	st, err := file.Stat()
 	if err != nil {
 		return fmt.Errorf("failed to fstat %s: %w", file.Name(), err)
@@ -44,18 +55,24 @@ func addToTargets(ctx context.Context, builder *tufext.TargetsBuilder, file *os.
 		if err != nil {
 			return fmt.Errorf("failed to iterate over directory %s: %w", file.Name(), err)
 		}
-		for _, subpath := range children {
-			subfile, err := openat(file, subpath, unix.O_RDONLY|unix.O_NOFOLLOW)
+		for _, child := range children {
+			logicalSubpath := filepath.Join(logicalPath, child) //nolint:forbidigo // lexical paths
+			subfile, err := openat(file, child, unix.O_RDONLY|unix.O_NOFOLLOW)
 			if err != nil {
-				return fmt.Errorf("could not open child %s: %w", subpath, err)
+				return fmt.Errorf("could not open child %s: %w", logicalSubpath, err)
 			}
-			err = addToTargets(ctx, builder, subfile)
+			err = addToTargets(ctx, builder, logicalSubpath, subfile)
 			_ = subfile.Close()
 			if err != nil {
 				return err
 			}
 		}
 		return nil
+	}
+
+	// Make sure we don't end up with a nonsense name.
+	if filepath.Join("/", logicalPath) == "/" { //nolint:forbidigo // lexical paths
+		return fmt.Errorf("--skip-components value to large -- no components left for file %s", file.Name())
 	}
 
 	// TODO: We should probably support specifying a set of hashes.
@@ -67,10 +84,8 @@ func addToTargets(ctx context.Context, builder *tufext.TargetsBuilder, file *os.
 	}
 	digest := digester.Digest()
 
-	// TODO: We probably need --skip-components or something to make this a
-	// little nicer to use when generating files for a directory.
-	if _, err := builder.AddTargetFile(file.Name(), size, digest); err != nil {
-		return fmt.Errorf("add file %s to targets data: %w", file.Name(), err)
+	if _, err := builder.AddTargetFile(logicalPath, size, digest); err != nil {
+		return fmt.Errorf("add file %s to targets data: %w", logicalPath, err)
 	}
 	return nil
 }
@@ -85,6 +100,10 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			Usage:     "output file for the TUF targets data",
 			TakesFile: true,
 			Value:     "-",
+		},
+		&cli.UintFlag{
+			Name:  "strip-components",
+			Usage: "strip N parent components from paths when adding them to target.json",
 		},
 		// TODO: Move --ref-time and --expire-after to utils?
 		&cli.TimestampFlag{
@@ -197,8 +216,9 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			if err != nil {
 				return err
 			}
-			if err := addToTargets(ctx, builder, file); err != nil {
-				return fmt.Errorf("failed to add %s to targets: %w", filename, err)
+			logicalFilename := stripComponents(filename, int(cmd.Uint("strip-components")))
+			if err := addToTargets(ctx, builder, logicalFilename, file); err != nil {
+				return fmt.Errorf("failed to add %s (as %s) to targets: %w", filename, logicalFilename, err)
 			}
 		}
 
