@@ -62,8 +62,8 @@ func TestDescribePolicy(t *testing.T) {
 // openEtagFile creates a new regular file in a per-test tempdir.
 func openEtagFile(t *testing.T, name string) *os.File {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), name)
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	path := filepath.Join(t.TempDir(), name)                  //nolint:forbidigo // test code
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644) //nolint:forbidigo // test code
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = f.Close() })
 	return f

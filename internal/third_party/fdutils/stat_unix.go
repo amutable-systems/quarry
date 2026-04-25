@@ -21,7 +21,7 @@ import (
 func Fstat(fd *os.File) (*unix.Stat_t, error) {
 	return WithFileFd2(fd, func(fd uintptr) (*unix.Stat_t, error) {
 		var stat unix.Stat_t
-		if err := unix.Fstat(int(fd), &stat); err != nil {
+		if err := unix.Fstat(int(fd), &stat); err != nil { //nolint:forbidigo // no path argument
 			return nil, os.NewSyscallError("fstat", err)
 		}
 		return &stat, nil

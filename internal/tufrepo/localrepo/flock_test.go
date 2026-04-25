@@ -16,7 +16,8 @@ import (
 
 func openLockFile(t *testing.T, dir string) *os.File {
 	t.Helper()
-	f, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_RDWR|os.O_CREATE, 0o644)
+	path := filepath.Join(dir, "lock")                        //nolint:forbidigo // test code
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644) //nolint:forbidigo // test code
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = f.Close() })
 	return f

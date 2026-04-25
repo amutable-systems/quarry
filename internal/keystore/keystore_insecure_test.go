@@ -165,7 +165,7 @@ func TestInsecure_StoreFromFd(t *testing.T) {
 
 	storeDir := t.TempDir()
 
-	dirFile, err := os.OpenFile(storeDir, unix.O_DIRECTORY, 0)
+	dirFile, err := os.OpenFile(storeDir, unix.O_DIRECTORY, 0) //nolint:forbidigo // test code
 	require.NoError(t, err)
 	defer dirFile.Close() //nolint:errcheck
 

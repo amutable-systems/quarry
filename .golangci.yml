@@ -13,6 +13,7 @@ linters:
     - errcheck
     - errorlint
     - exhaustive
+    - forbidigo
     - forcetypeassert
     - godot
     - goprintffuncname
@@ -36,6 +37,22 @@ linters:
     - unused
     - usetesting
   settings:
+    forbidigo:
+      forbid:
+        # Lexical path operations are _very_ dangerous to use.
+        - pattern: ^filepath\.(Join|Clean)$
+          pkg: ^path/filepath$
+        # These operations all can lead to accidentally reaeding or writing
+        # outside of the expected directory. They can be used, with great care.
+        - pattern: ^os\.(Create|Truncate|(Write|Read|Open)File|(Remove|Mkdir)\w*|(Syml|L)ink|Ch(own|mod))$
+          pkg: ^os$
+        # unix.*at syscalls are similarly dangeorus.
+        - pattern: ^unix\.\w*at$
+          pkg: ^golang.org/x/sys/unix$
+        # os.Is* doesn't handle wrapped error types, use errors.Is().
+        - pattern: ^os\.Is(Exist|NotExist|Permission|Timeout)$
+          pkg: ^os$
+      analyze-types: true
     govet:
       enable:
         - nilness

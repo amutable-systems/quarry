@@ -18,8 +18,8 @@ import (
 // openXattrFile returns a non-O_PATH fd, which is what get/setFileAttrs require.
 func openXattrFile(t *testing.T) *os.File {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "xattrs")
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	path := filepath.Join(t.TempDir(), "xattrs")              //nolint:forbidigo // test code
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644) //nolint:forbidigo // test code
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = f.Close() })
 	return f
