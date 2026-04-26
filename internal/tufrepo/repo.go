@@ -168,6 +168,9 @@ func (repo *Repository) PutVersionedFile(ctx context.Context, roleName string, r
 	if err != nil {
 		return -1, nil, fmt.Errorf("cannot compute version for %s role (type %T): %w", roleName, roleData, err)
 	}
+	if *version <= 0 {
+		return -1, nil, fmt.Errorf("invalid version number %d", *version)
+	}
 	filename := fmt.Sprintf("%d.%s.json", *version, roleName)
 
 	payload, err := cjson.EncodeCanonical(roleData)

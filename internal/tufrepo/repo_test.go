@@ -141,6 +141,21 @@ func TestRepository_PutVersionedFile_UnsupportedType(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported type")
 }
 
+func TestRepository_PutVersionedFile_InvalidVersion(t *testing.T) {
+	ctx := context.Background()
+	repo := newTestRepo(t)
+
+	for _, v := range []int64{0, -1} {
+		t.Run(fmt.Sprintf("v=%d", v), func(t *testing.T) {
+			root := tufext.DefaultRoot(time.Now().Add(time.Hour))
+			root.Signed.Version = v
+			_, _, err := repo.PutVersionedFile(ctx, tufmetadata.ROOT, root)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid version number")
+		})
+	}
+}
+
 func TestRepository_GetVersionedFile_InvalidVersion(t *testing.T) {
 	ctx := context.Background()
 	repo := newTestRepo(t)
