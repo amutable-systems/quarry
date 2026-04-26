@@ -38,7 +38,8 @@ func readBlob(ctx context.Context, t *testing.T, repo *tufrepo.Repository, filen
 
 // TestInitTxn_PreSignedRoot_EmptyRepo is the hardhat-style happy path: the
 // caller pre-signs the initial root via RootBuilder and InitTxn commits it
-// to an empty repo.
+// to an empty repo. Under the partial-init contract, only 1.root.json
+// lands -- snapshot, timestamp, and targets are not produced.
 func TestInitTxn_PreSignedRoot_EmptyRepo(t *testing.T) {
 	ctx := context.Background()
 	repo := newTestRepo(t)
@@ -82,41 +83,50 @@ func TestInitTxn_PreSignedRoot_EmptyRepo(t *testing.T) {
 		"pre-signed root signatures must be preserved through Sign")
 	assert.Equal(t, int64(1), postRoot.Signed.Version)
 
-	// Capture versioned filenames for the blob-existence check below.
-	txTargets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	// Empty InitTxn must not materialise snapshot, timestamp, or targets.
+	snap, err := tx.SnapshotRoleData(ctx)
 	require.NoError(t, err)
-	txSnapshot, err := tx.SnapshotRoleData(ctx)
+	assert.Nil(t, snap, "empty InitTxn must not materialise a snapshot")
+	ts, err := tx.TimestampRoleData(ctx)
 	require.NoError(t, err)
-	txTimestamp, err := tx.TimestampRoleData(ctx)
-	require.NoError(t, err)
+	assert.Nil(t, ts, "empty InitTxn must not materialise a timestamp")
+	_, err = tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.ErrorIs(t, err, fs.ErrNotExist,
+		"empty InitTxn must not materialise a targets role")
 
 	committedTs, err := repo.TxnCommit(ctx, tx)
 	require.NoError(t, err)
-	require.NotNil(t, committedTs)
-	assert.Greater(t, committedTs.Signed.Version, int64(1),
-		"timestamp version must be bumped above the fresh-metadata default")
+	assert.Nil(t, committedTs,
+		"empty InitTxn commit must not produce a timestamp.json")
 
-	// All four top-level roles must land as versioned blobs (the
-	// markDirty-all-four + versioned-loop contract).
-	expectedBlobs := []string{
-		fmt.Sprintf("%d.%s.json", int64(1), tufmetadata.ROOT),
-		fmt.Sprintf("%d.%s.json", txTargets.Signed.Version, tufmetadata.TARGETS),
-		fmt.Sprintf("%d.%s.json", txSnapshot.Signed.Version, tufmetadata.SNAPSHOT),
-		fmt.Sprintf("%d.%s.json", txTimestamp.Signed.Version, tufmetadata.TIMESTAMP),
+	// Only 1.root.json lands. No other versioned blobs, no timestamp.json.
+	rdr, _, err := repo.GetBlob(ctx, fmt.Sprintf("%d.%s.json", int64(1), tufmetadata.ROOT))
+	require.NoError(t, err)
+	require.NoError(t, rdr.Close())
+	for _, blob := range []string{
 		tufmetadata.TIMESTAMP + ".json",
-	}
-	for _, blob := range expectedBlobs {
-		rdr, _, err := repo.GetBlob(ctx, blob)
-		require.NoErrorf(t, err, "blob %s must exist after TxnCommit", blob)
-		require.NoError(t, rdr.Close())
+		fmt.Sprintf("1.%s.json", tufmetadata.TARGETS),
+		fmt.Sprintf("1.%s.json", tufmetadata.SNAPSHOT),
+		fmt.Sprintf("1.%s.json", tufmetadata.TIMESTAMP),
+	} {
+		_, _, err := repo.GetBlob(ctx, blob)
+		require.ErrorIsf(t, err, fs.ErrNotExist,
+			"blob %s must NOT exist after empty InitTxn commit", blob)
 	}
 
-	// TxnStart verifies the full delegation chain on the populated repo.
+	// TxnStart on a partial-init repo (just root) must succeed and reflect
+	// the same nil snapshot/timestamp shape.
 	tx2, err := repo.TxnStart(ctx)
 	require.NoError(t, err)
 	root, err := tx2.RootRoleData(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), root.Signed.Version)
+	snap2, err := tx2.SnapshotRoleData(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, snap2, "partial-init TxnStart must not synthesise a snapshot")
+	ts2, err := tx2.TimestampRoleData(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, ts2, "partial-init TxnStart must not synthesise a timestamp")
 }
 
 // TestInitTxn_OpenCodedRoot_EmptyRepo hands InitTxn an unsigned hand-rolled
@@ -204,11 +214,13 @@ func TestInitTxn_FailsOnExistingRepo(t *testing.T) {
 		"existing timestamp.json must not have been overwritten")
 }
 
-// TestInitTxn_FailsWhenOnlyTimestampExists exercises the atomic-swap
-// ClobberIfMatches("") guard specifically: with only timestamp.json
-// pre-existing, all versioned writes succeed, so the failure must land at
-// the swap step -- the only path that wraps as ErrClobberedTransaction.
-func TestInitTxn_FailsWhenOnlyTimestampExists(t *testing.T) {
+// TestInitTxn_WithTargets_FailsWhenOnlyTimestampExists exercises the
+// atomic-swap ClobberIfMatches("") guard via the InitTxn path: with only
+// timestamp.json pre-existing and the InitTxn carrying targets data so
+// that Sign produces snapshot+timestamp, all versioned writes succeed, so
+// the failure must land at the swap step -- the only path that wraps as
+// ErrClobberedTransaction.
+func TestInitTxn_WithTargets_FailsWhenOnlyTimestampExists(t *testing.T) {
 	ctx := context.Background()
 	repo := newTestRepo(t)
 	store, _ := newTestKeystore(t)
@@ -236,6 +248,13 @@ func TestInitTxn_FailsWhenOnlyTimestampExists(t *testing.T) {
 	require.NoError(t, err)
 
 	tx := tufrepo.InitTxn(signedRoot)
+	// Stage a targets role so Sign produces a snapshot and timestamp -- only
+	// then does TxnCommit reach the atomic-swap step we're trying to
+	// exercise.
+	targets := tufext.DefaultTargets(time.Now().Add(time.Hour))
+	targets.Signed.Version = 1
+	require.NoError(t, tx.UpdateRoleData(tufmetadata.TARGETS, targets))
+
 	_, err = tx.Sign(ctx, store)
 	require.NoError(t, err)
 
@@ -244,8 +263,10 @@ func TestInitTxn_FailsWhenOnlyTimestampExists(t *testing.T) {
 	require.NoError(t, err)
 	txSnapshot, err := tx.SnapshotRoleData(ctx)
 	require.NoError(t, err)
+	require.NotNil(t, txSnapshot, "snapshot must be materialised once targets exist")
 	txTimestamp, err := tx.TimestampRoleData(ctx)
 	require.NoError(t, err)
+	require.NotNil(t, txTimestamp, "timestamp must be materialised once snapshot exists")
 	wouldBeOrphans := []string{
 		fmt.Sprintf("%d.%s.json", int64(1), tufmetadata.ROOT),
 		fmt.Sprintf("%d.%s.json", txTargets.Signed.Version, tufmetadata.TARGETS),

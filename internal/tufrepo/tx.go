@@ -217,15 +217,19 @@ func (tx *Transaction) TargetsRoleData(_ context.Context, roleName string) (_ *t
 func (tx *Transaction) RoleData(ctx context.Context, roleName string) (_ any, Err error) {
 	switch roleName {
 	case tufmetadata.ROOT:
-		return tx.RootRoleData(ctx)
+		root, err := tx.RootRoleData(ctx)
+		return generics.PtrToAny(root), err
 	case tufmetadata.TIMESTAMP:
-		return tx.TimestampRoleData(ctx)
+		timestamp, err := tx.TimestampRoleData(ctx)
+		return generics.PtrToAny(timestamp), err
 	case tufmetadata.SNAPSHOT:
-		return tx.SnapshotRoleData(ctx)
+		snapshot, err := tx.SnapshotRoleData(ctx)
+		return generics.PtrToAny(snapshot), err
 	case tufmetadata.TARGETS:
 		fallthrough
 	default:
-		return tx.TargetsRoleData(ctx, roleName)
+		targets, err := tx.TargetsRoleData(ctx, roleName)
+		return generics.PtrToAny(targets), err
 	}
 }
 
@@ -415,33 +419,66 @@ func (tx *Transaction) ClearRole(_ context.Context, roleName string) (Err error)
 // Changes made to the [Transaction] do not affect the live repository until
 // [Repository.TxnCommit] is called.
 func (r *Repository) TxnStart(ctx context.Context) (_ *Transaction, Err error) {
-	refTime := time.Now().UTC()
-
-	timestamp, timestampMeta, err := r.GetLatestTimestamp(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get timestamp.json: %w", err)
+	tx := &Transaction{
+		RefTime: time.Now().UTC(),
+		targets: make(map[string]*tufext.SignedTargets),
 	}
+
+	// Step 0. Get the latest root. (Must always exist.)
 
 	root, _, err := r.GetLatestRoot(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get root.json: %w", err)
 	}
+	tx.root = root
 
-	// Load the snapshot referenced by the timestamp.
+	// Step 1. Fetch the timestamp, which pins the tree of objects we need to
+	// fetch. (Might not exist.)
 
-	// TODO: Maybe we should make this generic, technically the timestamp can
-	// include references to other metafiles.
-	snapshotMetaRef, ok := timestamp.Signed.Meta[tufmetadata.SNAPSHOT+".json"]
-	if !ok {
-		return nil, fmt.Errorf("%w: timestamp does not include snapshot role link", ErrInvalidRepoState)
+	timestamp, timestampMeta, err := r.GetLatestTimestamp(ctx)
+	if errors.Is(err, fs.ErrNotExist) {
+		// If there was no timestamp.json, then there are no other blobs for us
+		// to load. Live repositories are not in this state normally, but a
+		// repository created with InitTxn might be in this state if they
+		// didn't set up any other parts.
+		// TODO: Add logging.
+		return tx, nil
 	}
-	if len(timestamp.Signed.Meta) > 1 {
-		return nil, fmt.Errorf("%w: timestamp contains more role links than just snapshot: %v",
+	if err != nil {
+		return nil, fmt.Errorf("failed to get timestamp.json: %w", err)
+	}
+	tx.timestamp = timestamp
+	tx.oldTimestampETag = timestampMeta.ETag
+
+	// Step 2. Fetch the timestamp-pinned snapshot, which pins all of the
+	// targets. (Might not exist.)
+
+	// TODO: The logic between fetching timestamp-pinned and snapshot-pinned
+	// objects is basically identical (except for which field in Transaction
+	// stores the copy), so it really should be unified into one thing (maybe a
+	// queue of things to pull?).
+
+	snapshotMetaRef, hasSnapshotRef := timestamp.Signed.Meta[tufmetadata.SNAPSHOT+".json"]
+	switch {
+	case len(timestamp.Signed.Meta) == 0:
+		// If snapshot is not present then there is nothing left for us to
+		// fetch. Again, this might happen for InitTxn-committed repos.
+		// TODO: If we made the snapshot and timestamp fetching generic we
+		// wouldn't have to handle this case explicitly...
+		// TODO: Add logging.
+		return tx, nil
+	case hasSnapshotRef && len(timestamp.Signed.Meta) == 1:
+		// Timestamp *only* contains snapshot.json (as we expect), so
+		// fallthrough to fetching.
+	default:
+		// TODO: Not sure whether we want to support this?
+		return nil, fmt.Errorf("%w: timestamp.json contains roles other than snapshot: %v",
 			ErrInvalidRepoState, slices.Collect(maps.Keys(timestamp.Signed.Meta)))
 	}
 	snapshotRdr, _, err := r.GetVersionedFile(ctx, tufmetadata.SNAPSHOT, snapshotMetaRef.Version)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get %d.snapshot.json: %w", snapshotMetaRef.Version, err)
+		return nil, fmt.Errorf("failed to get %d.snapshot.json (referenced by timestamp.json): %w",
+			snapshotMetaRef.Version, err)
 	}
 	defer funchelpers.VerifyClose(&Err, snapshotRdr)
 
@@ -452,17 +489,22 @@ func (r *Repository) TxnStart(ctx context.Context) (_ *Transaction, Err error) {
 	if err := tufext.CheckMetadataType(tufmetadata.SNAPSHOT, &snapshot); err != nil {
 		return nil, fmt.Errorf("invalid snapshot blob: %w", err)
 	}
+	tx.snapshot = &snapshot
 
-	// Load all target roles referenced by the snapshot.
-	targets := make(map[string]*tufext.SignedTargets, len(snapshot.Signed.Meta))
-	for rolePath, roleMeta := range snapshot.Signed.Meta {
+	// Step 3. Load all of the snapshot-pinned targets. (Each one must exist if
+	// they are referenced.)
+
+	tx.targets = make(map[string]*tufext.SignedTargets, len(snapshot.Signed.Meta))
+	for rolePath, roleMetaRef := range snapshot.Signed.Meta {
 		roleName, ok := strings.CutSuffix(rolePath, ".json")
 		if !ok {
-			return nil, fmt.Errorf("snapshot metapath %q does not have .json suffix", rolePath)
+			return nil, fmt.Errorf("%d.snapshot.json metapath %q does not have .json suffix",
+				snapshot.Signed.Version, rolePath)
 		}
-		targetRdr, _, err := r.GetVersionedFile(ctx, roleName, roleMeta.Version)
+		targetRdr, _, err := r.GetVersionedFile(ctx, roleName, roleMetaRef.Version)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get %d.%s.json: %w", roleMeta.Version, roleName, err)
+			return nil, fmt.Errorf("failed to get %d.%s.json (referenced by %d.snapshot.json): %w",
+				roleMetaRef.Version, roleName, snapshot.Signed.Version, err)
 		}
 		var target tufext.SignedTargets
 		err = json.NewDecoder(targetRdr).Decode(&target)
@@ -473,37 +515,25 @@ func (r *Repository) TxnStart(ctx context.Context) (_ *Transaction, Err error) {
 		if err := tufext.CheckMetadataType(roleName, &target); err != nil {
 			return nil, fmt.Errorf("invalid %s blob: %w", roleName, err)
 		}
-		targets[roleName] = &target
+		tx.targets[roleName] = &target
 	}
 
-	return &Transaction{
-		RefTime:          refTime,
-		root:             root,
-		timestamp:        timestamp,
-		snapshot:         &snapshot,
-		oldTimestampETag: timestampMeta.ETag,
-		targets:          targets,
-	}, nil
+	return tx, nil
 }
 
 // InitTxn starts a dummy "initial" transaction that can be used for
 // initialising a new repository.
-func InitTxn(initRoot *tufmetadata.Metadata[tufmetadata.RootType]) *Transaction {
-	refTime := time.Now().UTC()
-
+func InitTxn(initRoot *tufext.SignedRoot) *Transaction {
 	tx := &Transaction{
-		RefTime:   refTime,
-		newRoot:   initRoot,
-		snapshot:  tufext.DefaultSnapshot(refTime.Add(DefaultSnapshotExpiry)),
-		timestamp: tufext.DefaultTimestamp(refTime.Add(DefaultTimestampExpiry)),
-		targets: map[string]*tufmetadata.Metadata[tufmetadata.TargetsType]{
-			tufmetadata.TARGETS: tufext.DefaultTargets(refTime.Add(DefaultTargetsExpiry)),
-		},
+		RefTime:          time.Now().UTC(),
+		newRoot:          initRoot,
+		targets:          map[string]*tufext.SignedTargets{},
 		oldTimestampETag: storeopts.ETag(""), // equivalent to NoClobber
 	}
-	for _, roleName := range tufmetadata.TOP_LEVEL_ROLE_NAMES {
-		tx.markDirty(roleName)
-	}
+	// Only mark the root as dirty -- the snapshot and timestamp roles will
+	// only be added if a user explicitly adds them (and they will get signed
+	// in Sign if necessary).
+	tx.markDirty(tufmetadata.ROOT)
 	return tx
 }
 

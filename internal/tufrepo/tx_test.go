@@ -65,7 +65,10 @@ func TestTxnStart_Success(t *testing.T) {
 		"RefTime %v should be >= bootstrap time %v", tx.RefTime, bs.initialRefTime)
 }
 
-func TestTxnStart_TimestampMissingSnapshotLink(t *testing.T) {
+// TestTxnStart_TimestampEmptyMeta_AcceptedAsPartialInit verifies that a
+// timestamp.json with an empty Meta is treated as partial-init repo state:
+// TxnStart succeeds, no snapshot is loaded, and the targets map is empty.
+func TestTxnStart_TimestampEmptyMeta_AcceptedAsPartialInit(t *testing.T) {
 	ctx := context.Background()
 	bs := bootstrapRepo(t)
 
@@ -78,9 +81,37 @@ func TestTxnStart_TimestampMissingSnapshotLink(t *testing.T) {
 		storeopts.Clobber)
 	require.NoError(t, err)
 
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	snap, err := tx.SnapshotRoleData(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, snap, "no snapshot should be loaded for empty-Meta timestamp")
+	_, err = tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.ErrorIs(t, err, fs.ErrNotExist,
+		"no targets should be loaded for empty-Meta timestamp")
+}
+
+// TestTxnStart_TimestampHasNonSnapshotMetaEntry covers the case where
+// Meta has a single entry but it is not snapshot.json -- this must be
+// rejected (it is not the partial-init state).
+func TestTxnStart_TimestampHasNonSnapshotMetaEntry(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	ts := tufext.DefaultTimestamp(time.Now().Add(time.Hour))
+	ts.Signed.Meta = map[string]*tufmetadata.MetaFiles{
+		"foo.json": {Version: 1},
+	}
+	signMeta(ctx, t, ts, bs.timestampKey)
+
+	_, err := bs.repo.PutBlob(ctx, "timestamp.json", bytes.NewReader(mustEncode(t, ts)),
+		storeopts.Clobber)
+	require.NoError(t, err)
+
 	_, err = bs.repo.TxnStart(ctx)
 	require.ErrorIs(t, err, tufrepo.ErrInvalidRepoState)
-	assert.Contains(t, err.Error(), "snapshot role link")
+	assert.Contains(t, err.Error(), "roles other than snapshot")
 }
 
 func TestTxnStart_TimestampHasExtraMetaEntry(t *testing.T) {
@@ -98,7 +129,7 @@ func TestTxnStart_TimestampHasExtraMetaEntry(t *testing.T) {
 
 	_, err = bs.repo.TxnStart(ctx)
 	require.ErrorIs(t, err, tufrepo.ErrInvalidRepoState)
-	assert.Contains(t, err.Error(), "more role links")
+	assert.Contains(t, err.Error(), "roles other than snapshot")
 }
 
 func TestTxnStart_SnapshotMetapathMissingJSONSuffix(t *testing.T) {

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io/fs"
 	"iter"
-	"maps"
 	"slices"
 	"time"
 
@@ -307,6 +306,12 @@ func (tx *Transaction) signRole(ctx context.Context, store *keystore.Store, role
 	if err != nil {
 		return fmt.Errorf("failed to fetch role %s data: %w", roleName, err)
 	}
+	if roleData == nil {
+		// If the role doesn't exist (i.e., this primarily happens when dealing
+		// with InitTxn and partially-initialised repos).
+		// TODO: Add logging?
+		return nil
+	}
 
 	// Before we do anything, check that we actually need to sign this role.
 	// For certain roles (namely the root and targets roles) it is expected for
@@ -406,25 +411,6 @@ func (tx *Transaction) bumpRevisions(ctx context.Context) (Err error) {
 		if err := tx.UpdateRoleData(roleName, roleData); err != nil {
 			return err
 		}
-	}
-
-	// If any roles that are referenced by the snapshot role were modified
-	// (i.e., anything other than root and timestamp), we need to update the
-	// snapshot role version.
-	if generics.SeqAny(maps.Keys(tx.dirty), func(roleName string) bool {
-		return roleName != tufmetadata.ROOT && roleName != tufmetadata.TIMESTAMP
-	}) {
-		tx.snapshot.Signed.Version = timeVersion
-		tx.markDirty(tufmetadata.SNAPSHOT)
-	}
-
-	// If any roles were changed *at all*, we need to update the timestamp role
-	// version. Note that while root is not linked from timestamp, Sign will
-	// rotate the timestamp keys so we will need to push a new version, and our
-	// atomic update scheme relies on timestamp always being updated.
-	if len(tx.dirty) > 0 {
-		tx.timestamp.Signed.Version = timeVersion
-		tx.markDirty(tufmetadata.TIMESTAMP)
 	}
 	return nil
 }
@@ -590,6 +576,16 @@ func (tx *Transaction) updateSnapshot(ctx context.Context) (Err error) {
 	}
 	defer tx.invalidateOnError(&Err)
 
+	if tx.snapshot == nil {
+		// In the InitTxn path, we only need to fill in snapshot if there are
+		// target files.
+		if len(tx.targets) == 0 {
+			return nil
+		}
+		tx.snapshot = tufext.DefaultSnapshot() // expiry will be bumped below
+		tx.markDirty(tufmetadata.SNAPSHOT)
+	}
+
 	// The snapshot role only contains the hashes of target files.
 	metaFiles := make(map[string]*tufmetadata.MetaFiles, len(tx.targets))
 	for roleName, roleData := range tx.targets {
@@ -606,6 +602,8 @@ func (tx *Transaction) updateSnapshot(ctx context.Context) (Err error) {
 	// should probably implement the key repository-related bits of
 	// <https://github.com/theupdateframework/specification/issues/262>.
 
+	// If a target file changed (or the user modified some field) then the
+	// snapshot will also need to be updated.
 	if needsBump, err := tx.checkNeedsBump(ctx, tufmetadata.SNAPSHOT, tx.snapshot); err != nil {
 		return fmt.Errorf("could not check if role %s needs bumps: %w", tufmetadata.SNAPSHOT, err)
 	} else if needsBump {
@@ -622,17 +620,33 @@ func (tx *Transaction) updateTimestamp(ctx context.Context) (Err error) {
 	}
 	defer tx.invalidateOnError(&Err)
 
-	snapshotHash, err := hashMetaFile(ctx, tx.snapshot)
-	if err != nil {
-		return fmt.Errorf("could not hash role %s for timestamp: %w", tufmetadata.SNAPSHOT, err)
+	if tx.timestamp == nil {
+		// In the InitTxn path, we only need to fill in timestamp if there is a
+		// snapshot file to include.
+		if tx.snapshot == nil {
+			return nil
+		}
+		tx.timestamp = tufext.DefaultTimestamp() // expiry will be bumped below
+		tx.markDirty(tufmetadata.TIMESTAMP)
 	}
-	tx.timestamp.Signed.Meta = map[string]*tufmetadata.MetaFiles{
-		tufmetadata.SNAPSHOT + ".json": snapshotHash,
+
+	metaFiles := make(map[string]*tufmetadata.MetaFiles, 1)
+	if tx.snapshot != nil {
+		snapshotHash, err := hashMetaFile(ctx, tx.snapshot)
+		if err != nil {
+			return fmt.Errorf("could not hash role %s for timestamp: %w", tufmetadata.SNAPSHOT, err)
+		}
+		metaFiles[tufmetadata.SNAPSHOT+".json"] = snapshotHash
 	}
+	tx.timestamp.Signed.Meta = metaFiles
 
 	// TODO: Should we check if the actual timestamp data is different as well?
 
-	if tx.isDirty(tufmetadata.SNAPSHOT) || tx.isDirty(tufmetadata.ROOT) {
+	// If any roles were changed *at all*, we need to update the timestamp role
+	// version. Note that while root is not linked from timestamp, Sign will
+	// rotate the timestamp keys so we will need to push a new version, and our
+	// atomic update scheme relies on timestamp always being updated.
+	if len(tx.dirty) > 0 {
 		tx.timestamp.Signed.Version = tx.RefTime.UnixMilli()
 		tx.timestamp.Signed.Expires = tx.RefTime.Add(tx.expiry(tufmetadata.TIMESTAMP))
 		tx.markDirty(tufmetadata.TIMESTAMP)
