@@ -31,10 +31,11 @@ func TestNewRootBuilder(t *testing.T) {
 	// Expires defaults to the zero time and is filled in by Sign.
 	assert.True(t, inner.Expires.IsZero())
 
-	// Keys and Roles are lazily initialised by AddRole; the constructor
-	// leaves them nil.
-	assert.Nil(t, inner.Keys)
-	assert.Nil(t, inner.Roles)
+	// Keys and Roles are pre-initialised by DefaultRoot.
+	assert.NotNil(t, inner.Keys)
+	assert.Empty(t, inner.Keys)
+	assert.NotNil(t, inner.Roles)
+	assert.Empty(t, inner.Roles)
 
 	assert.Equal(t, time.UTC, builder.RefTime.Location())
 	assert.True(t, !builder.RefTime.Before(before) && !builder.RefTime.After(after),

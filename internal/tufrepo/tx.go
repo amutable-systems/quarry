@@ -85,10 +85,10 @@ type Transaction struct {
 	// root is the original root metadata, which we always keep around in order
 	// for Sign to be able to sign the new root metadata with old keys (if it
 	// was changed).
-	root, newRoot *tufmetadata.Metadata[tufmetadata.RootType]
+	root, newRoot *tufext.SignedRoot
 
-	timestamp *tufmetadata.Metadata[tufmetadata.TimestampType]
-	snapshot  *tufmetadata.Metadata[tufmetadata.SnapshotType]
+	timestamp *tufext.SignedTimestamp
+	snapshot  *tufext.SignedSnapshot
 
 	// oldTimestampETag is the [storeopts.ETag] of the timestamp role at
 	// [TxnStart] time, used to detect racing writes at [TxnCommit] time.
@@ -96,7 +96,7 @@ type Transaction struct {
 
 	// targets includes the top-level target role (key "targets") and any
 	// delegated target roles (key is the delegated role name).
-	targets map[string]*tufmetadata.Metadata[tufmetadata.TargetsType]
+	targets map[string]*tufext.SignedTargets
 }
 
 var errFailedTransaction = fmt.Errorf("cannot operate on a failed transaction")
@@ -174,7 +174,7 @@ func (tx *Transaction) isDirty(roleName string) bool {
 // RootRoleData returns the root role data for this transaction.
 //
 // This method is intended to be called from [TxnOp.ApplyToTxn].
-func (tx *Transaction) RootRoleData(_ context.Context) (_ *tufmetadata.Metadata[tufmetadata.RootType], Err error) {
+func (tx *Transaction) RootRoleData(_ context.Context) (_ *tufext.SignedRoot, Err error) {
 	if err := tx.valid(); err != nil {
 		return nil, err
 	}
@@ -190,7 +190,7 @@ func (tx *Transaction) RootRoleData(_ context.Context) (_ *tufmetadata.Metadata[
 // TimestampRoleData returns the timestamp role data for this transaction.
 //
 // This method is intended to be called from [TxnOp.ApplyToTxn].
-func (tx *Transaction) TimestampRoleData(_ context.Context) (_ *tufmetadata.Metadata[tufmetadata.TimestampType], Err error) {
+func (tx *Transaction) TimestampRoleData(_ context.Context) (_ *tufext.SignedTimestamp, Err error) {
 	if err := tx.valid(); err != nil {
 		return nil, err
 	}
@@ -202,7 +202,7 @@ func (tx *Transaction) TimestampRoleData(_ context.Context) (_ *tufmetadata.Meta
 // SnapshotRoleData returns the snapshot role data for this transaction.
 //
 // This method is intended to be called from [TxnOp.ApplyToTxn].
-func (tx *Transaction) SnapshotRoleData(_ context.Context) (_ *tufmetadata.Metadata[tufmetadata.SnapshotType], Err error) {
+func (tx *Transaction) SnapshotRoleData(_ context.Context) (_ *tufext.SignedSnapshot, Err error) {
 	if err := tx.valid(); err != nil {
 		return nil, err
 	}
@@ -216,7 +216,7 @@ func (tx *Transaction) SnapshotRoleData(_ context.Context) (_ *tufmetadata.Metad
 // as the role name).
 //
 // This method is intended to be called from [TxnOp.ApplyToTxn].
-func (tx *Transaction) TargetsRoleData(_ context.Context, roleName string) (_ *tufmetadata.Metadata[tufmetadata.TargetsType], Err error) {
+func (tx *Transaction) TargetsRoleData(_ context.Context, roleName string) (_ *tufext.SignedTargets, Err error) {
 	if err := tx.valid(); err != nil {
 		return nil, err
 	}
@@ -480,7 +480,7 @@ func (r *Repository) TxnStart(ctx context.Context) (_ *Transaction, Err error) {
 	}
 	defer funchelpers.VerifyClose(&Err, snapshotRdr)
 
-	var snapshot tufmetadata.Metadata[tufmetadata.SnapshotType]
+	var snapshot tufext.SignedSnapshot
 	if err := json.NewDecoder(snapshotRdr).Decode(&snapshot); err != nil {
 		return nil, fmt.Errorf("failed to parse snapshot.json: %w", err)
 	}
@@ -489,7 +489,7 @@ func (r *Repository) TxnStart(ctx context.Context) (_ *Transaction, Err error) {
 	}
 
 	// Load all target roles referenced by the snapshot.
-	targets := make(map[string]*tufmetadata.Metadata[tufmetadata.TargetsType], len(snapshot.Signed.Meta))
+	targets := make(map[string]*tufext.SignedTargets, len(snapshot.Signed.Meta))
 	for rolePath, roleMeta := range snapshot.Signed.Meta {
 		roleName, ok := strings.CutSuffix(rolePath, ".json")
 		if !ok {
@@ -499,7 +499,7 @@ func (r *Repository) TxnStart(ctx context.Context) (_ *Transaction, Err error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to get %d.%s.json: %w", roleMeta.Version, roleName, err)
 		}
-		var target tufmetadata.Metadata[tufmetadata.TargetsType]
+		var target tufext.SignedTargets
 		err = json.NewDecoder(targetRdr).Decode(&target)
 		_ = targetRdr.Close()
 		if err != nil {
@@ -529,10 +529,10 @@ func InitTxn(initRoot *tufmetadata.Metadata[tufmetadata.RootType]) *Transaction 
 	tx := &Transaction{
 		RefTime:   refTime,
 		newRoot:   initRoot,
-		snapshot:  tufmetadata.Snapshot(refTime.Add(DefaultSnapshotExpiry)),
-		timestamp: tufmetadata.Timestamp(refTime.Add(DefaultTimestampExpiry)),
+		snapshot:  tufext.DefaultSnapshot(refTime.Add(DefaultSnapshotExpiry)),
+		timestamp: tufext.DefaultTimestamp(refTime.Add(DefaultTimestampExpiry)),
 		targets: map[string]*tufmetadata.Metadata[tufmetadata.TargetsType]{
-			tufmetadata.TARGETS: tufmetadata.Targets(refTime.Add(DefaultTargetsExpiry)),
+			tufmetadata.TARGETS: tufext.DefaultTargets(refTime.Add(DefaultTargetsExpiry)),
 		},
 		oldTimestampETag: storeopts.ETag(""), // equivalent to NoClobber
 	}
@@ -565,7 +565,7 @@ const timestampRevisionAttribute = "quarry-timestamp-revision"
 // state of the repository to the one configured in the [Transaction]. If the
 // repository has changed since the transaction was started, the transaction
 // will be aborted and [ErrTransactionFailed] will be returned.
-func (r *Repository) TxnCommit(ctx context.Context, tx *Transaction) (_ *tufmetadata.Metadata[tufmetadata.TimestampType], Err error) {
+func (r *Repository) TxnCommit(ctx context.Context, tx *Transaction) (_ *tufext.SignedTimestamp, Err error) {
 	if err := tx.valid(); err != nil {
 		return nil, err
 	}

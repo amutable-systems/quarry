@@ -16,16 +16,16 @@ import (
 func CheckMetadataType[T tufmetadata.Roles](roleName string, data *tufmetadata.Metadata[T]) error {
 	var objType, jsonType string
 	switch data := any(data).(type) {
-	case *tufmetadata.Metadata[tufmetadata.RootType]:
+	case *SignedRoot:
 		objType = tufmetadata.ROOT
 		jsonType = data.Signed.Type
-	case *tufmetadata.Metadata[tufmetadata.TimestampType]:
+	case *SignedTimestamp:
 		objType = tufmetadata.TIMESTAMP
 		jsonType = data.Signed.Type
-	case *tufmetadata.Metadata[tufmetadata.SnapshotType]:
+	case *SignedSnapshot:
 		objType = tufmetadata.SNAPSHOT
 		jsonType = data.Signed.Type
-	case *tufmetadata.Metadata[tufmetadata.TargetsType]:
+	case *SignedTargets:
 		objType = tufmetadata.TARGETS
 		jsonType = data.Signed.Type
 	default:

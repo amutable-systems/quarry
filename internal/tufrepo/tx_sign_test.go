@@ -404,7 +404,7 @@ func TestSign_NoDelegatorForOrphanedRole(t *testing.T) {
 	tx, err := bs.repo.TxnStart(ctx)
 	require.NoError(t, err)
 
-	orphan := tufmetadata.Targets(time.Now().Add(time.Hour))
+	orphan := tufext.DefaultTargets(time.Now().Add(time.Hour))
 	require.NoError(t, tx.UpdateRoleData("orphan-role", orphan))
 
 	_, err = tx.Sign(ctx, bs.store)
@@ -556,7 +556,7 @@ func TestBumpExpiry_CommitsClosureMutationsWithNewExpiry(t *testing.T) {
 	newExpires := tufrepo.SignedExpires(t, origData).Add(42 * time.Hour)
 
 	err = tx.BumpExpiry(ctx, tufmetadata.TARGETS, func(_ time.Time, roleData any) (*time.Time, error) {
-		targets := roleData.(*tufmetadata.Metadata[tufmetadata.TargetsType]) //nolint:forcetypeassert // tx.RoleData guarantees this type for TARGETS
+		targets := roleData.(*tufext.SignedTargets) //nolint:forcetypeassert // tx.RoleData guarantees this type for TARGETS
 		if targets.Signed.Targets == nil {
 			targets.Signed.Targets = map[string]*tufmetadata.TargetFiles{}
 		}
@@ -657,7 +657,7 @@ func TestBumpExpiry_DiscardsClosureMutationsOnNilReturn(t *testing.T) {
 	require.NoError(t, err)
 
 	err = tx.BumpExpiry(ctx, tufmetadata.TARGETS, func(_ time.Time, roleData any) (*time.Time, error) {
-		targets := roleData.(*tufmetadata.Metadata[tufmetadata.TargetsType]) //nolint:forcetypeassert // tx.RoleData guarantees this type for TARGETS
+		targets := roleData.(*tufext.SignedTargets) //nolint:forcetypeassert // tx.RoleData guarantees this type for TARGETS
 		targets.Signed.Targets = map[string]*tufmetadata.TargetFiles{
 			"ghost": {Length: 1},
 		}

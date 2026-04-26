@@ -111,7 +111,7 @@ func collateKeys(knownKeys map[string]*tufmetadata.Key, keyIDs []string) (map[ke
 func computeDelegatorKeyQuorums(delegator any, roleName string) iter.Seq2[keyQuorum, error] {
 	return generics.ErrorIter(func(yield func(keyQuorum) bool) error {
 		switch delegator := delegator.(type) {
-		case *tufmetadata.Metadata[tufmetadata.RootType]:
+		case *tufext.SignedRoot:
 			root := delegator
 			role, ok := root.Signed.Roles[roleName]
 			if !ok {
@@ -129,7 +129,7 @@ func computeDelegatorKeyQuorums(delegator any, roleName string) iter.Seq2[keyQuo
 			yield(kq)
 			return nil
 
-		case *tufmetadata.Metadata[tufmetadata.TargetsType]:
+		case *tufext.SignedTargets:
 			delegations := delegator.Signed.Delegations
 			if delegations == nil || len(delegations.Roles) < 1 {
 				// NOTE: Should not be reachable -- findRoleDelegators will by
@@ -294,13 +294,13 @@ func signRoleWith[T tufmetadata.Roles](ctx context.Context, store *keystore.Stor
 // handling.
 func signRoleGeneric(ctx context.Context, store *keystore.Store, meta any, quorum keyQuorum) error {
 	switch meta := meta.(type) {
-	case *tufmetadata.Metadata[tufmetadata.RootType]:
+	case *tufext.SignedRoot:
 		return signRoleWith(ctx, store, meta, quorum)
-	case *tufmetadata.Metadata[tufmetadata.TimestampType]:
+	case *tufext.SignedTimestamp:
 		return signRoleWith(ctx, store, meta, quorum)
-	case *tufmetadata.Metadata[tufmetadata.SnapshotType]:
+	case *tufext.SignedSnapshot:
 		return signRoleWith(ctx, store, meta, quorum)
-	case *tufmetadata.Metadata[tufmetadata.TargetsType]:
+	case *tufext.SignedTargets:
 		return signRoleWith(ctx, store, meta, quorum)
 	default:
 		return fmt.Errorf("cannot sign unknown metadata type %T", meta)
@@ -480,13 +480,13 @@ func (tx *Transaction) expiry(roleName string) time.Duration {
 
 func metaExpiry(meta any) (*time.Time, error) {
 	switch meta := meta.(type) {
-	case *tufmetadata.Metadata[tufmetadata.RootType]:
+	case *tufext.SignedRoot:
 		return &meta.Signed.Expires, nil
-	case *tufmetadata.Metadata[tufmetadata.TimestampType]:
+	case *tufext.SignedTimestamp:
 		return &meta.Signed.Expires, nil
-	case *tufmetadata.Metadata[tufmetadata.SnapshotType]:
+	case *tufext.SignedSnapshot:
 		return &meta.Signed.Expires, nil
-	case *tufmetadata.Metadata[tufmetadata.TargetsType]:
+	case *tufext.SignedTargets:
 		return &meta.Signed.Expires, nil
 	default:
 		return nil, fmt.Errorf("unsupported type %T", meta)

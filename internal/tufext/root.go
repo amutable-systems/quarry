@@ -34,12 +34,7 @@ type RootBuilder struct {
 // NewRootBuilder constructs a new [RootBuilder] with default values.
 func NewRootBuilder() *RootBuilder {
 	return &RootBuilder{
-		inner: tufmetadata.RootType{
-			Type:               tufmetadata.ROOT,
-			SpecVersion:        tufmetadata.SPECIFICATION_VERSION,
-			Version:            1,
-			ConsistentSnapshot: true,
-		},
+		inner:             DefaultRoot().Signed,
 		RefTime:           time.Now().UTC(),
 		ExpireAfter:       2 * 365 * 24 * time.Hour, // TODO: Merge this with Transaction.expiry?
 		GenerateKeyDriver: keystore.DefaultDriver,
@@ -67,17 +62,11 @@ func (builder *RootBuilder) AddRole(roleName string, threshold int, keys ...keys
 		keyMap[keyID] = &key
 		keyIDs = append(keyIDs, keyID)
 	}
-	if builder.inner.Keys == nil {
-		builder.inner.Keys = make(map[string]*keystore.PublicKey, len(keys))
-	}
 	maps.Copy(builder.inner.Keys, keyMap)
 
 	role := &tufmetadata.Role{
 		Threshold: threshold,
 		KeyIDs:    keyIDs,
-	}
-	if builder.inner.Roles == nil {
-		builder.inner.Roles = make(map[string]*tufmetadata.Role, len(tufmetadata.TOP_LEVEL_ROLE_NAMES))
 	}
 	builder.inner.Roles[roleName] = role
 	return role, nil
@@ -94,7 +83,7 @@ func (builder *RootBuilder) RootType() *tufmetadata.RootType {
 // generated on-demand (the default threshold of roles is 1). The returned
 // [tufmetadata.Metadata] object contains a deep copy of the targets data, and
 // so can be manipulated independently of this RootBuilder.
-func (builder *RootBuilder) Sign(ctx context.Context, store *keystore.Store, extraKeys ...*keystore.GenericKey) (_ *tufmetadata.Metadata[tufmetadata.RootType], _ []keystore.KeyID, Err error) {
+func (builder *RootBuilder) Sign(ctx context.Context, store *keystore.Store, extraKeys ...*keystore.GenericKey) (_ *SignedRoot, _ []keystore.KeyID, Err error) {
 	inner := builder.RootType()
 	// TODO: Maybe we should just configure the defaults in NewRootBuilder?
 	if inner.Expires.IsZero() {
@@ -145,7 +134,7 @@ func (builder *RootBuilder) Sign(ctx context.Context, store *keystore.Store, ext
 	if err != nil {
 		return nil, nil, err
 	}
-	meta := &tufmetadata.Metadata[tufmetadata.RootType]{
+	meta := &SignedRoot{
 		Signed:     innerClone,
 		Signatures: make([]tufmetadata.Signature, 0, rootThreshold+len(extraKeys)),
 	}

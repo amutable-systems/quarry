@@ -179,8 +179,8 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			if err != nil {
 				return fmt.Errorf("could not read root.json: %w", err)
 			}
-			root := new(tufmetadata.Metadata[tufmetadata.RootType])
-			if err := json.Unmarshal(rootData, root); err != nil {
+			var root tufext.SignedRoot
+			if err := json.Unmarshal(rootData, &root); err != nil {
 				return fmt.Errorf("invalid root.json: %w", err)
 			}
 			// Assume the root is validly signed.

@@ -37,11 +37,7 @@ type TargetsBuilder struct {
 // NewTargetsBuilder constructs a new [TargetsBuilder] with default values.
 func NewTargetsBuilder() *TargetsBuilder {
 	return &TargetsBuilder{
-		inner: tufmetadata.TargetsType{
-			Type:        tufmetadata.TARGETS,
-			SpecVersion: tufmetadata.SPECIFICATION_VERSION,
-			Targets:     make(map[string]*tufmetadata.TargetFiles),
-		},
+		inner:       DefaultTargets().Signed,
 		RefTime:     time.Now().UTC(),
 		ExpireAfter: (7*24 + 6) * time.Hour, // TODO: Merge this with Transaction.expiry?
 	}
@@ -144,10 +140,10 @@ func (builder *TargetsBuilder) TargetsType() *tufmetadata.TargetsType {
 // SignWith signs the designed targets file with the given set of keys. The
 // returned [tufmetadata.Metadata] object contains a deep copy of the targets
 // data, and so can be manipulated independently of this TargetsBuilder.
-func (builder *TargetsBuilder) SignWith(ctx context.Context, store *keystore.Store, keys ...*keystore.GenericKey) (*tufmetadata.Metadata[tufmetadata.TargetsType], error) {
+func (builder *TargetsBuilder) SignWith(ctx context.Context, store *keystore.Store, keys ...*keystore.GenericKey) (*SignedTargets, error) {
 	inner := builder.TargetsType() // to regenerate delegated roles slice
 	// TODO: Maybe we should just configure the defaults in NewTargetsBuilder?
-	if inner.Version == 0 {
+	if inner.Version <= 0 {
 		inner.Version = builder.RefTime.UnixMilli()
 	}
 	if inner.Expires.IsZero() {
@@ -166,7 +162,7 @@ func (builder *TargetsBuilder) SignWith(ctx context.Context, store *keystore.Sto
 	if err != nil {
 		return nil, err
 	}
-	meta := &tufmetadata.Metadata[tufmetadata.TargetsType]{
+	meta := &SignedTargets{
 		Signed:     innerClone,
 		Signatures: make([]tufmetadata.Signature, 0, len(keys)),
 	}

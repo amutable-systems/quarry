@@ -66,7 +66,7 @@ type Repository struct {
 }
 
 // GetLatestTimestamp returns the latest copy of the repository timestamp file.
-func (repo *Repository) GetLatestTimestamp(ctx context.Context, opts ...storeopts.GetBlobOption) (_ *tufmetadata.Metadata[tufmetadata.TimestampType], _ *BlobMetadata, Err error) {
+func (repo *Repository) GetLatestTimestamp(ctx context.Context, opts ...storeopts.GetBlobOption) (_ *tufext.SignedTimestamp, _ *BlobMetadata, Err error) {
 	const timestampFile = tufmetadata.TIMESTAMP + ".json"
 
 	rdr, fileMeta, err := repo.GetBlob(ctx, timestampFile, opts...)
@@ -75,7 +75,7 @@ func (repo *Repository) GetLatestTimestamp(ctx context.Context, opts ...storeopt
 	}
 	defer funchelpers.VerifyClose(&Err, rdr)
 
-	var timestamp tufmetadata.Metadata[tufmetadata.TimestampType]
+	var timestamp tufext.SignedTimestamp
 	// TODO: Should we use a HardenedLimitReader here?
 	if err := json.NewDecoder(rdr).Decode(&timestamp); err != nil {
 		return nil, nil, fmt.Errorf("failed to parse latest timestamp: %w", err)
@@ -87,7 +87,7 @@ func (repo *Repository) GetLatestTimestamp(ctx context.Context, opts ...storeopt
 }
 
 // GetLatestRoot returns the latest version of the repository root file.
-func (repo *Repository) GetLatestRoot(ctx context.Context, opts ...storeopts.GetBlobOption) (*tufmetadata.Metadata[tufmetadata.RootType], *BlobMetadata, error) {
+func (repo *Repository) GetLatestRoot(ctx context.Context, opts ...storeopts.GetBlobOption) (*tufext.SignedRoot, *BlobMetadata, error) {
 	// TODO: We probably need to implement some kind of ListObjects API to
 	// RepoStore, this is not particularly efficient and while it is necessary
 	// for clients to do it this way, we have privileged access to the backing
@@ -122,7 +122,7 @@ func (repo *Repository) GetLatestRoot(ctx context.Context, opts ...storeopts.Get
 		return nil, nil, fmt.Errorf("repository has no root: %w", ErrInvalidRepoState)
 	}
 
-	var root tufmetadata.Metadata[tufmetadata.RootType]
+	var root tufext.SignedRoot
 	// TODO: Should we use a HardenedLimitReader here?
 	if err := json.NewDecoder(latestRdr).Decode(&root); err != nil {
 		return nil, nil, fmt.Errorf("failed to parse latest root: %w", err)
@@ -135,13 +135,13 @@ func (repo *Repository) GetLatestRoot(ctx context.Context, opts ...storeopts.Get
 
 func metaVersion(meta any) (*int64, error) {
 	switch meta := meta.(type) {
-	case *tufmetadata.Metadata[tufmetadata.RootType]:
+	case *tufext.SignedRoot:
 		return &meta.Signed.Version, nil
-	case *tufmetadata.Metadata[tufmetadata.TimestampType]:
+	case *tufext.SignedTimestamp:
 		return &meta.Signed.Version, nil
-	case *tufmetadata.Metadata[tufmetadata.SnapshotType]:
+	case *tufext.SignedSnapshot:
 		return &meta.Signed.Version, nil
-	case *tufmetadata.Metadata[tufmetadata.TargetsType]:
+	case *tufext.SignedTargets:
 		return &meta.Signed.Version, nil
 	default:
 		return nil, fmt.Errorf("unsupported type %T", meta)

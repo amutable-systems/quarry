@@ -92,7 +92,8 @@ func bootstrapRepo(t *testing.T, opts ...bootstrapOption) *bootstrap {
 	refTime := time.Now().UTC()
 
 	// Top-level targets (possibly with delegations).
-	targets := tufmetadata.Targets(refTime.Add(tufrepo.DefaultTargetsExpiry))
+	targets := tufext.DefaultTargets(refTime.Add(tufrepo.DefaultTargetsExpiry))
+	targets.Signed.Version = 1
 	delegatedKeys := make(map[string]*keystore.GenericKey, len(cfg.delegations))
 	if len(cfg.delegations) > 0 {
 		targets.Signed.Delegations = &tufmetadata.Delegations{
@@ -134,14 +135,16 @@ func bootstrapRepo(t *testing.T, opts ...bootstrapOption) *bootstrap {
 	require.NoError(t, err)
 
 	// Build snapshot metadata referencing every target (including delegations).
-	snapshot := tufmetadata.Snapshot(refTime.Add(tufrepo.DefaultSnapshotExpiry))
+	snapshot := tufext.DefaultSnapshot(refTime.Add(tufrepo.DefaultSnapshotExpiry))
+	snapshot.Signed.Version = 1
 	snapshot.Signed.Meta = map[string]*tufmetadata.MetaFiles{}
 	targetsMeta, err := tufrepo.HashMetaFile(ctx, targets)
 	require.NoError(t, err)
 	snapshot.Signed.Meta[tufmetadata.TARGETS+".json"] = targetsMeta
 
 	for _, roleName := range cfg.delegations {
-		delegated := tufmetadata.Targets(refTime.Add(tufrepo.DefaultTargetsExpiry))
+		delegated := tufext.DefaultTargets(refTime.Add(tufrepo.DefaultTargetsExpiry))
+		delegated.Signed.Version = 1
 		signMeta(ctx, t, delegated, delegatedKeys[roleName])
 		_, _, err := repo.PutVersionedFile(ctx, roleName, delegated)
 		require.NoError(t, err)
@@ -155,7 +158,8 @@ func bootstrapRepo(t *testing.T, opts ...bootstrapOption) *bootstrap {
 	require.NoError(t, err)
 
 	// Timestamp, referencing the snapshot.
-	timestamp := tufmetadata.Timestamp(refTime.Add(tufrepo.DefaultTimestampExpiry))
+	timestamp := tufext.DefaultTimestamp(refTime.Add(tufrepo.DefaultTimestampExpiry))
+	timestamp.Signed.Version = 1
 	snapshotMeta, err := tufrepo.HashMetaFile(ctx, snapshot)
 	require.NoError(t, err)
 	timestamp.Signed.Meta = map[string]*tufmetadata.MetaFiles{
@@ -221,7 +225,7 @@ func signMeta[T tufmetadata.Roles](ctx context.Context, t *testing.T, meta *tufm
 
 // currentTimestamp fetches the live timestamp.json from the repository -- used
 // by tests to assert commit side-effects.
-func currentTimestamp(ctx context.Context, t *testing.T, repo *tufrepo.Repository) *tufmetadata.Metadata[tufmetadata.TimestampType] {
+func currentTimestamp(ctx context.Context, t *testing.T, repo *tufrepo.Repository) *tufext.SignedTimestamp {
 	t.Helper()
 	ts, _, err := repo.GetLatestTimestamp(ctx)
 	require.NoError(t, err)

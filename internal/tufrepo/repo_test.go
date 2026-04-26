@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
+	"go.amutable.dev/quarry/internal/tufext"
 	"go.amutable.dev/quarry/internal/tufrepo"
 	"go.amutable.dev/quarry/internal/tufrepo/localrepo"
 	storeopts "go.amutable.dev/quarry/internal/tufrepo/opts"
@@ -43,7 +44,7 @@ func TestRepository_PutGetVersionedFile_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	repo := newTestRepo(t)
 
-	root := tufmetadata.Root(time.Now().Add(time.Hour))
+	root := tufext.DefaultRoot(time.Now().Add(time.Hour))
 	root.Signed.Version = 3
 
 	version, putMeta, err := repo.PutVersionedFile(ctx, tufmetadata.ROOT, root)
@@ -67,14 +68,22 @@ func TestRepository_PutVersionedFile_AcceptsAllCoreRoles(t *testing.T) {
 	repo := newTestRepo(t)
 
 	expires := time.Now().Add(time.Hour)
+	rootMeta := tufext.DefaultRoot(expires)
+	rootMeta.Signed.Version = 1
+	tsMeta := tufext.DefaultTimestamp(expires)
+	tsMeta.Signed.Version = 1
+	snapMeta := tufext.DefaultSnapshot(expires)
+	snapMeta.Signed.Version = 1
+	targetsMeta := tufext.DefaultTargets(expires)
+	targetsMeta.Signed.Version = 1
 	for _, tc := range []struct {
 		role string
 		meta any
 	}{
-		{tufmetadata.ROOT, tufmetadata.Root(expires)},
-		{tufmetadata.TIMESTAMP, tufmetadata.Timestamp(expires)},
-		{tufmetadata.SNAPSHOT, tufmetadata.Snapshot(expires)},
-		{tufmetadata.TARGETS, tufmetadata.Targets(expires)},
+		{tufmetadata.ROOT, rootMeta},
+		{tufmetadata.TIMESTAMP, tsMeta},
+		{tufmetadata.SNAPSHOT, snapMeta},
+		{tufmetadata.TARGETS, targetsMeta},
 	} {
 		t.Run(tc.role, func(t *testing.T) {
 			version, _, err := repo.PutVersionedFile(ctx, tc.role, tc.meta)
@@ -88,7 +97,7 @@ func TestRepository_PutVersionedFile_LandsAtExpectedFilename(t *testing.T) {
 	ctx := context.Background()
 	repo := newTestRepo(t)
 
-	root := tufmetadata.Root(time.Now().Add(time.Hour))
+	root := tufext.DefaultRoot(time.Now().Add(time.Hour))
 	root.Signed.Version = 7
 	_, _, err := repo.PutVersionedFile(ctx, tufmetadata.ROOT, root)
 	require.NoError(t, err)
@@ -102,7 +111,7 @@ func TestRepository_PutVersionedFile_PutOption_WithAttribute(t *testing.T) {
 	ctx := context.Background()
 	repo := newTestRepo(t)
 
-	root := tufmetadata.Root(time.Now().Add(time.Hour))
+	root := tufext.DefaultRoot(time.Now().Add(time.Hour))
 	root.Signed.Version = 1
 
 	_, _, err := repo.PutVersionedFile(ctx, tufmetadata.ROOT, root,
@@ -159,11 +168,13 @@ func TestRepository_GetBlob_DummyOption(t *testing.T) {
 	ctx := context.Background()
 	repo := newTestRepo(t)
 
-	ts := tufmetadata.Timestamp(time.Now().Add(time.Hour))
+	ts := tufext.DefaultTimestamp(time.Now().Add(time.Hour))
+	ts.Signed.Version = 1
 	_, err := repo.PutBlob(ctx, "timestamp.json", bytes.NewReader(mustEncode(t, ts)))
 	require.NoError(t, err)
 
-	root := tufmetadata.Root(time.Now().Add(time.Hour))
+	root := tufext.DefaultRoot(time.Now().Add(time.Hour))
+	root.Signed.Version = 1
 	_, _, err = repo.PutVersionedFile(ctx, tufmetadata.ROOT, root)
 	require.NoError(t, err)
 
@@ -192,7 +203,7 @@ func TestRepository_GetLatestTimestamp(t *testing.T) {
 	ctx := context.Background()
 	repo := newTestRepo(t)
 
-	ts := tufmetadata.Timestamp(time.Now().Add(time.Hour))
+	ts := tufext.DefaultTimestamp(time.Now().Add(time.Hour))
 	ts.Signed.Version = 5
 	_, err := repo.PutBlob(ctx, "timestamp.json", bytes.NewReader(mustEncode(t, ts)))
 	require.NoError(t, err)
@@ -216,7 +227,7 @@ func TestRepository_GetLatestTimestamp_WrongRole(t *testing.T) {
 
 	// Store a root.json payload as timestamp.json to make sure validate this
 	// at GetLatestTimestamp time.
-	root := tufmetadata.Root(time.Now().Add(time.Hour))
+	root := tufext.DefaultRoot(time.Now().Add(time.Hour))
 	_, err := repo.PutBlob(ctx, "timestamp.json", bytes.NewReader(mustEncode(t, root)))
 	require.NoError(t, err)
 
@@ -242,7 +253,7 @@ func TestRepository_GetLatestRoot_PicksHighestVersion(t *testing.T) {
 	repo := newTestRepo(t)
 
 	for _, v := range []int64{1, 2, 3} {
-		root := tufmetadata.Root(time.Now().Add(time.Hour))
+		root := tufext.DefaultRoot(time.Now().Add(time.Hour))
 		root.Signed.Version = v
 		_, _, err := repo.PutVersionedFile(ctx, tufmetadata.ROOT, root)
 		require.NoError(t, err)
@@ -267,7 +278,7 @@ func TestRepository_GetLatestRoot_WrongRole(t *testing.T) {
 
 	// Store a timestamp.json payload as root.json to make sure validate this
 	// at GetLatestRoot time.
-	ts := tufmetadata.Timestamp(time.Now().Add(time.Hour))
+	ts := tufext.DefaultTimestamp(time.Now().Add(time.Hour))
 	_, err := repo.PutBlob(ctx, "1.root.json", bytes.NewReader(mustEncode(t, ts)))
 	require.NoError(t, err)
 
@@ -305,7 +316,8 @@ func TestRepository_GetLatestRoot_IterationError(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, repo.Close()) })
 
-	root := tufmetadata.Root(time.Now().Add(time.Hour))
+	root := tufext.DefaultRoot(time.Now().Add(time.Hour))
+	root.Signed.Version = 1
 	_, _, err = repo.PutVersionedFile(ctx, tufmetadata.ROOT, root)
 	require.NoError(t, err)
 
@@ -323,7 +335,7 @@ func TestRepository_GetLatestRoot_VersionGap(t *testing.T) {
 	repo := newTestRepo(t)
 
 	for _, v := range []int64{1, 3} {
-		root := tufmetadata.Root(time.Now().Add(time.Hour))
+		root := tufext.DefaultRoot(time.Now().Add(time.Hour))
 		root.Signed.Version = v
 		_, _, err := repo.PutVersionedFile(ctx, tufmetadata.ROOT, root)
 		require.NoError(t, err)

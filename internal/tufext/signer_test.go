@@ -62,7 +62,7 @@ func TestSignRole_Ed25519(t *testing.T) {
 	ctx := context.Background()
 	key := generateInsecureKey(ctx, t)
 
-	meta := tufmetadata.Root()
+	meta := tufext.DefaultRoot()
 	sig, err := tufext.SignRole(ctx, meta, key)
 	require.NoError(t, err)
 	require.NotNil(t, sig)
@@ -100,7 +100,7 @@ func TestSignRole_ECDSA(t *testing.T) {
 
 	key := importInsecureKey(ctx, t, privKey)
 
-	meta := tufmetadata.Snapshot()
+	meta := tufext.DefaultSnapshot()
 	sig, err := tufext.SignRole(ctx, meta, key)
 	require.NoError(t, err)
 	require.NotNil(t, sig)
@@ -127,7 +127,7 @@ func TestSignRole_RSA(t *testing.T) {
 
 	key := importInsecureKey(ctx, t, privKey)
 
-	meta := tufmetadata.Timestamp()
+	meta := tufext.DefaultTimestamp()
 	sig, err := tufext.SignRole(ctx, meta, key)
 	require.NoError(t, err)
 	require.NotNil(t, sig)
@@ -155,7 +155,7 @@ func TestSignRole_MultipleSignatures(t *testing.T) {
 	key1 := generateInsecureKey(ctx, t)
 	key2 := generateInsecureKey(ctx, t)
 
-	meta := tufmetadata.Root()
+	meta := tufext.DefaultRoot()
 
 	sig1, err := tufext.SignRole(ctx, meta, key1)
 	require.NoError(t, err)
@@ -186,7 +186,7 @@ func TestSignRole_AllRoleTypes(t *testing.T) {
 	}
 
 	t.Run("Root", func(t *testing.T) {
-		meta := tufmetadata.Root()
+		meta := tufext.DefaultRoot()
 		sig, err := tufext.SignRole(ctx, meta, key)
 		require.NoError(t, err)
 		verifyEd25519(t, sig, meta.Signed)
@@ -194,7 +194,7 @@ func TestSignRole_AllRoleTypes(t *testing.T) {
 	})
 
 	t.Run("Snapshot", func(t *testing.T) {
-		meta := tufmetadata.Snapshot()
+		meta := tufext.DefaultSnapshot()
 		sig, err := tufext.SignRole(ctx, meta, key)
 		require.NoError(t, err)
 		verifyEd25519(t, sig, meta.Signed)
@@ -202,7 +202,7 @@ func TestSignRole_AllRoleTypes(t *testing.T) {
 	})
 
 	t.Run("Targets", func(t *testing.T) {
-		meta := tufmetadata.Targets()
+		meta := tufext.DefaultTargets()
 		sig, err := tufext.SignRole(ctx, meta, key)
 		require.NoError(t, err)
 		verifyEd25519(t, sig, meta.Signed)
@@ -210,7 +210,7 @@ func TestSignRole_AllRoleTypes(t *testing.T) {
 	})
 
 	t.Run("Timestamp", func(t *testing.T) {
-		meta := tufmetadata.Timestamp()
+		meta := tufext.DefaultTimestamp()
 		sig, err := tufext.SignRole(ctx, meta, key)
 		require.NoError(t, err)
 		verifyEd25519(t, sig, meta.Signed)
@@ -222,7 +222,7 @@ func TestSignRole_ReplacesExistingSignature(t *testing.T) {
 	ctx := context.Background()
 	key := generateInsecureKey(ctx, t)
 
-	meta := tufmetadata.Root()
+	meta := tufext.DefaultRoot()
 
 	// Sign once.
 	sig1, err := tufext.SignRole(ctx, meta, key)
@@ -254,7 +254,7 @@ func TestSignRole_ReplacesExistingSignature_PreservesOtherKeys(t *testing.T) {
 	key1 := generateInsecureKey(ctx, t)
 	key2 := generateInsecureKey(ctx, t)
 
-	meta := tufmetadata.Root()
+	meta := tufext.DefaultRoot()
 
 	// Sign with both keys.
 	_, err := tufext.SignRole(ctx, meta, key1)
@@ -288,7 +288,7 @@ func TestSignRole_ReplacesExistingSignature_DuplicateKeyIDs(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("Garbled", func(t *testing.T) {
-		meta := tufmetadata.Root()
+		meta := tufext.DefaultRoot()
 
 		// Manually inject multiple garbled signatures with the same key ID,
 		// simulating a malformed state from an external tool.
@@ -310,7 +310,7 @@ func TestSignRole_ReplacesExistingSignature_DuplicateKeyIDs(t *testing.T) {
 	})
 
 	t.Run("RealDuplicates", func(t *testing.T) {
-		meta := tufmetadata.Root()
+		meta := tufext.DefaultRoot()
 
 		// Produce a real signature, then manually duplicate it in the slice.
 		realSig, err := tufext.SignRole(ctx, meta, key)
@@ -344,7 +344,7 @@ func TestSignRole_ReplacesExistingSignature_DuplicateKeyIDs(t *testing.T) {
 		key3ID, err := key3.ID()
 		require.NoError(t, err)
 
-		meta := tufmetadata.Root()
+		meta := tufext.DefaultRoot()
 
 		// Manually build a [key1, key2, key1, key3, key1] signature list.
 		meta.Signatures = []tufmetadata.Signature{
@@ -378,7 +378,7 @@ func TestSignRole_BadDriver(t *testing.T) {
 	key := generateInsecureKey(ctx, t)
 	key.Driver = "nonexistent"
 
-	meta := tufmetadata.Root()
+	meta := tufext.DefaultRoot()
 	_, err := tufext.SignRole(ctx, meta, key)
 	assert.Error(t, err)
 }
@@ -390,7 +390,7 @@ func TestSignRole_UnsupportedKeyScheme(t *testing.T) {
 	// Mangle the key scheme to something unsupported.
 	key.Public.Scheme = "unsupported-scheme"
 
-	meta := tufmetadata.Root()
+	meta := tufext.DefaultRoot()
 	_, err := tufext.SignRole(ctx, meta, key)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported by TUF")

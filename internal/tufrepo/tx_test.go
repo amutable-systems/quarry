@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
+	"go.amutable.dev/quarry/internal/tufext"
 	"go.amutable.dev/quarry/internal/tufrepo"
 	storeopts "go.amutable.dev/quarry/internal/tufrepo/opts"
 )
@@ -69,7 +70,7 @@ func TestTxnStart_TimestampMissingSnapshotLink(t *testing.T) {
 	bs := bootstrapRepo(t)
 
 	// Overwrite timestamp.json with one whose Meta is empty.
-	ts := tufmetadata.Timestamp(time.Now().Add(time.Hour))
+	ts := tufext.DefaultTimestamp(time.Now().Add(time.Hour))
 	ts.Signed.Meta = map[string]*tufmetadata.MetaFiles{}
 	signMeta(ctx, t, ts, bs.timestampKey)
 
@@ -106,7 +107,7 @@ func TestTxnStart_SnapshotMetapathMissingJSONSuffix(t *testing.T) {
 
 	// Rewrite 1.snapshot.json so that its Meta uses a bare role name without
 	// ".json" -- TxnStart should reject this explicitly.
-	snap := tufmetadata.Snapshot(time.Now().Add(time.Hour))
+	snap := tufext.DefaultSnapshot(time.Now().Add(time.Hour))
 	snap.Signed.Version = 1
 	snap.Signed.Meta = map[string]*tufmetadata.MetaFiles{
 		tufmetadata.TARGETS: {Version: 1},
@@ -125,7 +126,7 @@ func TestTxnStart_SnapshotReferencesMissingTargets(t *testing.T) {
 	bs := bootstrapRepo(t)
 
 	// Point the snapshot at a non-existent target file version.
-	snap := tufmetadata.Snapshot(time.Now().Add(time.Hour))
+	snap := tufext.DefaultSnapshot(time.Now().Add(time.Hour))
 	snap.Signed.Version = 1
 	snap.Signed.Meta = map[string]*tufmetadata.MetaFiles{
 		tufmetadata.TARGETS + ".json": {Version: 999},
@@ -166,7 +167,7 @@ func TestTxnStart_SnapshotWrongType(t *testing.T) {
 	bs := bootstrapRepo(t)
 
 	// Store a timestamp payload as 1.snapshot.json.
-	ts := tufmetadata.Timestamp(time.Now().Add(time.Hour))
+	ts := tufext.DefaultTimestamp(time.Now().Add(time.Hour))
 	_, err := bs.repo.PutBlob(ctx, "1.snapshot.json", bytes.NewReader(mustEncode(t, ts)),
 		storeopts.Clobber)
 	require.NoError(t, err)
@@ -196,7 +197,7 @@ func TestTxnStart_DelegatedTargetWrongType(t *testing.T) {
 	bs := bootstrapRepo(t, withDelegation("bad-delegate"))
 
 	// Overwrite 1.bad-delegate.json with a root payload instead of targets.
-	root := tufmetadata.Root(time.Now().Add(time.Hour))
+	root := tufext.DefaultRoot(time.Now().Add(time.Hour))
 	_, err := bs.repo.PutBlob(ctx, "1.bad-delegate.json", bytes.NewReader(mustEncode(t, root)),
 		storeopts.Clobber)
 	require.NoError(t, err)
@@ -236,22 +237,22 @@ func TestTransaction_RoleData_Dispatches(t *testing.T) {
 
 	rootAny, err := tx.RoleData(ctx, tufmetadata.ROOT)
 	require.NoError(t, err)
-	_, ok := rootAny.(*tufmetadata.Metadata[tufmetadata.RootType])
+	_, ok := rootAny.(*tufext.SignedRoot)
 	assert.True(t, ok, "expected *Metadata[RootType], got %T", rootAny)
 
 	tsAny, err := tx.RoleData(ctx, tufmetadata.TIMESTAMP)
 	require.NoError(t, err)
-	_, ok = tsAny.(*tufmetadata.Metadata[tufmetadata.TimestampType])
+	_, ok = tsAny.(*tufext.SignedTimestamp)
 	assert.True(t, ok)
 
 	snapAny, err := tx.RoleData(ctx, tufmetadata.SNAPSHOT)
 	require.NoError(t, err)
-	_, ok = snapAny.(*tufmetadata.Metadata[tufmetadata.SnapshotType])
+	_, ok = snapAny.(*tufext.SignedSnapshot)
 	assert.True(t, ok)
 
 	targetsAny, err := tx.RoleData(ctx, tufmetadata.TARGETS)
 	require.NoError(t, err)
-	_, ok = targetsAny.(*tufmetadata.Metadata[tufmetadata.TargetsType])
+	_, ok = targetsAny.(*tufext.SignedTargets)
 	assert.True(t, ok)
 }
 
@@ -298,12 +299,12 @@ func TestTransaction_UpdateRoleData_AcceptsAllInputShapes(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		version int64
-		build   func(*tufmetadata.Metadata[tufmetadata.RootType]) any
+		build   func(*tufext.SignedRoot) any
 	}{
 		{
 			name:    "MetadataPointer",
 			version: 11,
-			build: func(r *tufmetadata.Metadata[tufmetadata.RootType]) any {
+			build: func(r *tufext.SignedRoot) any {
 				r.Signed.Version = 11
 				return r
 			},
@@ -311,7 +312,7 @@ func TestTransaction_UpdateRoleData_AcceptsAllInputShapes(t *testing.T) {
 		{
 			name:    "MetadataValue",
 			version: 12,
-			build: func(r *tufmetadata.Metadata[tufmetadata.RootType]) any {
+			build: func(r *tufext.SignedRoot) any {
 				r.Signed.Version = 12
 				return *r
 			},
@@ -319,7 +320,7 @@ func TestTransaction_UpdateRoleData_AcceptsAllInputShapes(t *testing.T) {
 		{
 			name:    "Bytes",
 			version: 13,
-			build: func(r *tufmetadata.Metadata[tufmetadata.RootType]) any {
+			build: func(r *tufext.SignedRoot) any {
 				r.Signed.Version = 13
 				return mustEncode(t, r)
 			},
@@ -327,7 +328,7 @@ func TestTransaction_UpdateRoleData_AcceptsAllInputShapes(t *testing.T) {
 		{
 			name:    "RawMessage",
 			version: 14,
-			build: func(r *tufmetadata.Metadata[tufmetadata.RootType]) any {
+			build: func(r *tufext.SignedRoot) any {
 				r.Signed.Version = 14
 				return json.RawMessage(mustEncode(t, r))
 			},
@@ -335,7 +336,7 @@ func TestTransaction_UpdateRoleData_AcceptsAllInputShapes(t *testing.T) {
 		{
 			name:    "Reader",
 			version: 15,
-			build: func(r *tufmetadata.Metadata[tufmetadata.RootType]) any {
+			build: func(r *tufext.SignedRoot) any {
 				r.Signed.Version = 15
 				return bytes.NewReader(mustEncode(t, r))
 			},
@@ -401,10 +402,10 @@ func TestTransaction_UpdateRoleData_MismatchedRole(t *testing.T) {
 	// Pre-encode one payload for every role so every sub-test can pick a
 	// payload whose _type does not match the target role.
 	encoded := map[string][]byte{
-		tufmetadata.ROOT:      mustEncode(t, tufmetadata.Root(time.Now().Add(time.Hour))),
-		tufmetadata.TARGETS:   mustEncode(t, tufmetadata.Targets(time.Now().Add(time.Hour))),
-		tufmetadata.SNAPSHOT:  mustEncode(t, tufmetadata.Snapshot(time.Now().Add(time.Hour))),
-		tufmetadata.TIMESTAMP: mustEncode(t, tufmetadata.Timestamp(time.Now().Add(time.Hour))),
+		tufmetadata.ROOT:      mustEncode(t, tufext.DefaultRoot(time.Now().Add(time.Hour))),
+		tufmetadata.TARGETS:   mustEncode(t, tufext.DefaultTargets(time.Now().Add(time.Hour))),
+		tufmetadata.SNAPSHOT:  mustEncode(t, tufext.DefaultSnapshot(time.Now().Add(time.Hour))),
+		tufmetadata.TIMESTAMP: mustEncode(t, tufext.DefaultTimestamp(time.Now().Add(time.Hour))),
 	}
 
 	for _, tc := range []struct {
