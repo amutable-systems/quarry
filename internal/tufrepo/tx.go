@@ -175,11 +175,6 @@ func (tx *Transaction) isDirty(roleName string) bool {
 //
 // This method is intended to be called from [TxnOp.ApplyToTxn].
 func (tx *Transaction) RootRoleData(_ context.Context) (_ *tufext.SignedRoot, Err error) {
-	if err := tx.valid(); err != nil {
-		return nil, err
-	}
-	defer tx.invalidateOnError(&Err)
-
 	root := tx.newRoot
 	if root == nil {
 		root = tx.root
@@ -191,11 +186,6 @@ func (tx *Transaction) RootRoleData(_ context.Context) (_ *tufext.SignedRoot, Er
 //
 // This method is intended to be called from [TxnOp.ApplyToTxn].
 func (tx *Transaction) TimestampRoleData(_ context.Context) (_ *tufext.SignedTimestamp, Err error) {
-	if err := tx.valid(); err != nil {
-		return nil, err
-	}
-	defer tx.invalidateOnError(&Err)
-
 	return generics.DeepCopy(tx.timestamp)
 }
 
@@ -203,11 +193,6 @@ func (tx *Transaction) TimestampRoleData(_ context.Context) (_ *tufext.SignedTim
 //
 // This method is intended to be called from [TxnOp.ApplyToTxn].
 func (tx *Transaction) SnapshotRoleData(_ context.Context) (_ *tufext.SignedSnapshot, Err error) {
-	if err := tx.valid(); err != nil {
-		return nil, err
-	}
-	defer tx.invalidateOnError(&Err)
-
 	return generics.DeepCopy(tx.snapshot)
 }
 
@@ -217,11 +202,6 @@ func (tx *Transaction) SnapshotRoleData(_ context.Context) (_ *tufext.SignedSnap
 //
 // This method is intended to be called from [TxnOp.ApplyToTxn].
 func (tx *Transaction) TargetsRoleData(_ context.Context, roleName string) (_ *tufext.SignedTargets, Err error) {
-	if err := tx.valid(); err != nil {
-		return nil, err
-	}
-	defer tx.invalidateOnError(&Err)
-
 	data, ok := tx.targets[roleName]
 	if !ok {
 		return nil, fmt.Errorf("unknown role %s: %w", roleName, fs.ErrNotExist)
@@ -235,11 +215,6 @@ func (tx *Transaction) TargetsRoleData(_ context.Context, roleName string) (_ *t
 //
 // This method is intended to be called from [TxnOp.ApplyToTxn].
 func (tx *Transaction) RoleData(ctx context.Context, roleName string) (_ any, Err error) {
-	if err := tx.valid(); err != nil {
-		return nil, err
-	}
-	defer tx.invalidateOnError(&Err)
-
 	switch roleName {
 	case tufmetadata.ROOT:
 		return tx.RootRoleData(ctx)
@@ -313,11 +288,6 @@ var errMismatchedRole = errors.New("mismatched role data")
 //
 // This method is intended to be called from [TxnOp.ApplyToTxn].
 func (tx *Transaction) UpdateRoleData(roleName string, roleData any) (Err error) {
-	if err := tx.valid(); err != nil {
-		return err
-	}
-	defer tx.invalidateOnError(&Err)
-
 	switch roleName {
 	case tufmetadata.ROOT:
 		root, err := parseRoleData[tufmetadata.RootType](roleName, roleData)
@@ -419,11 +389,6 @@ func (tx *Transaction) DefinedRoles(ctx context.Context) iter.Seq2[string, error
 //
 // This method is intended to be called from [TxnOp.ApplyToTxn].
 func (tx *Transaction) ClearRole(_ context.Context, roleName string) (Err error) {
-	if err := tx.valid(); err != nil {
-		return err
-	}
-	defer tx.invalidateOnError(&Err)
-
 	if tufext.IsCoreRole(roleName) {
 		return fmt.Errorf("cannot remove top-level role %q", roleName)
 	}
@@ -566,6 +531,7 @@ const timestampRevisionAttribute = "quarry-timestamp-revision"
 // repository has changed since the transaction was started, the transaction
 // will be aborted and [ErrTransactionFailed] will be returned.
 func (r *Repository) TxnCommit(ctx context.Context, tx *Transaction) (_ *tufext.SignedTimestamp, Err error) {
+	// Refuse to commit invalidated transactions.
 	if err := tx.valid(); err != nil {
 		return nil, err
 	}

@@ -51,16 +51,6 @@ func ReplaceKeys(roleName string, keys map[keystore.KeyID]*keystore.PublicKey, r
 // is managed by the given [keystore.Store]) or [keyopts.GenerateOption] (used
 // when a key is not available and thus a new key needs to be generated).
 func (tx *Transaction) rotateRoleKeys(ctx context.Context, roleName string, store *keystore.Store, opts ...any) (_ []keystore.KeyID, Err error) {
-	if err := tx.valid(); err != nil {
-		return nil, err
-	}
-	defer tx.invalidateOnError(&Err) // TODO: Move this later...?
-
-	if !tufext.IsCoreRole(roleName) {
-		// TODO: Implement the replacement of delegated role keys.
-		return nil, fmt.Errorf("cannot rotate keys for role %q: delegated role key rotation is not implemented", roleName)
-	}
-
 	// Copy the option sets (note that some options may be valid generation and
 	// rotation options).
 	var (

@@ -213,6 +213,52 @@ func TestSign_PreSignedRootSkipsTimestampRotation(t *testing.T) {
 	assert.Equal(t, oldTimestampKeyIDs, newRoot.Signed.Roles[tufmetadata.TIMESTAMP].KeyIDs)
 }
 
+// TestSign_RejectsInvalidatedTransaction pins the explicit tx.valid()
+// guard at the top of Sign: a poisoned transaction must surface the
+// poison verbatim before any of the signing-flow side effects run. We
+// stage the same dirty-root setup as TestSign_DirtyRootRotatesTimestampKey
+// (which would otherwise drive bumpRevisions, rotateRoleKeys, and
+// signRole into mutating tx.newRoot) and then poison the tx -- Sign
+// must short-circuit, leaving the root byte-identical to its
+// post-UpdateRoleData state.
+func TestSign_RejectsInvalidatedTransaction(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	// Dirty-root setup that would otherwise trigger version bump,
+	// timestamp-key rotation, and re-signing of the root inside Sign.
+	oldRoot, err := tx.RootRoleData(ctx)
+	require.NoError(t, err)
+	oldRoot.Signed.Expires = oldRoot.Signed.Expires.Add(24 * time.Hour)
+	oldRoot.Signatures = nil
+	require.NoError(t, tx.UpdateRoleData(tufmetadata.ROOT, oldRoot))
+
+	// Snapshot of the root the moment Sign sees it; on a refused Sign
+	// every field below must be unchanged.
+	preSign, err := tx.RootRoleData(ctx)
+	require.NoError(t, err)
+
+	boom := errors.New("poison")
+	err = tx.Apply(ctx, tufrepo.NewTxnOp("poison", func(context.Context, *tufrepo.Transaction) error {
+		return boom
+	}))
+	require.ErrorIs(t, err, boom)
+
+	newKeys, err := tx.Sign(ctx, bs.store)
+	require.ErrorIs(t, err, boom, "Sign must surface the poison verbatim")
+	assert.Nil(t, newKeys, "Sign must return no key IDs when refusing")
+
+	// If Sign had let bumpRevisions / rotateRoleKeys / signRole run, the
+	// version, timestamp KeyIDs, and signatures would all differ here.
+	postSign, err := tx.RootRoleData(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, preSign, postSign,
+		"Sign must not mutate the root when refusing an invalidated transaction")
+}
+
 // Sign must fail cleanly when the quorum cannot be met because the signing
 // key has been unlinked from the keystore.
 func TestSign_FailsWhenThresholdCannotBeMet(t *testing.T) {
@@ -482,9 +528,10 @@ func TestBumpExpiry_NilReturnLeavesRoleUnchanged(t *testing.T) {
 		"targets version must not bump when BumpExpiry was a no-op")
 }
 
-// An error returned from the closure must propagate verbatim and invalidate
-// the transaction.
-func TestBumpExpiry_ClosureErrorInvalidatesTransaction(t *testing.T) {
+// An error returned from the closure must propagate verbatim. BumpExpiry
+// is intentionally one of the methods that does not poison the tx on
+// closure error -- the user can retry, or do something else.
+func TestBumpExpiry_ClosureErrorPropagatesVerbatim(t *testing.T) {
 	ctx := context.Background()
 	bs := bootstrapRepo(t)
 
@@ -497,8 +544,20 @@ func TestBumpExpiry_ClosureErrorInvalidatesTransaction(t *testing.T) {
 	})
 	require.ErrorIs(t, err, boom)
 
-	_, err = tx.RootRoleData(ctx)
-	require.ErrorIs(t, err, boom)
+	// Tx must remain usable -- a noop Apply must not surface the boom.
+	err = tx.Apply(ctx, tufrepo.NewTxnOp("noop", func(context.Context, *tufrepo.Transaction) error {
+		return nil
+	}))
+	require.NoError(t, err, "BumpExpiry closure error must not poison the transaction")
+
+	// And a fresh BumpExpiry call must run normally.
+	var ran bool
+	err = tx.BumpExpiry(ctx, tufmetadata.TARGETS, func(time.Time, any) (*time.Time, error) {
+		ran = true
+		return nil, nil //nolint:nilnil // nil indicates no change needed
+	})
+	require.NoError(t, err)
+	assert.True(t, ran, "follow-up BumpExpiry closure must run")
 }
 
 // An unknown role name falls through RoleData to TargetsRoleData, which must
@@ -515,28 +574,6 @@ func TestBumpExpiry_UnknownRoleError(t *testing.T) {
 		return nil, nil //nolint:nilnil // unreachable, closure must not run
 	})
 	require.ErrorIs(t, err, fs.ErrNotExist)
-}
-
-// A pre-invalidated transaction must reject BumpExpiry outright, without
-// invoking the closure.
-func TestBumpExpiry_RejectsInvalidatedTransaction(t *testing.T) {
-	ctx := context.Background()
-	bs := bootstrapRepo(t)
-
-	tx, err := bs.repo.TxnStart(ctx)
-	require.NoError(t, err)
-
-	boom := errors.New("poison")
-	err = tx.Apply(ctx, tufrepo.NewTxnOp("poison", func(context.Context, *tufrepo.Transaction) error {
-		return boom
-	}))
-	require.ErrorIs(t, err, boom)
-
-	err = tx.BumpExpiry(ctx, tufmetadata.TARGETS, func(time.Time, any) (*time.Time, error) {
-		t.Fatal("closure must not run on a failed transaction")
-		return nil, nil //nolint:nilnil // unreachable, closure must not run
-	})
-	require.ErrorIs(t, err, boom)
 }
 
 // Per the doc comment, when the closure returns a non-nil expiry, any other

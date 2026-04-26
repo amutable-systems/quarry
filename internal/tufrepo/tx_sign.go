@@ -177,11 +177,6 @@ func computeDelegatorKeyQuorums(delegator any, roleName string) iter.Seq2[keyQuo
 // has valid signatures. If the signatures are invalid, this method returns
 // (false, nil).
 func (tx *Transaction) checkRoleSignatures(ctx context.Context, roleName string, roleData any) (_ bool, Err error) {
-	if err := tx.valid(); err != nil {
-		return false, err
-	}
-	defer tx.invalidateOnError(&Err)
-
 	for delegator, err := range tx.findRoleDelegators(ctx, roleName) {
 		if err != nil {
 			return false, fmt.Errorf("failed to find delegator for role %s: %w", roleName, err)
@@ -308,11 +303,6 @@ func signRoleGeneric(ctx context.Context, store *keystore.Store, meta any, quoru
 }
 
 func (tx *Transaction) signRole(ctx context.Context, store *keystore.Store, roleName string) (Err error) {
-	if err := tx.valid(); err != nil {
-		return err
-	}
-	defer tx.invalidateOnError(&Err)
-
 	roleData, err := tx.RoleData(ctx, roleName)
 	if err != nil {
 		return fmt.Errorf("failed to fetch role %s data: %w", roleName, err)
@@ -357,11 +347,6 @@ func (tx *Transaction) signRole(ctx context.Context, store *keystore.Store, role
 // checkNeedsBump returns whether the data for the given role in this
 // transaction has been changed in a way that requires bumping its metadata.
 func (tx *Transaction) checkNeedsBump(ctx context.Context, roleName string, roleData any) (_ bool, Err error) {
-	if err := tx.valid(); err != nil {
-		return false, err
-	}
-	defer tx.invalidateOnError(&Err)
-
 	ok, err := tx.checkRoleSignatures(ctx, roleName, roleData)
 	if err != nil {
 		return false, fmt.Errorf("failed to detect changes in role %s data: %w", roleName, err)
@@ -376,11 +361,6 @@ func (tx *Transaction) checkNeedsBump(ctx context.Context, roleName string, role
 // timestamp roles (which have their own version / expiry update logic in their
 // update routines...).
 func (tx *Transaction) bumpRevisions(ctx context.Context) (Err error) {
-	if err := tx.valid(); err != nil {
-		return err
-	}
-	defer tx.invalidateOnError(&Err)
-
 	timeVersion := tx.RefTime.UnixMilli()
 	for roleName := range tx.dirty {
 		roleData, err := tx.RoleData(ctx, roleName)
@@ -503,11 +483,6 @@ func metaExpiry(meta any) (*time.Time, error) {
 //
 // If expiryFn is nil then the default expiry is used unconditionally.
 func (tx *Transaction) BumpExpiry(ctx context.Context, roleName string, expiryFn func(oldExpiry time.Time, roleData any) (*time.Time, error)) (Err error) {
-	if err := tx.valid(); err != nil {
-		return err
-	}
-	defer tx.invalidateOnError(&Err)
-
 	if expiryFn == nil {
 		expiryFn = func(_ time.Time, _ any) (*time.Time, error) {
 			expiresAfter := tx.expiry(roleName)
@@ -547,11 +522,6 @@ func (tx *Transaction) BumpExpiry(ctx context.Context, roleName string, expiryFn
 // timestamp roles (which have their own version / expiry update logic in their
 // update routines...).
 func (tx *Transaction) bumpExpiries(ctx context.Context) (Err error) {
-	if err := tx.valid(); err != nil {
-		return err
-	}
-	defer tx.invalidateOnError(&Err)
-
 	for roleName := range tx.dirty {
 		if err := tx.BumpExpiry(ctx, roleName, func(oldExpiry time.Time, roleData any) (*time.Time, error) {
 			if needsBump, err := tx.checkNeedsBump(ctx, roleName, roleData); err != nil {
@@ -671,11 +641,11 @@ func (tx *Transaction) updateTimestamp(ctx context.Context) (Err error) {
 }
 
 // Sign signs the current set of repository data in this transaction.
-func (tx *Transaction) Sign(ctx context.Context, store *keystore.Store) (newKeys []keystore.KeyID, Err error) {
+func (tx *Transaction) Sign(ctx context.Context, store *keystore.Store) (newKeyIDs []keystore.KeyID, Err error) {
+	// Refuse to sign invalidated transactions.
 	if err := tx.valid(); err != nil {
 		return nil, err
 	}
-	defer tx.invalidateOnError(&Err)
 
 	// TODO: We call checkRoleSignatures several times here, we almost
 	// certainly should be caching the results (such as caching in
@@ -707,8 +677,22 @@ func (tx *Transaction) Sign(ctx context.Context, store *keystore.Store) (newKeys
 				if err != nil {
 					return nil, fmt.Errorf("could not rotate timestamp keys: %w", err)
 				}
-				newKeys = append(newKeys, newTimestampKeys...)
-				// TODO: We should probably remove these on error too...?
+				newKeyIDs = append(newKeyIDs, newTimestampKeys...)
+				defer func() { //nolint:contextcheck // ctx is not passed intentionally
+					// Make sure to clean up any generated keys in case of an
+					// error.
+					if Err != nil {
+						// TODO: We want to force the removal even if the
+						// context was cancelled, but we might also want to
+						// have some kind of deadline here just in case? Or
+						// maybe we should use context.WithoutCancel?
+						ctx := context.TODO()
+						for _, keyID := range newKeyIDs {
+							_ = store.UnlinkKey(ctx, keyID)
+						}
+						newKeyIDs = nil
+					}
+				}()
 			}
 		}
 		// Sign the new root data -- for online repos this should effectively
@@ -745,5 +729,5 @@ func (tx *Transaction) Sign(ctx context.Context, store *keystore.Store) (newKeys
 		return nil, err
 	}
 
-	return newKeys, nil
+	return newKeyIDs, nil
 }

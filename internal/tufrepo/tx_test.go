@@ -265,6 +265,12 @@ func TestTransaction_TargetsRoleData_UnknownRole(t *testing.T) {
 
 	_, err = tx.TargetsRoleData(ctx, "never-existed")
 	require.ErrorIs(t, err, fs.ErrNotExist)
+
+	// Read-only getters must not poison the transaction on lookup failure.
+	err = tx.Apply(ctx, tufrepo.NewTxnOp("noop", func(context.Context, *tufrepo.Transaction) error {
+		return nil
+	}))
+	require.NoError(t, err, "TargetsRoleData ErrNotExist must not invalidate the transaction")
 }
 
 func TestTransaction_RootRoleData_PrefersNewRoot(t *testing.T) {
@@ -687,8 +693,12 @@ func TestTransaction_Apply_CancelledBetweenOps(t *testing.T) {
 	assert.False(t, secondRan, "second op must be skipped after cancellation")
 }
 
-// A transaction that has seen one failure must refuse to do more work with
-// the original failure preserved as the root cause.
+// A transaction that has seen one failure must refuse to do further
+// externally-visible work (Apply, Sign, TxnCommit) with the original
+// failure preserved as the root cause. Read-only getters and
+// internal-only mutators (UpdateRoleData, ClearRole, BumpExpiry, ...)
+// are intentionally exempt: they don't have external side effects, and
+// any state they leave behind is gated downstream by Apply/Sign/Commit.
 func TestTransaction_InvalidatedAfterFailure(t *testing.T) {
 	ctx := context.Background()
 	bs := bootstrapRepo(t)
@@ -702,18 +712,24 @@ func TestTransaction_InvalidatedAfterFailure(t *testing.T) {
 	}))
 	require.ErrorIs(t, err, boom)
 
-	// All public Transaction methods should now refuse to operate.
+	// Read-only getters keep working: the post-failure state is whatever
+	// was there at the moment the op returned an error.
 	_, err = tx.RootRoleData(ctx)
-	require.ErrorIs(t, err, boom)
+	require.NoError(t, err)
 	_, err = tx.TimestampRoleData(ctx)
-	require.ErrorIs(t, err, boom)
+	require.NoError(t, err)
 	_, err = tx.SnapshotRoleData(ctx)
-	require.ErrorIs(t, err, boom)
+	require.NoError(t, err)
 	_, err = tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+
+	// Externally-visible methods (Apply runs user code, Sign produces
+	// signed blobs, TxnCommit hits the store) all refuse to operate.
+	err = tx.Apply(ctx, tufrepo.NewTxnOp("noop", func(context.Context, *tufrepo.Transaction) error {
+		return nil
+	}))
 	require.ErrorIs(t, err, boom)
 	_, err = tx.Sign(ctx, bs.store)
-	require.ErrorIs(t, err, boom)
-	err = tx.ClearRole(ctx, "not-a-real-role")
 	require.ErrorIs(t, err, boom)
 	_, err = bs.repo.TxnCommit(ctx, tx)
 	require.ErrorIs(t, err, boom)
