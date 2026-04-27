@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,9 +11,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
+	"cyphar.com/go-pathrs"
 	"github.com/opencontainers/go-digest"
 	"github.com/secure-systems-lab/go-securesystemslib/cjson"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
@@ -20,6 +23,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"go.amutable.dev/quarry/internal/keystore"
+	"go.amutable.dev/quarry/internal/pathrsext"
 	"go.amutable.dev/quarry/internal/third_party/fdutils"
 	"go.amutable.dev/quarry/internal/tufext"
 )
@@ -44,7 +48,10 @@ func stripComponents(path string, toStrip int) string {
 	return components[toStrip]
 }
 
-func addToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalPath string, file *os.File) error { //nolint:unparam // ctx might be used in the future
+// TODO: Support specifying a set of hashes or at least a different hash algo.
+var hashAlgorithm = digest.SHA256
+
+func hashToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalPath string, file *os.File) error { //nolint:unparam // ctx might be used in the future
 	st, err := file.Stat()
 	if err != nil {
 		return fmt.Errorf("failed to fstat %s: %w", file.Name(), err)
@@ -61,7 +68,7 @@ func addToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalPa
 			if err != nil {
 				return fmt.Errorf("could not open child %s: %w", logicalSubpath, err)
 			}
-			err = addToTargets(ctx, builder, logicalSubpath, subfile)
+			err = hashToTargets(ctx, builder, logicalSubpath, subfile)
 			_ = subfile.Close()
 			if err != nil {
 				return err
@@ -72,11 +79,10 @@ func addToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalPa
 
 	// Make sure we don't end up with a nonsense name.
 	if filepath.Join("/", logicalPath) == "/" { //nolint:forbidigo // lexical paths
-		return fmt.Errorf("--skip-components value to large -- no components left for file %s", file.Name())
+		return fmt.Errorf("--skip-components value too large -- no components left for file %s", file.Name())
 	}
 
-	// TODO: We should probably support specifying a set of hashes.
-	digester := digest.SHA256.Digester()
+	digester := hashAlgorithm.Digester()
 	// TODO: Make this cancellable.
 	size, err := io.Copy(digester.Hash(), file)
 	if err != nil {
@@ -86,6 +92,67 @@ func addToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalPa
 
 	if _, err := builder.AddTargetFile(logicalPath, size, digest); err != nil {
 		return fmt.Errorf("add file %s to targets data: %w", logicalPath, err)
+	}
+	return nil
+}
+
+// sumFileRe matches the "standard" line format for "hashsum" files.
+var sumFileRe = regexp.MustCompile(`^([0-9a-fA-F]+)\s+(.+)$`)
+
+func addPrehashedToTargets(_ context.Context, builder *tufext.TargetsBuilder, logicalPath string, sumFile *os.File) error {
+	if filepath.Join("/", logicalPath) == "/" { //nolint:forbidigo // lexical paths
+		return fmt.Errorf("--skip-components value too large -- no components left for sumfile %s", sumFile.Name())
+	}
+	// logicalPath references the sumfile, we care about the parent directory
+	// for computing the logical subpath of paths referenced in the sumfile.
+	logicalPath = filepath.Dir(logicalPath)
+
+	// We need to open the parent directory of the *actual* sumfile.
+	root, err := pathrs.OpenRoot(filepath.Dir(sumFile.Name()))
+	if err != nil {
+		return fmt.Errorf("failed to open parent directory of sumfile %s: %w", sumFile.Name(), err)
+	}
+
+	var skippedLines uint
+	scanner := bufio.NewScanner(sumFile)
+	for scanner.Scan() {
+		parts := sumFileRe.FindStringSubmatch(scanner.Text())
+		if len(parts) != 3 {
+			// This line does not contain a hashsum line (it might be empty or
+			// a inline-signed sumfile that contains non-hash lines).
+			// TODO: Add logging?
+			skippedLines++
+			continue
+		}
+		hash, subpath := strings.ToLower(parts[1]), parts[2]
+
+		// Compute the logical subpath of the referenced file.
+		logicalSubpath := filepath.Join(logicalPath, subpath) //nolint:forbidigo // lexical paths
+
+		// Make sure the digest is valid.
+		if err := hashAlgorithm.Validate(hash); err != nil {
+			// TODO: Add proper logging.
+			fmt.Fprintf(os.Stderr, "skipping invalid hash %q: %v\n", hash, err)
+			skippedLines++
+			continue
+		}
+		digest := digest.NewDigestFromEncoded(hashAlgorithm, hash)
+
+		// Get the size.
+		st, err := pathrsext.Stat(root, subpath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cannot stat hashed file %q: %v\n", subpath, err)
+			skippedLines++
+			continue
+		}
+
+		if _, err := builder.AddTargetFile(logicalSubpath, st.Size(), digest); err != nil {
+			return fmt.Errorf("add file %s to targets data: %w", logicalSubpath, err)
+		}
+	}
+	if skippedLines > 0 {
+		// TODO: Add proper logging.
+		fmt.Fprintf(os.Stderr, "== SKIPPED %d invalid lines in %s ==\n", skippedLines, sumFile.Name())
 	}
 	return nil
 }
@@ -104,6 +171,11 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		&cli.UintFlag{
 			Name:  "strip-components",
 			Usage: "strip N parent components from paths when adding them to target.json",
+		},
+		&cli.BoolFlag{
+			Name:    "pre-hashed",
+			Aliases: []string{"H"},
+			Usage:   "indicates that the given paths are all hashsum files (the listed files must still exist to get their size)",
 		},
 		// TODO: Move --ref-time and --expire-after to utils?
 		&cli.TimestampFlag{
@@ -217,8 +289,14 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 				return err
 			}
 			logicalFilename := stripComponents(filename, int(cmd.Uint("strip-components")))
-			if err := addToTargets(ctx, builder, logicalFilename, file); err != nil {
-				return fmt.Errorf("failed to add %s (as %s) to targets: %w", filename, logicalFilename, err)
+			if cmd.Bool("pre-hashed") {
+				if err := addPrehashedToTargets(ctx, builder, logicalFilename, file); err != nil {
+					return fmt.Errorf("failed to add sumfile %s contents (as %s) to targets: %w", filename, logicalFilename, err)
+				}
+			} else {
+				if err := hashToTargets(ctx, builder, logicalFilename, file); err != nil {
+					return fmt.Errorf("failed to add %s (as %s) to targets: %w", filename, logicalFilename, err)
+				}
 			}
 		}
 
