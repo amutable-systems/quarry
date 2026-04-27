@@ -12,6 +12,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"go.amutable.dev/quarry/cmd/internal/pprint"
 	"go.amutable.dev/quarry/internal/keystore"
 	"go.amutable.dev/quarry/internal/tufext"
 	"go.amutable.dev/quarry/internal/tufrepo"
@@ -119,9 +120,9 @@ var repoctlInitCommand = &cli.Command{
 			}
 		}
 		fmt.Println("root.json:")
-		pprintToJSON("\t", signedRoot)
+		pprint.ToJSON("\t", "\t", signedRoot)
 		fmt.Println("timestamp.json:")
-		pprintToJSON("\t", timestamp)
+		pprint.ToJSON("\t", "\t", timestamp)
 		return nil
 	},
 }
@@ -234,7 +235,7 @@ var repoctlRefreshCommand = &cli.Command{
 		}
 
 		fmt.Println("timestamp.json:")
-		pprintToJSON("\t", timestamp)
+		pprint.ToJSON("\t", "\t", timestamp)
 		return nil
 	},
 }
@@ -315,7 +316,7 @@ var repoctlSnapshotCommand = &cli.Command{
 		}
 
 		fmt.Println("timestamp.json:")
-		pprintToJSON("\t", timestamp)
+		pprint.ToJSON("\t", "\t", timestamp)
 		return nil
 	},
 }

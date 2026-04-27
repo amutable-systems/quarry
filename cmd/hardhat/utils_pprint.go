@@ -3,30 +3,11 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 
-	"github.com/secure-systems-lab/go-securesystemslib/cjson"
-
+	"go.amutable.dev/quarry/cmd/internal/pprint"
 	"go.amutable.dev/quarry/internal/keystore"
 )
-
-func pprintToJSON(prefix string, data any) { //nolint:unparam // prefix is useful for generic usage
-	payload, err := cjson.EncodeCanonical(data)
-	if err != nil {
-		panic(err)
-	}
-	pprintJSON(prefix, payload)
-}
-
-func pprintJSON(prefix string, data []byte) {
-	var indented bytes.Buffer
-	if err := json.Indent(&indented, data, prefix, "\t"); err != nil {
-		panic(err)
-	}
-	fmt.Println(indented.String())
-}
 
 func pprintGenericKey(prefix string, key *keystore.GenericKey) error {
 	keyID, err := key.ID()
@@ -42,6 +23,6 @@ func pprintGenericKey(prefix string, key *keystore.GenericKey) error {
 	fmt.Printf("%sPublicKey: %q\n", prefix, key.Public.Value.PublicKey)
 
 	fmt.Printf("%sData:\n", prefix)
-	pprintJSON(prefix+"\t", []byte(key.Data))
+	pprint.JSON(prefix+"\t", "\t", []byte(key.Data))
 	return nil
 }
