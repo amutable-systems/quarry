@@ -4,14 +4,12 @@ package main
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
-	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 	"github.com/urfave/cli/v3"
 
 	"go.amutable.dev/quarry/internal/keystore"
@@ -34,87 +32,31 @@ var repoctlCommand = withRepoFlag(withKeystoreFlag(&cli.Command{
 var repoctlInitCommand = &cli.Command{
 	Name:  "init",
 	Usage: "create a new quarry repository",
-	Flags: []cli.Flag{
-		&cli.StringFlag{
-			Name:  "driver",
-			Usage: "driver to use when generating keys",
-			Value: keystore.DefaultDriver,
-		},
-		// TODO: Add flags for generating different kinds of keys.
-		&cli.StringMapFlag{
-			Name:  "keys",
-			Usage: "specify the public keys used for each role (<role>=<type>:<key>,<type>:<key> -- valid types are 'keyid' and 'ed25519')",
-		},
-		// TODO: Ideally we would have an IntMapFlag...
-		&cli.StringMapFlag{
-			Name:  "threshold",
-			Usage: "specify the threshold of keys for each keys used for each format",
-		},
-		// TODO: Move --ref-time and --expire-after to utils?
-		&cli.TimestampFlag{
-			Name:  "ref-time",
-			Usage: "configure the reference time (defaults to now)",
-			Value: time.Now().UTC(),
-			Config: cli.TimestampConfig{
-				Layouts: []string{
-					time.RFC3339,
-					time.RFC3339Nano,
-					time.DateOnly,
-					// TODO: It would be nice to be able to pass a Unix epoch.
+	MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{
+		{
+			Flags: [][]cli.Flag{
+				// in-band root.json generation
+				generateRootFlags,
+				// use an out-of-band root.json
+				{
+					&cli.StringFlag{
+						Name:      "root",
+						Usage:     "use a pre-signed root.json as the repo root",
+						TakesFile: true,
+					},
 				},
 			},
 		},
-		&cli.DurationFlag{
-			Name:  "expire-after",
-			Value: tufrepo.DefaultRootExpiry,
-			Usage: "configure the expiry of root.json (duration relative to --ref-time)",
-		},
 	},
-	Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
-		for roleName := range cmd.StringMap("keys") {
-			if !tufext.IsCoreRole(roleName) {
-				return nil, fmt.Errorf("role %s specified in --keys is not a core role", roleName)
-			}
-		}
-		for roleName := range cmd.StringMap("threshold") {
-			if !tufext.IsCoreRole(roleName) {
-				return nil, fmt.Errorf("role %s specified in --threshold is not a core role", roleName)
-			}
-		}
-		return ctx, nil
-	},
+	Before: checkGenerateRootFlags,
 	Action: func(ctx context.Context, cmd *cli.Command) (Err error) {
 		repo := ctxRepo(ctx)
 		store := ctxKeystore(ctx)
 
-		// Collect the threshold configuration first.
-		roleThresholds := make(map[string]int, len(tufmetadata.TOP_LEVEL_ROLE_NAMES))
-		for _, roleName := range tufmetadata.TOP_LEVEL_ROLE_NAMES {
-			roleThresholds[roleName] = 1
-		}
-		for roleName, thresholdSpec := range cmd.StringMap("threshold") {
-			threshold, err := strconv.ParseUint(thresholdSpec, 10, 32)
-			if threshold <= 0 && err == nil {
-				err = errors.New("threshold must be >= 1")
-			}
-			if err != nil {
-				return fmt.Errorf("specified rold %s threshold %q is invalid: %w", roleName, thresholdSpec, err)
-			}
-			roleThresholds[roleName] = int(threshold)
-		}
-		// Make sure we always generate at least the threshold number of keys.
-		toGenerateKeys := make(map[string]int, len(tufmetadata.TOP_LEVEL_ROLE_NAMES))
-		for roleName, threshold := range roleThresholds {
-			toGenerateKeys[roleName] = threshold
-		}
-		// Collect specified keys.
-		rolePubKeys := make(map[string][]string, len(tufmetadata.TOP_LEVEL_ROLE_NAMES))
-		for roleName, pubKeysSpec := range cmd.StringMap("keys") {
-			rolePubKeys[roleName] = strings.Split(pubKeysSpec, ",")
-			toGenerateKeys[roleName] -= len(rolePubKeys[roleName]) // already have those keys
-		}
-		// Generate remaining keys.
-		newKeyIDs := make(map[string][]keystore.KeyID, len(tufmetadata.TOP_LEVEL_ROLE_NAMES))
+		var (
+			signedRoot    *tufext.SignedRoot
+			newRoleKeyIDs map[string][]keystore.KeyID
+		)
 		defer func() {
 			// Make sure to clean up any generated keys in case of an error.
 			if Err != nil {
@@ -123,57 +65,29 @@ var repoctlInitCommand = &cli.Command{
 				// deadline here just in case? Or maybe we should use
 				// context.WithoutCancel?
 				ctx := context.TODO()
-				for _, keyIDs := range newKeyIDs {
+				for _, keyIDs := range newRoleKeyIDs {
 					for _, keyID := range keyIDs {
 						_ = store.UnlinkKey(ctx, keyID)
 					}
 				}
-				newKeyIDs = nil
+				newRoleKeyIDs = nil
 			}
 		}()
-		for roleName, toGenerate := range toGenerateKeys {
-			driver := cmd.String("driver")
-			for n := range toGenerate {
-				keyID, _, err := store.GenerateKey(ctx, driver)
-				if err != nil {
-					return fmt.Errorf("failed to generate key %d (of %d) for role %s: %w", n+1, toGenerate, roleName, err)
-				}
-				newKeyIDs[roleName] = append(newKeyIDs[roleName], keyID)
-				rolePubKeys[roleName] = append(rolePubKeys[roleName], "keyid:"+string(keyID))
-			}
-		}
 
-		// Generate and sign the initial root.
-		builder := tufext.NewRootBuilder()
-		builder.GenerateKeyDriver = cmd.String("driver")
-		if cmd.IsSet("ref-time") {
-			builder.RefTime = cmd.Timestamp("ref-time")
-		}
-		if cmd.IsSet("expire-after") {
-			builder.ExpireAfter = cmd.Duration("expire-after")
-		}
-		for roleName, pubKeySpecs := range rolePubKeys {
-			pubKeys := make([]keystore.PublicKey, 0, len(pubKeySpecs))
-			for _, pubKeySpec := range pubKeySpecs {
-				pubKey, err := parsePublicKey(ctx, store, pubKeySpec)
-				if err != nil {
-					return fmt.Errorf("invalid public key %s for role %s: %w", pubKeySpec, roleName, err)
-				}
-				pubKeys = append(pubKeys, *pubKey)
+		if cmd.IsSet("root") {
+			rootData, err := os.ReadFile(cmd.String("root")) //nolint:forbidigo // user-controlled host path
+			if err != nil {
+				return err
 			}
-			if _, err := builder.AddRole(roleName, roleThresholds[roleName], pubKeys...); err != nil {
-				return fmt.Errorf("could not configure role %s keys: %w", roleName, err)
+			if err := json.Unmarshal(rootData, &signedRoot); err != nil {
+				return fmt.Errorf("invalid root.json: %w", err)
 			}
-		}
-		// TODO: We have the chance above to collect the root keys, we should
-		// probably do that to avoid fetching them again in Sign...
-		signedRoot, builderNewKeys, err := builder.Sign(ctx, store)
-		if err != nil {
-			return fmt.Errorf("failed to sign root.json: %w", err)
-		}
-		if len(builderNewKeys) > 0 {
-			// Programmer error.
-			return fmt.Errorf("RootBuilder generated extraneous keys: %v", builderNewKeys)
+		} else {
+			var err error
+			signedRoot, newRoleKeyIDs, err = generateRoot(ctx, cmd)
+			if err != nil {
+				return err
+			}
 		}
 
 		// Create an initial transaction to use.
@@ -190,16 +104,14 @@ var repoctlInitCommand = &cli.Command{
 			// Programmer error.
 			return fmt.Errorf("Transaction.Sign generated extraneous keys: %v", commitNewKeys)
 		}
-
-		// TODO: Make committing this to the repo optional.
 		timestamp, err := repo.TxnCommit(ctx, initTxn)
 		if err != nil {
 			return fmt.Errorf("failed to commit the initial transaction to the repo: %w", err)
 		}
 
-		if len(newKeyIDs) > 0 {
+		if len(newRoleKeyIDs) > 0 {
 			fmt.Println("Generated keys:")
-			for roleName, keyIDs := range newKeyIDs {
+			for roleName, keyIDs := range newRoleKeyIDs {
 				fmt.Printf("\t%s:\n", roleName)
 				for _, keyID := range keyIDs {
 					fmt.Printf("\t - %s\n", keyID)

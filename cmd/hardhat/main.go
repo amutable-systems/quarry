@@ -18,6 +18,7 @@ var app = &cli.Command{
 	// a deadline? And possibly some SIGINT-based cancellation?
 	Commands: []*cli.Command{
 		targetsCommand,
+		rootCommand,
 		keyctlCommand,
 		repoctlCommand,
 	},
