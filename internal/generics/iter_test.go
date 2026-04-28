@@ -5,6 +5,7 @@ package generics_test
 import (
 	"fmt"
 	"iter"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -152,6 +153,60 @@ func TestErrorIter_EarlyTermination(t *testing.T) {
 		break
 	}
 	assert.Equal(t, 1, produced, "producer should stop after consumer breaks")
+}
+
+// ExampleReverseIter demonstrates iterating over a slice from last to first
+// element.
+func ExampleReverseIter() {
+	for v := range generics.ReverseIter([]string{"a", "b", "c"}) {
+		fmt.Println(v)
+	}
+	// Output:
+	// c
+	// b
+	// a
+}
+
+func TestReverseIter(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input []int
+		want  []int
+	}{
+		{"Nil", nil, nil},
+		{"Empty", []int{}, nil},
+		{"Single", []int{42}, []int{42}},
+		{"Pair", []int{1, 2}, []int{2, 1}},
+		{"Multiple", []int{1, 2, 3, 4, 5}, []int{5, 4, 3, 2, 1}},
+		{"Duplicates", []int{1, 2, 1, 2, 1}, []int{1, 2, 1, 2, 1}},
+		{"Palindrome", []int{1, 2, 3, 2, 1}, []int{1, 2, 3, 2, 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seq := generics.ReverseIter(tc.input)
+
+			// Iterate twice to verify reusability.
+			assert.Equal(t, tc.want, slices.Collect(seq))
+			assert.Equal(t, tc.want, slices.Collect(seq))
+		})
+	}
+}
+
+func TestReverseIter_EarlyTermination(t *testing.T) {
+	var got []int
+	for v := range generics.ReverseIter([]int{1, 2, 3, 4, 5}) {
+		got = append(got, v)
+		if v == 3 {
+			break
+		}
+	}
+	assert.Equal(t, []int{5, 4, 3}, got, "iteration should stop after the consumer breaks")
+}
+
+func TestReverseIter_NamedSliceType(t *testing.T) {
+	// Verify the ~[]T constraint accepts named slice types.
+	type intSlice []int
+	got := slices.Collect(generics.ReverseIter(intSlice{1, 2, 3}))
+	assert.Equal(t, []int{3, 2, 1}, got)
 }
 
 func TestChained_ErrorIter_CollectErrorSeq(t *testing.T) {

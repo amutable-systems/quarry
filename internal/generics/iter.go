@@ -19,3 +19,14 @@ func ErrorIter[T any](iterFn func(yield func(T) bool) error) iter.Seq2[T, error]
 		}
 	}
 }
+
+// ReverseIter iterates over a slice in reverse.
+func ReverseIter[T any, S ~[]T](s S) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		for i := len(s) - 1; i >= 0; i-- {
+			if !yield(s[i]) {
+				return
+			}
+		}
+	}
+}
