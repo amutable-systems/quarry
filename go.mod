@@ -7,6 +7,9 @@ go 1.25.5
 require (
 	cyphar.com/go-pathrs v0.2.4
 	github.com/opencontainers/go-digest v1.0.0
+	github.com/opencontainers/umoci v0.6.0
+	github.com/pelletier/go-toml/v2 v2.3.0
+	github.com/schollz/progressbar/v3 v3.19.0
 	github.com/secure-systems-lab/go-securesystemslib v0.10.0
 	github.com/stretchr/testify v1.11.1
 	github.com/theupdateframework/go-tuf/v2 v2.4.1
@@ -16,9 +19,14 @@ require (
 )
 
 require (
+	github.com/apex/log v1.9.0 // indirect
+	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/google/go-containerregistry v0.20.7 // indirect
+	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/sigstore/protobuf-specs v0.5.0 // indirect
 	github.com/sigstore/sigstore v1.10.4 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
