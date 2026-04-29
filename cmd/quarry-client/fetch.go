@@ -12,7 +12,9 @@ import (
 
 	"github.com/schollz/progressbar/v3"
 	"github.com/urfave/cli/v3"
+	"golang.org/x/sys/unix"
 
+	"go.amutable.dev/quarry/internal/third_party/fdutils"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 )
 
@@ -51,11 +53,11 @@ var fetchCommand = &cli.Command{
 			if strings.HasSuffix(outputPath, "/") {
 				outputPath = filepath.Join(outputPath, target) //nolint:forbidigo // user-controlled host path
 			}
-			// TODO: Use an O_TMPFILE that gets attached once the hash check
-			// succeeds.
-			outputFile, err := os.Create(outputPath) //nolint:forbidigo // user-controlled host path
+			// We use an O_TMPFILE so that we do not expose untrusted data to
+			// the filesystem until we have verified its hash.
+			outputFile, err := os.OpenFile(filepath.Dir(outputPath), unix.O_TMPFILE|unix.O_WRONLY, 0o644) //nolint:forbidigo // O_TMPFILE
 			if err != nil {
-				return fmt.Errorf("open target path %s: %w", outputPath, err)
+				return fmt.Errorf("create target tmpfile: %w", err)
 			}
 			defer funchelpers.VerifyClose(&Err, outputFile)
 
@@ -98,6 +100,16 @@ var fetchCommand = &cli.Command{
 		if err := rdr.Close(); err != nil {
 			return fmt.Errorf("close check %s (%s) failed: %w", target, targetURL, err)
 		}
+
+		if outputPath != "-" {
+			outputFile := output.(*os.File) //nolint:forcetypeassert // guaranteed to be true
+			if err := fdutils.WithFileFd(outputFile, func(srcFd uintptr) error {
+				return unix.Linkat(int(srcFd), "", unix.AT_FDCWD, outputPath, unix.AT_EMPTY_PATH) //nolint:forbidigo // user-controlled host paths
+			}); err != nil {
+				return fmt.Errorf("attach target %s to %q: %w", target, outputPath, err)
+			}
+		}
+
 		fmt.Fprintf(os.Stderr, "Wrote %d bytes to %q.\n", targetFile.Length, outputPath)
 		return nil
 	},
