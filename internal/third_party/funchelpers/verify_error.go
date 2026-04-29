@@ -22,7 +22,9 @@
 package funchelpers
 
 import (
+	"errors"
 	"io"
+	"io/fs"
 
 	"go.amutable.dev/quarry/internal/third_party/assert"
 )
@@ -54,15 +56,22 @@ import (
 //		}
 //		return nil
 //	}
-func VerifyError(Err *error, closeFn func() error) {
+func VerifyError(Err *error, fn func() error) {
 	assert.Assert(Err != nil,
 		"VerifyError must be called with non-nil Err slot") // programmer error
-	if err := closeFn(); err != nil && *Err == nil {
+	if err := fn(); err != nil && *Err == nil {
 		*Err = err
 	}
 }
 
-// VerifyClose is shorthand for `VerifyError(Err, closer.Close)`.
+// VerifyClose is shorthand for `VerifyError(Err, closer.Close)` but it masks
+// [fs.ErrClosed] errors.
 func VerifyClose(Err *error, closer io.Closer) {
-	VerifyError(Err, closer.Close)
+	VerifyError(Err, func() error {
+		err := closer.Close()
+		if errors.Is(err, fs.ErrClosed) {
+			err = nil
+		}
+		return err
+	})
 }
