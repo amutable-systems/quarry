@@ -4,13 +4,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
+	"os"
 	"slices"
 
+	"github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v3"
 
 	"go.amutable.dev/quarry/internal/tufext"
+	"go.amutable.dev/quarry/internal/uapi16"
 )
 
 var listCommand = &cli.Command{
@@ -43,6 +48,12 @@ var listCommand = &cli.Command{
 			// Make sure we iterate over the repos in order.
 			repoNames = slices.Sorted(maps.Keys(updaters))
 		}
+
+		var manifest *uapi16.Manifest
+		if cmd.IsSet("uapi-16") {
+			manifest = uapi16.New()
+		}
+
 		for _, repoName := range repoNames {
 			updater := updaters[repoName]
 			repo := config.Repos[repoName]
@@ -59,8 +70,38 @@ var listCommand = &cli.Command{
 				if err != nil {
 					return fmt.Errorf("error while scanning repo %s: %w", repoName, err)
 				}
-				// TODO: UAPI.16 output.
-				pprintTargetFile("", repo, target.TargetFiles)
+				if manifest != nil {
+					manifest.Files = append(manifest.Files, &uapi16.File{
+						// TODO: What should we do about separators here?
+						Name:     target.Path,
+						DataURL:  repo.DataBaseURL.JoinPath(target.Path).String(),
+						DataSize: uint64(target.Length),
+						SHA256:   digest.SHA256.Encode(target.Hashes["sha256"]),
+					})
+				} else {
+					pprintTargetFile("", repo, target.TargetFiles)
+				}
+			}
+		}
+		if manifest != nil {
+			var output io.Writer
+			if outPath := cmd.String("uapi-16"); outPath != "-" {
+				outFile, err := os.Create(outPath) //nolint:forbidigo // user-controlled host path
+				if err != nil {
+					return fmt.Errorf("invalid --output argument: %w", err)
+				}
+				defer outFile.Close() //nolint:errcheck // poc cli code
+				output = outFile
+			} else {
+				output = os.Stdout
+			}
+			if err := json.NewEncoder(output).Encode(manifest); err != nil {
+				return fmt.Errorf("write uapi16 manifest: %w", err)
+			}
+			if output != os.Stdout {
+				fmt.Printf("Wrote UAPI.16 manifest to %q.", cmd.String("uapi-16"))
+			} else {
+				fmt.Printf("\n")
 			}
 		}
 		return nil
