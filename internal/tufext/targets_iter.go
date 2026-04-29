@@ -3,7 +3,9 @@
 package tufext
 
 import (
+	"context"
 	"fmt"
+	"io/fs"
 	"iter"
 	"path/filepath"
 	"slices"
@@ -60,15 +62,37 @@ stack:
 	return unmatched == 0
 }
 
+// TargetMetadataFetchFunc is a helper function for [IterTargetFiles] that is
+// called to get a particular target. For [tuftrustedmetadata.TrustedMetadata]
+// backends it provides the necessary information to be able to automatically
+// verify the corresponding target file.
+type TargetMetadataFetchFunc = func(ctx context.Context, roleName, delegatorName string) (*SignedTargets, error)
+
+// TargetsMapFetcher returns a [TargetMetadataFetchFunc] backed by the provided
+// map, for use with [IterTargetFiles] when all of the target files have
+// already been pre-loaded by a user.
+func TargetsMapFetcher(targets map[string]*SignedTargets) TargetMetadataFetchFunc {
+	return func(_ context.Context, roleName, _ string) (*SignedTargets, error) {
+		role, ok := targets[roleName]
+		if !ok {
+			return nil, fmt.Errorf("role %s: %w", roleName, fs.ErrNotExist)
+		}
+		return role, nil
+	}
+}
+
 // IterTargetFiles iterates over all target files, matching the equivalent
 // algorithm used by TUF to search for the correct target file. Note that the
 // order of files yielded is not stable.
+//
+// The provided [GetTargetMetadataFunc] is called each time a target's role
+// metadata needs to be loaded.
 //
 // TODO(links): This will need callbacks and a lot more infrastructure once we
 // add cross-repository links. (Arguably even today it's a little less than
 // ideal because we need to pre-fetch all of the targets which the default
 // updater doesn't do.)
-func IterTargetFiles(targets map[string]*SignedTargets) iter.Seq2[TargetFileData, error] {
+func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.Seq2[TargetFileData, error] {
 	const maxDelegations = 128
 
 	return generics.ErrorIter(func(yield func(TargetFileData) bool) error {
@@ -76,7 +100,7 @@ func IterTargetFiles(targets map[string]*SignedTargets) iter.Seq2[TargetFileData
 
 		// roleTodo indicates that we need to walk into the given role.
 		type roleTodo struct {
-			name string
+			name, delegator string
 			// If non-nil, this is the delegation information for this role.
 			delegation *tufmetadata.DelegatedRole
 			// The stack of patterns which be matched for a path in this role
@@ -98,8 +122,11 @@ func IterTargetFiles(targets map[string]*SignedTargets) iter.Seq2[TargetFileData
 		}
 
 		// Queue and seen-list to avoid re-iterating on a role.
-		seen := make(map[string]struct{}, len(targets))
-		todo := []any{roleTodo{name: tufmetadata.TARGETS}}
+		seen := make(map[string]struct{}, maxDelegations)
+		todo := []any{roleTodo{
+			name:      tufmetadata.TARGETS,
+			delegator: tufmetadata.ROOT,
+		}}
 	roles:
 		for len(todo) > 0 {
 			next := todo[len(todo)-1]
@@ -126,9 +153,9 @@ func IterTargetFiles(targets map[string]*SignedTargets) iter.Seq2[TargetFileData
 				// As per TUF specification s5.6.7.1.
 				continue roles
 			}
-			role, ok := targets[thisRole.name]
-			if !ok {
-				return fmt.Errorf("target file walk aborted: role %s does not exist", thisRole.name)
+			role, err := fetchFn(ctx, thisRole.name, thisRole.delegator)
+			if err != nil {
+				return fmt.Errorf("target file walk aborted: failed to get role %s: %w", thisRole.name, err)
 			}
 			seen[thisRole.name] = struct{}{}
 
@@ -189,6 +216,7 @@ func IterTargetFiles(targets map[string]*SignedTargets) iter.Seq2[TargetFileData
 					}
 					todo = append(todo, roleTodo{
 						name:         delegatedRole.Name,
+						delegator:    thisRole.name,
 						delegation:   &delegatedRole,
 						patternChain: append(slices.Clone(thisRole.patternChain), delegatedRole.Paths),
 					})

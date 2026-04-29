@@ -3,7 +3,10 @@
 package tufext_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"iter"
 	"slices"
 	"testing"
@@ -57,7 +60,7 @@ func signedTargets(targets map[string]*tufmetadata.TargetFiles, delegatedRoles [
 func pathsFrom(t *testing.T, targets map[string]*tufext.SignedTargets) map[string]*tufmetadata.TargetFiles {
 	t.Helper()
 	out := make(map[string]*tufmetadata.TargetFiles)
-	got, err := generics.CollectErrorSeq(tufext.IterTargetFiles(targets))
+	got, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(targets)))
 	require.NoError(t, err)
 	for _, td := range got {
 		_, dup := out[td.Path]
@@ -71,7 +74,7 @@ func pathsFrom(t *testing.T, targets map[string]*tufext.SignedTargets) map[strin
 // pre-order DFS of the delegation tree; within-role order is unspecified.
 func orderedPathsFrom(t *testing.T, targets map[string]*tufext.SignedTargets) []string {
 	t.Helper()
-	got, err := generics.CollectErrorSeq(tufext.IterTargetFiles(targets))
+	got, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(targets)))
 	require.NoError(t, err)
 	out := make([]string, 0, len(got))
 	for _, td := range got {
@@ -82,7 +85,7 @@ func orderedPathsFrom(t *testing.T, targets map[string]*tufext.SignedTargets) []
 
 func TestIterTargetFiles_NoTargetsRole(t *testing.T) {
 	// The algorithm starts at the "targets" role; missing it must error.
-	_, err := generics.CollectErrorSeq(tufext.IterTargetFiles(nil))
+	_, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(nil)))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), tufmetadata.TARGETS)
 }
@@ -534,22 +537,23 @@ func TestIterTargetFiles_PreOrderDepthFirst(t *testing.T) {
 }
 
 func TestIterTargetFiles_MissingDelegatedRole(t *testing.T) {
-	_, err := generics.CollectErrorSeq(tufext.IterTargetFiles(map[string]*tufext.SignedTargets{
+	_, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(map[string]*tufext.SignedTargets{
 		tufmetadata.TARGETS: signedTargets(nil, []tufmetadata.DelegatedRole{
 			dr("missing", false, "x/*"),
 		}),
-	}))
+	})))
 	require.Error(t, err)
+	assert.ErrorIs(t, err, fs.ErrNotExist) //nolint:testifylint // assert is fine for error path checks
 	assert.Contains(t, err.Error(), "missing")
 }
 
 func TestIterTargetFiles_PathHashPrefixes(t *testing.T) {
 	role := dr("d1", false)
 	role.PathHashPrefixes = []string{"abcd"}
-	_, err := generics.CollectErrorSeq(tufext.IterTargetFiles(map[string]*tufext.SignedTargets{
+	_, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(map[string]*tufext.SignedTargets{
 		tufmetadata.TARGETS: signedTargets(nil, []tufmetadata.DelegatedRole{role}),
 		"d1":                signedTargets(nil, nil),
-	}))
+	})))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "uses path prefixes")
 }
@@ -559,9 +563,9 @@ func TestIterTargetFiles_SuccinctRoles(t *testing.T) {
 	st.Signed.Delegations = &tufmetadata.Delegations{
 		SuccinctRoles: &tufmetadata.SuccinctRoles{BitLength: 4, NamePrefix: "bin"},
 	}
-	_, err := generics.CollectErrorSeq(tufext.IterTargetFiles(map[string]*tufext.SignedTargets{
+	_, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(map[string]*tufext.SignedTargets{
 		tufmetadata.TARGETS: st,
-	}))
+	})))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "succinct roles")
 }
@@ -595,7 +599,7 @@ func TestIterTargetFiles_MaxDelegationsCap(t *testing.T) {
 	}
 	all[fmt.Sprintf("r%d", linearLen-1)] = signedTargets(nil, nil)
 
-	got, err := generics.CollectErrorSeq(tufext.IterTargetFiles(all))
+	got, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(all)))
 	require.NoError(t, err, "exceeding the cap must not produce an error")
 
 	paths := make(map[string]struct{}, len(got))
@@ -610,12 +614,12 @@ func TestIterTargetFiles_MaxDelegationsCap(t *testing.T) {
 func TestIterTargetFiles_Reusable(t *testing.T) {
 	// The returned iter.Seq2 must be safe to range over more than once.
 	a, b := tf(1), tf(2)
-	seq := tufext.IterTargetFiles(map[string]*tufext.SignedTargets{
+	seq := tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(map[string]*tufext.SignedTargets{
 		tufmetadata.TARGETS: signedTargets(map[string]*tufmetadata.TargetFiles{
 			"a": a,
 			"b": b,
 		}, nil),
-	})
+	}))
 	for range 2 {
 		got, err := generics.CollectErrorSeq(seq)
 		require.NoError(t, err)
@@ -637,7 +641,7 @@ func TestIterTargetFiles_EarlyTermination(t *testing.T) {
 		}, nil),
 	}
 
-	underlying := tufext.IterTargetFiles(in)
+	underlying := tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(in))
 	var producerYields int
 	counted := iter.Seq2[tufext.TargetFileData, error](func(yield func(tufext.TargetFileData, error) bool) {
 		for td, err := range underlying {
@@ -702,7 +706,7 @@ func TestIterTargetFiles_BreakAfterError(t *testing.T) {
 			dr("missing", false, "x/*"),
 		}),
 	}
-	seq := tufext.IterTargetFiles(in)
+	seq := tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(in))
 
 	// First pass: break immediately after the error.
 	var sawError bool
@@ -740,7 +744,7 @@ func TestIterTargetFiles_PathFieldMatchesMapKey(t *testing.T) {
 			"b/eta": b,
 		}, nil),
 	}
-	got, err := generics.CollectErrorSeq(tufext.IterTargetFiles(in))
+	got, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(in)))
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 
@@ -754,6 +758,93 @@ func TestIterTargetFiles_PathFieldMatchesMapKey(t *testing.T) {
 			t.Errorf("yielded unexpected path %q", td.Path)
 		}
 	}
+}
+
+func TestIterTargetFiles_FetcherReceivesDelegatorContext(t *testing.T) {
+	// The fetcher receives (roleName, delegatorName) pairs. Per s5.6.7, the
+	// top-level "targets" role is delegated by "root"; each subsequent role
+	// names its parent delegator. The order also follows pre-order DFS.
+	type call struct{ role, delegator string }
+	var calls []call
+	fetch := func(_ context.Context, roleName, delegatorName string) (*tufext.SignedTargets, error) {
+		calls = append(calls, call{roleName, delegatorName})
+		switch roleName {
+		case tufmetadata.TARGETS:
+			return signedTargets(nil, []tufmetadata.DelegatedRole{dr("d1", false, "x/y")}), nil
+		case "d1":
+			return signedTargets(nil, []tufmetadata.DelegatedRole{dr("d2", false, "x/y")}), nil
+		case "d2":
+			return signedTargets(map[string]*tufmetadata.TargetFiles{"x/y": tf(1)}, nil), nil
+		}
+		return nil, fmt.Errorf("unexpected fetch %q", roleName)
+	}
+	_, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), fetch))
+	require.NoError(t, err)
+	assert.Equal(t, []call{
+		{tufmetadata.TARGETS, tufmetadata.ROOT},
+		{"d1", tufmetadata.TARGETS},
+		{"d2", "d1"},
+	}, calls)
+}
+
+func TestIterTargetFiles_FetcherErrorSurfaces(t *testing.T) {
+	// A fetcher error must be returned to the caller, wrapped with the role
+	// name for context.
+	sentinel := errors.New("fetcher boom")
+	fetch := func(_ context.Context, roleName, _ string) (*tufext.SignedTargets, error) {
+		if roleName == tufmetadata.TARGETS {
+			return signedTargets(nil, []tufmetadata.DelegatedRole{dr("d1", false, "x/*")}), nil
+		}
+		return nil, sentinel
+	}
+	_, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), fetch))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sentinel) //nolint:testifylint // assert is fine for error path checks
+	assert.Contains(t, err.Error(), "d1", "wrapped error must name the failing role")
+}
+
+func TestIterTargetFiles_FetcherSeesContext(t *testing.T) {
+	// The context passed to IterTargetFiles is plumbed through to the
+	// fetcher. Cancellation surfaced by the fetcher propagates as the
+	// iterator's error.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	fetch := func(ctx context.Context, _, _ string) (*tufext.SignedTargets, error) {
+		return nil, ctx.Err()
+	}
+	_, err := generics.CollectErrorSeq(tufext.IterTargetFiles(ctx, fetch))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestIterTargetFiles_FetcherCalledOncePerRole(t *testing.T) {
+	// Diamond graph: "shared" is delegated by both "a" and "b". The seen-set
+	// must ensure the fetcher is invoked at most once per distinct role.
+	counts := map[string]int{}
+	fetch := func(_ context.Context, roleName, _ string) (*tufext.SignedTargets, error) {
+		counts[roleName]++
+		switch roleName {
+		case tufmetadata.TARGETS:
+			return signedTargets(nil, []tufmetadata.DelegatedRole{
+				dr("a", false, "x/*"),
+				dr("b", false, "x/*"),
+			}), nil
+		case "a", "b":
+			return signedTargets(nil, []tufmetadata.DelegatedRole{dr("shared", false, "x/*")}), nil
+		case "shared":
+			return signedTargets(map[string]*tufmetadata.TargetFiles{"x/file": tf(1)}, nil), nil
+		}
+		return nil, fmt.Errorf("unexpected fetch %q", roleName)
+	}
+	got, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), fetch))
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, map[string]int{
+		tufmetadata.TARGETS: 1,
+		"a":                 1,
+		"b":                 1,
+		"shared":            1,
+	}, counts)
 }
 
 // keysOf returns the sorted keys. The iterator's within-role order is
