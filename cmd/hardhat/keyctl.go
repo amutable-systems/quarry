@@ -17,7 +17,7 @@ var keyctlCommand = &cli.Command{
 	Usage: "manage keys in a quarry keystore",
 	Commands: []*cli.Command{
 		keyctlDriversCommand,
-		withKeystoreFlag(keyctlCreateCommand),
+		withKeystoreFlag(keyctlGenerateCommand),
 		withKeystoreFlag(keyctlDeleteCommand),
 		withKeystoreFlag(keyctlListCommand),
 		withKeystoreFlag(keyctlInfoCommand),
@@ -42,9 +42,10 @@ var keyctlDriversCommand = &cli.Command{
 	},
 }
 
-var keyctlCreateCommand = &cli.Command{
-	Name:  "create",
-	Usage: "generate a new key and store in the keystore",
+var keyctlGenerateCommand = &cli.Command{
+	Name:    "generate",
+	Aliases: []string{"create"},
+	Usage:   "generate a new key and store in the keystore",
 	Flags: []cli.Flag{
 		&cli.StringFlag{
 			Name:  "driver",
