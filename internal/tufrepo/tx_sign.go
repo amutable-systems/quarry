@@ -515,6 +515,10 @@ func (tx *Transaction) bumpExpiries(ctx context.Context) (Err error) {
 			} else if !needsBump {
 				// If the signed portion has not been modified we do not need to
 				// bump the expiries and we will not need to re-sign it either.
+				// TODO: We should bump the expiry if it has expired (or will
+				// expire soon) but only if we have the necessary signing keys.
+				// Otherwise we really need to log that we are about to publish
+				// a repo state with expired data (or even error out?).
 				return nil, nil //nolint:nilnil // nil indicates no change needed
 			}
 
