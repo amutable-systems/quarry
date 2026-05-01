@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -90,35 +91,60 @@ var keyctlDeleteCommand = &cli.Command{
 var keyctlListCommand = &cli.Command{
 	Name:  "list",
 	Usage: "list all of the key ids in the keystore",
-	Flags: []cli.Flag{
-		&cli.BoolFlag{
-			Name:    "verbose",
-			Usage:   "",
-			Value:   false,
-			Aliases: []string{"v"},
+	MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{
+		{
+			Flags: [][]cli.Flag{
+				{
+					&cli.BoolFlag{
+						Name:    "verbose",
+						Usage:   "output more textual information about each key",
+						Aliases: []string{"v"},
+					},
+				},
+				{
+					&cli.BoolFlag{
+						Name:  "json",
+						Usage: "output information about each key as a JSON map",
+					},
+				},
+			},
 		},
-		// TODO: Add flags for generating different kinds of keys.
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		store := ctxKeystore(ctx)
 		verbose := cmd.Bool("verbose")
 
+		var allKeys map[keystore.KeyID]*keystore.GenericKey
+		if cmd.Bool("json") {
+			allKeys = make(map[keystore.KeyID]*keystore.GenericKey)
+		}
 		for keyID, err := range store.ListKeyIDs(ctx) {
 			if err != nil {
 				return fmt.Errorf("failed to list keys: %w", err)
 			}
-			if !verbose {
+			if allKeys == nil && !verbose {
 				fmt.Println(keyID)
-			} else {
-				key, err := store.GetKey(ctx, keyID)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "could not get key %s: %v", keyID, err)
-					continue
-				}
+				continue
+			}
+
+			key, err := store.GetKey(ctx, keyID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "could not get key %s: %v", keyID, err)
+				continue
+			}
+			switch {
+			case verbose:
 				if err := pprintGenericKey("", key); err != nil {
 					fmt.Fprintf(os.Stderr, "could not output key %s: %v", keyID, err)
 					continue
 				}
+			case allKeys != nil:
+				allKeys[keyID] = key
+			}
+		}
+		if allKeys != nil {
+			if err := json.NewEncoder(os.Stdout).Encode(allKeys); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -128,6 +154,13 @@ var keyctlListCommand = &cli.Command{
 var keyctlInfoCommand = &cli.Command{
 	Name:  "info",
 	Usage: "output information about the given key",
+	Flags: []cli.Flag{
+		&cli.BoolFlag{
+			Name:  "json",
+			Usage: "output information about the key in a JSON format",
+			Value: false,
+		},
+	},
 	Arguments: []cli.Argument{
 		&cli.StringArg{
 			Name: "keyid",
@@ -140,6 +173,9 @@ var keyctlInfoCommand = &cli.Command{
 		key, err := store.GetKey(ctx, keyID)
 		if err != nil {
 			return fmt.Errorf("failed to get key %s: %w", keyID, err)
+		}
+		if cmd.Bool("json") {
+			return json.NewEncoder(os.Stdout).Encode(key)
 		}
 		return pprintGenericKey("", key)
 	},
