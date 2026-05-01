@@ -13,35 +13,18 @@ import (
 	"go.amutable.dev/quarry/internal/keystore"
 )
 
-var keyctlCommand = &cli.Command{
+var keyctlCommand = withKeystoreFlag(&cli.Command{
 	Name:  "keyctl",
 	Usage: "manage keys in a quarry keystore",
 	Commands: []*cli.Command{
-		keyctlDriversCommand,
-		withKeystoreFlag(keyctlGenerateCommand),
-		withKeystoreFlag(keyctlDeleteCommand),
-		withKeystoreFlag(keyctlListCommand),
-		withKeystoreFlag(keyctlInfoCommand),
+		keyctlGenerateCommand,
+		keyctlDeleteCommand,
+		keyctlListCommand,
+		keyctlInfoCommand,
 		// TODO: export
 		// TODO: import
 	},
-}
-
-var keyctlDriversCommand = &cli.Command{
-	Name:  "drivers",
-	Usage: "get a list of supported drivers",
-	Action: func(_ context.Context, _ *cli.Command) error {
-		fmt.Println("Enabled drivers:")
-		for driver := range keystore.IterDrivers() {
-			var suffix string
-			if driver == keystore.DefaultDriver {
-				suffix = " (default)"
-			}
-			fmt.Printf(" - %s%s\n", driver, suffix)
-		}
-		return nil
-	},
-}
+})
 
 var keyctlGenerateCommand = &cli.Command{
 	Name:    "generate",
