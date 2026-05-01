@@ -209,6 +209,184 @@ func TestReverseIter_NamedSliceType(t *testing.T) {
 	assert.Equal(t, []int{3, 2, 1}, got)
 }
 
+// ExampleSeqLeft demonstrates extracting only the left values from an
+// [iter.Seq2] — here, the indices from [slices.All].
+func ExampleSeqLeft() {
+	for i := range generics.SeqLeft(slices.All([]string{"a", "b", "c"})) {
+		fmt.Println(i)
+	}
+	// Output:
+	// 0
+	// 1
+	// 2
+}
+
+func TestSeqLeft(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input iter.Seq2[int, error]
+		want  []int
+	}{
+		{
+			"Empty",
+			intErrorSeq2(),
+			nil,
+		},
+		{
+			"Single",
+			intErrorSeq2(intOrError{v: 42}),
+			[]int{42},
+		},
+		{
+			"Multiple",
+			intErrorSeq2(
+				intOrError{v: 1},
+				intOrError{v: 2},
+				intOrError{v: 3},
+			),
+			[]int{1, 2, 3},
+		},
+		{
+			"IgnoresRight",
+			intErrorSeq2(
+				intOrError{v: 1, err: errSentinel},
+				intOrError{v: 2},
+				intOrError{v: 3, err: errSentinel},
+			),
+			[]int{1, 2, 3},
+		},
+		{
+			"Duplicates",
+			intErrorSeq2(
+				intOrError{v: 1},
+				intOrError{v: 1},
+				intOrError{v: 2},
+			),
+			[]int{1, 1, 2},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seq := generics.SeqLeft(tc.input)
+
+			// Iterate twice to verify reusability.
+			assert.Equal(t, tc.want, slices.Collect(seq))
+			assert.Equal(t, tc.want, slices.Collect(seq))
+		})
+	}
+}
+
+func TestSeqLeft_EarlyTermination(t *testing.T) {
+	var yielded int
+	src := countingSeq2(intErrorSeq2(
+		intOrError{v: 1},
+		intOrError{v: 2},
+		intOrError{v: 3},
+		intOrError{v: 4},
+		intOrError{v: 5},
+	), &yielded)
+
+	var got []int
+	for v := range generics.SeqLeft(src) {
+		got = append(got, v)
+		if v == 3 {
+			break
+		}
+	}
+	assert.Equal(t, []int{1, 2, 3}, got, "iteration should stop after the consumer breaks")
+	assert.Equal(t, 3, yielded, "source should stop after the consumer breaks")
+}
+
+// ExampleSeqRight demonstrates extracting only the right values from an
+// [iter.Seq2] — here, the values from [slices.All].
+func ExampleSeqRight() {
+	for v := range generics.SeqRight(slices.All([]string{"a", "b", "c"})) {
+		fmt.Println(v)
+	}
+	// Output:
+	// a
+	// b
+	// c
+}
+
+func TestSeqRight(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input iter.Seq2[int, error]
+		want  []error
+	}{
+		{
+			"Empty",
+			intErrorSeq2(),
+			nil,
+		},
+		{
+			"SingleNil",
+			intErrorSeq2(intOrError{v: 42}),
+			[]error{nil},
+		},
+		{
+			"SingleError",
+			intErrorSeq2(intOrError{err: errSentinel}),
+			[]error{errSentinel},
+		},
+		{
+			"AllNil",
+			intErrorSeq2(
+				intOrError{v: 1},
+				intOrError{v: 2},
+				intOrError{v: 3},
+			),
+			[]error{nil, nil, nil},
+		},
+		{
+			"IgnoresLeft",
+			intErrorSeq2(
+				intOrError{v: 1, err: errSentinel},
+				intOrError{v: 99, err: errSentinel},
+			),
+			[]error{errSentinel, errSentinel},
+		},
+		{
+			"Mixed",
+			intErrorSeq2(
+				intOrError{v: 1},
+				intOrError{err: errSentinel},
+				intOrError{v: 3},
+			),
+			[]error{nil, errSentinel, nil},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seq := generics.SeqRight(tc.input)
+
+			// Iterate twice to verify reusability.
+			assert.Equal(t, tc.want, slices.Collect(seq))
+			assert.Equal(t, tc.want, slices.Collect(seq))
+		})
+	}
+}
+
+func TestSeqRight_EarlyTermination(t *testing.T) {
+	var yielded int
+	src := countingSeq2(intErrorSeq2(
+		intOrError{v: 1},
+		intOrError{v: 2},
+		intOrError{v: 3},
+		intOrError{v: 4},
+		intOrError{v: 5},
+	), &yielded)
+
+	var count int
+	for range generics.SeqRight(src) {
+		count++
+		if count == 3 {
+			break
+		}
+	}
+	assert.Equal(t, 3, count, "iteration should stop after the consumer breaks")
+	assert.Equal(t, 3, yielded, "source should stop after the consumer breaks")
+}
+
 func TestChained_ErrorIter_CollectErrorSeq(t *testing.T) {
 	// Parse a set of strings as ints, terminating iteration as soon as one
 	// fails to parse.

@@ -30,3 +30,23 @@ func ReverseIter[T any, S ~[]T](s S) iter.Seq[T] {
 		}
 	}
 }
+
+// SeqLeft takes an [iter.Seq2] and returns an [iter.Seq] containing only the
+// "left" values (the first generic type).
+func SeqLeft[T1, T2 any](seq iter.Seq2[T1, T2]) iter.Seq[T1] {
+	return func(yield func(T1) bool) {
+		seq(func(v T1, _ T2) bool {
+			return yield(v)
+		})
+	}
+}
+
+// SeqRight takes an [iter.Seq2] and returns an [iter.Seq] containing only the
+// "right" values (the second generic type).
+func SeqRight[T1, T2 any](seq iter.Seq2[T1, T2]) iter.Seq[T2] {
+	return func(yield func(T2) bool) {
+		seq(func(_ T1, v T2) bool {
+			return yield(v)
+		})
+	}
+}
