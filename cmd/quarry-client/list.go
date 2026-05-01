@@ -74,7 +74,7 @@ var listCommand = withRefTimeFlag(&cli.Command{
 					manifest.Files = append(manifest.Files, &uapi16.File{
 						// TODO: What should we do about separators here?
 						Name:     target.Path,
-						DataURL:  repo.DataBaseURL.JoinPath(target.Path).String(),
+						DataURL:  repo.DataRootURL.JoinPath(target.Path).String(),
 						DataSize: uint64(target.Length),
 						SHA256:   digest.SHA256.Encode(target.Hashes["sha256"]),
 					})

@@ -85,7 +85,7 @@ var fetchCommand = withRefTimeFlag(&cli.Command{
 
 		// Rather than using the go-tuf DownloadTarget (which requires the data
 		// be stored in-memory) we fetch it directly.
-		targetURL := repo.DataBaseURL.JoinPath(targetFile.Path)
+		targetURL := repo.DataRootURL.JoinPath(targetFile.Path)
 		rdr, err := verifiedHTTPGet(ctx, targetURL, targetFile.Length, targetFile.Hashes)
 		if err != nil {
 			return fmt.Errorf("get target %s (%s): %w", target, targetURL, err)

@@ -18,12 +18,12 @@ type Repository struct {
 	// map[string]... key in the top-level configuration.
 	Name string
 
-	// BaseURL is the base URL for the directory containing TUF metadata.
-	BaseURL *url.URL
+	// MetaRootURL is the base URL for the directory containing TUF metadata.
+	MetaRootURL *url.URL
 
-	// DataBaseURL is the base URL for the directory containing target data
+	// DataRootURL is the base URL for the directory containing target data
 	// files.
-	DataBaseURL *url.URL
+	DataRootURL *url.URL
 }
 
 // Config is the top-level configuration object for quarry-client.
@@ -33,8 +33,8 @@ type Config struct {
 }
 
 type tomlRepoConfig struct {
-	BaseURL     string `toml:"base_url"`
-	DataBaseURL string `toml:"data_base_url"`
+	MetaRootURL string `toml:"meta_root_url"`
+	DataRootURL string `toml:"data_root_url"`
 }
 
 type tomlConfig struct {
@@ -51,18 +51,18 @@ func parseConfig(rdr io.Reader) (*Config, error) {
 		Repos: make(map[string]Repository, len(tomlConf.Repos)),
 	}
 	for name, repo := range tomlConf.Repos {
-		baseURL, err := url.Parse(repo.BaseURL)
+		dataRootURL, err := url.Parse(repo.MetaRootURL)
 		if err != nil {
-			return nil, fmt.Errorf("repo %q base_url invalid: %w", name, err)
+			return nil, fmt.Errorf("repo %q meta_root_url invalid: %w", name, err)
 		}
-		dataBaseURL, err := url.Parse(repo.DataBaseURL)
+		metaRootURL, err := url.Parse(repo.DataRootURL)
 		if err != nil {
-			return nil, fmt.Errorf("repo %q data_base_url invalid: %w", name, err)
+			return nil, fmt.Errorf("repo %q data_root_url invalid: %w", name, err)
 		}
 		conf.Repos[name] = Repository{
 			Name:        name,
-			BaseURL:     baseURL,
-			DataBaseURL: dataBaseURL,
+			MetaRootURL: dataRootURL,
+			DataRootURL: metaRootURL,
 		}
 	}
 	return &conf, nil
@@ -74,8 +74,8 @@ func writeConfig(wtr io.Writer, conf *Config) error {
 	}
 	for name, repo := range conf.Repos {
 		tomlConf.Repos[name] = tomlRepoConfig{
-			BaseURL:     repo.BaseURL.String(),
-			DataBaseURL: repo.DataBaseURL.String(),
+			MetaRootURL: repo.MetaRootURL.String(),
+			DataRootURL: repo.DataRootURL.String(),
 		}
 	}
 	if err := toml.NewEncoder(wtr).Encode(tomlConf); err != nil {

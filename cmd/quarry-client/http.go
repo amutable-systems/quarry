@@ -149,7 +149,7 @@ func proxyTargetFile(rw http.ResponseWriter, req *http.Request) error {
 			}
 			return err
 		}
-		remoteURL := repo.DataBaseURL.JoinPath(targetPath)
+		remoteURL := repo.DataRootURL.JoinPath(targetPath)
 		// TODO: Is it really not possible to provide Content-Length and
 		// Content-Digest here...?
 		rw.Header()["X-Quarry-Content-Length"] = []string{strconv.FormatInt(targetInfo.Length, 10)}

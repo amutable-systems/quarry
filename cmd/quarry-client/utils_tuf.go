@@ -49,13 +49,13 @@ func makeUpdater(cacheDir *pathrs.Root, name string, repo Repository) (_ *tufupd
 	}
 
 	// Use the go-tuf defaults and adjust the arguments.
-	tufConfig, err := tufconfig.New(repo.BaseURL.String(), rootData)
+	tufConfig, err := tufconfig.New(repo.MetaRootURL.String(), rootData)
 	if err != nil {
 		return nil, fmt.Errorf("initialise tuf-client config: %w", err)
 	}
 	// Custom URLs.
-	tufConfig.RemoteMetadataURL = repo.BaseURL.String()
-	tufConfig.RemoteTargetsURL = repo.DataBaseURL.String()
+	tufConfig.RemoteMetadataURL = repo.MetaRootURL.String()
+	tufConfig.RemoteTargetsURL = repo.DataRootURL.String()
 	// Use our own cache dir.
 	tufConfig.LocalMetadataDir = repoCacheDir.Name()
 	// NOTE: Ideally we wouldn't have this (there is little point to this kind
@@ -138,7 +138,7 @@ func trustedMetadataTargetsFetcher(cacheDir *pathrs.Root, repo Repository, metad
 			return nil, fmt.Errorf("role %s: %w", roleName, fs.ErrNotExist)
 		}
 		metaPath := fmt.Sprintf("%d.%s.json", metaRef.Version, roleName)
-		metaURL := repo.BaseURL.JoinPath(metaPath)
+		metaURL := repo.MetaRootURL.JoinPath(metaPath)
 
 		rdr, err := verifiedHTTPGet(ctx, metaURL, metaRef.Length, metaRef.Hashes)
 		if err != nil {
@@ -188,7 +188,7 @@ func pprintHashes(prefix string, hashes tufmetadata.Hashes) {
 func pprintTargetFile(prefix string, repo Repository, target *tufmetadata.TargetFiles) {
 	fmt.Printf("%s%s:\n", prefix, target.Path)
 	prefix += "\t"
-	fmt.Printf("%sURL: %s\n", prefix, repo.DataBaseURL.JoinPath(target.Path))
+	fmt.Printf("%sURL: %s\n", prefix, repo.DataRootURL.JoinPath(target.Path))
 	fmt.Printf("%sSize: %d\n", prefix, target.Length)
 	pprintHashes(prefix, target.Hashes)
 	if target.Custom != nil {

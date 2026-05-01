@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	baseURLCtxKey     ctxKey = "--base-url"
-	dataBaseURLCtxKey ctxKey = "--data-base-url"
+	dataRootURLCtxKey ctxKey = "--base-url"
+	metaRootURLCtxKey ctxKey = "--data-base-url"
 )
 
 var initCommand = &cli.Command{
@@ -56,18 +56,18 @@ var initCommand = &cli.Command{
 	},
 	Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 		if urlStr := cmd.String("base-url"); urlStr != "" {
-			baseURL, err := url.Parse(urlStr)
+			dataRootURL, err := url.Parse(urlStr)
 			if err != nil {
 				return nil, fmt.Errorf("invalid --base-url: %w", err)
 			}
-			ctx = context.WithValue(ctx, baseURLCtxKey, baseURL)
+			ctx = context.WithValue(ctx, dataRootURLCtxKey, dataRootURL)
 		}
 		if urlStr := cmd.String("data-base-url"); urlStr != "" {
-			dataBaseURL, err := url.Parse(urlStr)
+			metaRootURL, err := url.Parse(urlStr)
 			if err != nil {
 				return nil, fmt.Errorf("invalid --data-base-url: %w", err)
 			}
-			ctx = context.WithValue(ctx, dataBaseURLCtxKey, dataBaseURL)
+			ctx = context.WithValue(ctx, metaRootURLCtxKey, metaRootURL)
 		}
 		return ctx, nil
 	},
@@ -81,17 +81,17 @@ var initCommand = &cli.Command{
 			return fmt.Errorf("repo-name argument is required")
 		}
 
-		baseURL := cliext.CtxValue[*url.URL](ctx, baseURLCtxKey)
-		if baseURL == nil {
+		dataRootURL := cliext.CtxValue[*url.URL](ctx, dataRootURLCtxKey)
+		if dataRootURL == nil {
 			var err error
-			baseURL, err = url.Parse("https://" + name)
+			dataRootURL, err = url.Parse("https://" + name)
 			if err != nil {
 				return fmt.Errorf("repo name %q is not a valid domain + path URL: %w", name, err)
 			}
 		}
-		dataBaseURL := cliext.CtxValue[*url.URL](ctx, dataBaseURLCtxKey)
-		if dataBaseURL == nil {
-			dataBaseURL = baseURL.JoinPath("targets")
+		metaRootURL := cliext.CtxValue[*url.URL](ctx, metaRootURLCtxKey)
+		if metaRootURL == nil {
+			metaRootURL = dataRootURL.JoinPath("targets")
 		}
 
 		var rootData io.ReadCloser
@@ -110,8 +110,8 @@ var initCommand = &cli.Command{
 		}
 		config.Repos[name] = Repository{
 			Name:        name,
-			BaseURL:     baseURL,
-			DataBaseURL: dataBaseURL,
+			MetaRootURL: dataRootURL,
+			DataRootURL: metaRootURL,
 		}
 
 		// TODO(tmpl): If we add template support, we need to expand it here.
@@ -134,7 +134,7 @@ var initCommand = &cli.Command{
 		// internet access.
 
 		if rootData == nil {
-			rootURL := baseURL.JoinPath("1.root.json")
+			rootURL := dataRootURL.JoinPath("1.root.json")
 
 			req, err := http.NewRequestWithContext(ctx, "GET", rootURL.String(), nil)
 			if err != nil {
