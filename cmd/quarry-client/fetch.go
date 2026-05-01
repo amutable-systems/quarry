@@ -18,7 +18,7 @@ import (
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 )
 
-var fetchCommand = &cli.Command{
+var fetchCommand = withRefTimeFlag(&cli.Command{
 	Name:  "fetch",
 	Usage: "fetch a specific file from the repos",
 	Flags: []cli.Flag{
@@ -68,7 +68,7 @@ var fetchCommand = &cli.Command{
 		}
 
 		repoName := cmd.String("repo")
-		updaters, err := getUpdaters(ctx, cmd, repoName)
+		updaters, err := getUpdaters(ctx, repoName)
 		if err != nil {
 			return fmt.Errorf("get tuf-client updater for repo %s: %w", repoName, err)
 		}
@@ -113,4 +113,4 @@ var fetchCommand = &cli.Command{
 		fmt.Fprintf(os.Stderr, "Wrote %d bytes to %q.\n", targetFile.Length, outputPath)
 		return nil
 	},
-}
+})

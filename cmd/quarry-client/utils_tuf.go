@@ -20,7 +20,6 @@ import (
 	tufconfig "github.com/theupdateframework/go-tuf/v2/metadata/config"
 	tuftrustedmetadata "github.com/theupdateframework/go-tuf/v2/metadata/trustedmetadata"
 	tufupdater "github.com/theupdateframework/go-tuf/v2/metadata/updater"
-	"github.com/urfave/cli/v3"
 	"golang.org/x/sys/unix"
 
 	"go.amutable.dev/quarry/cmd/internal/pprint"
@@ -73,11 +72,10 @@ func makeUpdater(cacheDir *pathrs.Root, name string, repo Repository) (_ *tufupd
 }
 
 // getUpdaters constructs go-tuf updater clients from the configuration state.
-func getUpdaters(ctx context.Context, cmd *cli.Command, repoNames ...string) (map[string]*tufupdater.Updater, error) {
+func getUpdaters(ctx context.Context, repoNames ...string) (map[string]*tufupdater.Updater, error) {
 	config := ctxConfig(ctx)
 	cacheDir := ctxCacheDir(ctx)
-
-	refTime := cmd.Timestamp("ref-time") // zero if unset
+	refTime := ctxRefTime(ctx) // zero if unset
 
 	if len(repoNames) == 0 {
 		repoNames = slices.Collect(maps.Keys(config.Repos))

@@ -13,7 +13,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-var refreshCommand = &cli.Command{
+var refreshCommand = withRefTimeFlag(&cli.Command{
 	Name:  "refresh",
 	Usage: "check for updates for the given repos",
 	Arguments: []cli.Argument{
@@ -27,7 +27,7 @@ var refreshCommand = &cli.Command{
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		repoNames := cmd.StringArgs("repo-name")
 
-		updaters, err := getUpdaters(ctx, cmd, repoNames...)
+		updaters, err := getUpdaters(ctx, repoNames...)
 		if err != nil {
 			return fmt.Errorf("failed to get tuf-client updaters: %w", err)
 		}
@@ -55,4 +55,4 @@ var refreshCommand = &cli.Command{
 		}
 		return nil
 	},
-}
+})

@@ -18,7 +18,7 @@ import (
 	"go.amutable.dev/quarry/internal/uapi16"
 )
 
-var listCommand = &cli.Command{
+var listCommand = withRefTimeFlag(&cli.Command{
 	Name:  "list",
 	Usage: "get a list of available update files",
 	Flags: []cli.Flag{
@@ -40,7 +40,7 @@ var listCommand = &cli.Command{
 		cacheDir := ctxCacheDir(ctx)
 		repoNames := cmd.StringArgs("repo-name")
 
-		updaters, err := getUpdaters(ctx, cmd, repoNames...)
+		updaters, err := getUpdaters(ctx, repoNames...)
 		if err != nil {
 			return fmt.Errorf("get tuf-client updaters: %w", err)
 		}
@@ -106,4 +106,4 @@ var listCommand = &cli.Command{
 		}
 		return nil
 	},
-}
+})
