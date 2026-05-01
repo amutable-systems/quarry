@@ -6,6 +6,8 @@ go 1.25.5
 
 require (
 	cyphar.com/go-pathrs v0.2.4
+	github.com/coreos/go-systemd/v22 v22.7.0
+	github.com/gorilla/handlers v1.5.2
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/umoci v0.6.0
 	github.com/pelletier/go-toml/v2 v2.3.0
@@ -22,6 +24,7 @@ require (
 	github.com/apex/log v1.9.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/google/go-containerregistry v0.20.7 // indirect
 	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
 	github.com/pkg/errors v0.9.1 // indirect

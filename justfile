@@ -6,7 +6,9 @@ sysconfdir := env("SYSCONFDIR", "/etc")
 bindir := prefix / "bin"
 unitdir := prefix / "lib/systemd/system"
 
-default: (build "quarry-client") (build "hardhat" "insecure")
+default: build_all
+
+build_all: (build "quarry-client" "http") (build "hardhat" "insecure")
 
 install: install_hardhat install_client
 

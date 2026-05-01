@@ -3,6 +3,7 @@ version: "2"
 run:
   build-tags:
     - insecure # internal/keystore/internal
+    - http # cmd/quarry-client/http.go
 
 linters:
   enable:
