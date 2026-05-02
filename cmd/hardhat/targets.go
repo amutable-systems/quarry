@@ -23,21 +23,10 @@ import (
 	"golang.org/x/sys/unix"
 
 	"go.amutable.dev/quarry/internal/keystore"
+	"go.amutable.dev/quarry/internal/linux"
 	"go.amutable.dev/quarry/internal/pathrsext"
-	"go.amutable.dev/quarry/internal/third_party/fdutils"
 	"go.amutable.dev/quarry/internal/tufext"
 )
-
-func openat(dirFile *os.File, path string, flags int) (*os.File, error) {
-	return fdutils.WithFileFd2(dirFile, func(dirFd uintptr) (*os.File, error) {
-		fd, err := unix.Openat(int(dirFd), path, flags|unix.O_CLOEXEC, 0) //nolint:forbidigo // caller guarantees that the path is safe to open
-		fileName := dirFile.Name() + "/" + path
-		if err != nil {
-			err = &os.PathError{Op: "openat", Path: fileName, Err: err}
-		}
-		return os.NewFile(uintptr(fd), fileName), err
-	})
-}
 
 func stripComponents(path string, toStrip int) string {
 	path = filepath.Clean(path) //nolint:forbidigo // lexical paths
@@ -64,7 +53,7 @@ func hashToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalP
 		}
 		for _, child := range children {
 			logicalSubpath := filepath.Join(logicalPath, child) //nolint:forbidigo // lexical paths
-			subfile, err := openat(file, child, unix.O_RDONLY|unix.O_NOFOLLOW)
+			subfile, err := linux.Openat(file, child, unix.O_RDONLY|unix.O_NOFOLLOW)
 			if err != nil {
 				return fmt.Errorf("could not open child %s: %w", logicalSubpath, err)
 			}
