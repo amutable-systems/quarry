@@ -4,9 +4,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -23,25 +25,43 @@ import (
 	"golang.org/x/sys/unix"
 
 	"go.amutable.dev/quarry/cmd/internal/pprint"
+	"go.amutable.dev/quarry/internal/linux"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
-func makeUpdater(cacheDir *pathrs.Root, name string, repo *Repository) (_ *tufupdater.Updater, Err error) {
+func makeUpdater(ctx context.Context, name string, repo *Repository) (_ *tufupdater.Updater, Err error) {
+	cacheDir := ctxCacheDir(ctx)
+
 	// TODO(tmpl): If we add template support, we need to expand it here.
 
-	repoCacheDir, err := cacheDir.OpenFile(name, unix.O_DIRECTORY)
+	repoCacheDir, err := cacheDir.MkdirAll(name, 0o755)
 	if err != nil {
-		return nil, fmt.Errorf("could not open repo cache dir: %w", err)
+		return nil, fmt.Errorf("open repo cache dir: %w", err)
 	}
+	defer funchelpers.VerifyClose(&Err, repoCacheDir)
 
-	// TODO: Probably should use openat...?
-	rootSubPath := filepath.Join(name, "root.json") //nolint:forbidigo // lexical pathname
-	rootFile, err := cacheDir.Open(rootSubPath)
-	if err != nil {
-		return nil, fmt.Errorf("could not open cached root.json: %w", err)
+	rootFile, err := linux.Openat(repoCacheDir.IntoFile(), "root.json", unix.O_RDONLY|unix.O_NOFOLLOW)
+	if errors.Is(err, fs.ErrNotExist) {
+		// Fallback to fetch from the trusted root source.
+		rootData, err := repo.RootTrust.FetchRoot(ctx, repo)
+		if err != nil {
+			return nil, fmt.Errorf("fetch trusted root.json: %w", err)
+		}
+		rootFile, err = linux.Openat(repoCacheDir.IntoFile(), "root.json", unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o644)
+		if err != nil {
+			return nil, fmt.Errorf("create root.json for cache: %w", err)
+		}
+		if _, err := rootFile.Write(rootData); err != nil {
+			return nil, fmt.Errorf("write cached root.json: %w", err)
+		}
+		if err := rootFile.Sync(); err != nil {
+			return nil, fmt.Errorf("sync cached root.json: %w", err)
+		}
+		_, _ = rootFile.Seek(0, io.SeekStart) // reset the file
+	} else if err != nil {
+		return nil, fmt.Errorf("open cached root.json: %w", err)
 	}
-	defer funchelpers.VerifyClose(&Err, rootFile)
 
 	rootData, err := io.ReadAll(rootFile)
 	if err != nil {
@@ -53,11 +73,12 @@ func makeUpdater(cacheDir *pathrs.Root, name string, repo *Repository) (_ *tufup
 	if err != nil {
 		return nil, fmt.Errorf("initialise tuf-client config: %w", err)
 	}
+	tufConfig.RootMaxLength = maxRootBytes
 	// Custom URLs.
 	tufConfig.RemoteMetadataURL = repo.MetaRootURL.String()
 	tufConfig.RemoteTargetsURL = repo.DataRootURL.String()
 	// Use our own cache dir.
-	tufConfig.LocalMetadataDir = repoCacheDir.Name()
+	tufConfig.LocalMetadataDir = repoCacheDir.IntoFile().Name()
 	// NOTE: Ideally we wouldn't have this (there is little point to this kind
 	// of forced local caching) but go-tuf requires you to do it if you want to
 	// cache the metadata. Really annoying.
@@ -74,7 +95,6 @@ func makeUpdater(cacheDir *pathrs.Root, name string, repo *Repository) (_ *tufup
 // getUpdaters constructs go-tuf updater clients from the configuration state.
 func getUpdaters(ctx context.Context, repoNames ...string) (map[string]*tufupdater.Updater, error) {
 	config := ctxConfig(ctx)
-	cacheDir := ctxCacheDir(ctx)
 	refTime := ctxRefTime(ctx) // zero if unset
 
 	if len(repoNames) == 0 {
@@ -87,7 +107,7 @@ func getUpdaters(ctx context.Context, repoNames ...string) (map[string]*tufupdat
 		if !ok {
 			return nil, fmt.Errorf("unknown repository %s", name)
 		}
-		updater, err := makeUpdater(cacheDir, name, repo)
+		updater, err := makeUpdater(ctx, name, repo)
 		if err != nil {
 			return nil, fmt.Errorf("bad repo %s: %w", name, err)
 		}
@@ -95,6 +115,9 @@ func getUpdaters(ctx context.Context, repoNames ...string) (map[string]*tufupdat
 			updater.UnsafeSetRefTime(refTime)
 		}
 		updaters[name] = updater
+	}
+	if len(updaters) < 1 {
+		slog.Warn("no repositories defined -- all operations are a no-op")
 	}
 	return updaters, nil
 }

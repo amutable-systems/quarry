@@ -34,7 +34,6 @@ var app = withCacheDirFlag(withConfigFlag(&cli.Command{
 	// TODO: We might want to have a flag to specify a custom context with
 	// a deadline? And possibly some SIGINT-based cancellation?
 	Commands: []*cli.Command{
-		initCommand,
 		listCommand,
 		fetchCommand,
 		refreshCommand,
