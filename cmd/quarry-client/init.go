@@ -108,10 +108,10 @@ var initCommand = &cli.Command{
 		if _, ok := config.Repos[name]; ok && !cmd.Bool("force") {
 			return fmt.Errorf("repo %q is already in config %s", name, cmd.String("config"))
 		}
-		config.Repos[name] = Repository{
+		config.Repos[name] = &Repository{
 			Name:        name,
-			MetaRootURL: dataRootURL,
-			DataRootURL: metaRootURL,
+			MetaRootURL: &tomlURL{dataRootURL},
+			DataRootURL: &tomlURL{metaRootURL},
 		}
 
 		// TODO(tmpl): If we add template support, we need to expand it here.

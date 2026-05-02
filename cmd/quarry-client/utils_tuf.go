@@ -27,7 +27,7 @@ import (
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
-func makeUpdater(cacheDir *pathrs.Root, name string, repo Repository) (_ *tufupdater.Updater, Err error) {
+func makeUpdater(cacheDir *pathrs.Root, name string, repo *Repository) (_ *tufupdater.Updater, Err error) {
 	// TODO(tmpl): If we add template support, we need to expand it here.
 
 	repoCacheDir, err := cacheDir.OpenFile(name, unix.O_DIRECTORY)
@@ -127,7 +127,7 @@ func verifiedHTTPGet(ctx context.Context, url *url.URL, length int64, hashes tuf
 	return rdr, nil
 }
 
-func trustedMetadataTargetsFetcher(cacheDir *pathrs.Root, repo Repository, metadata *tuftrustedmetadata.TrustedMetadata) tufext.TargetMetadataFetchFunc {
+func trustedMetadataTargetsFetcher(cacheDir *pathrs.Root, repo *Repository, metadata *tuftrustedmetadata.TrustedMetadata) tufext.TargetMetadataFetchFunc {
 	var mu sync.RWMutex // to serialise access to TrustedMetadata
 
 	return func(ctx context.Context, roleName, delegatorName string) (_ *tufext.SignedTargets, Err error) {
@@ -185,7 +185,7 @@ func pprintHashes(prefix string, hashes tufmetadata.Hashes) {
 	}
 }
 
-func pprintTargetFile(prefix string, repo Repository, target *tufmetadata.TargetFiles) {
+func pprintTargetFile(prefix string, repo *Repository, target *tufmetadata.TargetFiles) {
 	fmt.Printf("%s%s:\n", prefix, target.Path)
 	prefix += "\t"
 	fmt.Printf("%sURL: %s\n", prefix, repo.DataRootURL.JoinPath(target.Path))
