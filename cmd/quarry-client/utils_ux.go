@@ -10,7 +10,6 @@ import (
 
 	"cyphar.com/go-pathrs"
 	"github.com/urfave/cli/v3"
-	"golang.org/x/sys/unix"
 
 	"go.amutable.dev/quarry/cmd/internal/cliext"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
@@ -75,7 +74,7 @@ func withConfigFlag(cmd *cli.Command) *cli.Command {
 	cmd.Before = cliext.WrapBeforeFuncs(cmd.Before, func(ctx context.Context, cmd *cli.Command) (_ context.Context, Err error) {
 		configPath := cmd.String("config")
 
-		configFile, err := os.OpenFile(configPath, unix.O_CREAT|unix.O_RDONLY, 0o644) //nolint:forbidigo // user-controlled host path
+		configFile, err := os.Open(configPath) //nolint:forbidigo // user-controlled host path
 		if err != nil {
 			return nil, fmt.Errorf("open config: %w", err)
 		}
