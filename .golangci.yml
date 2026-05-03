@@ -45,7 +45,7 @@ linters:
           pkg: ^path/filepath$
         # These operations all can lead to accidentally reaeding or writing
         # outside of the expected directory. They can be used, with great care.
-        - pattern: ^os\.(Create|Truncate|(Write|Read|Open)File|(Remove|Mkdir)\w*|(Syml|L)ink|Ch(own|mod))$
+        - pattern: ^os\.(Open|Create|Truncate|(Write|Read|Open)File|(Remove|Mkdir)\w*|(Syml|L)ink|Ch(own|mod))$
           pkg: ^os$
         # unix.*at syscalls are similarly dangeorus.
         - pattern: ^unix\.\w*at$

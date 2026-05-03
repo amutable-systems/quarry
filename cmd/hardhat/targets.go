@@ -273,7 +273,7 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		// TODO: Support adding delegations.
 
 		for _, filename := range cmd.StringArgs("files") {
-			file, err := os.Open(filename)
+			file, err := os.Open(filename) //nolint:forbidigo // user-controlled host path
 			if err != nil {
 				return err
 			}

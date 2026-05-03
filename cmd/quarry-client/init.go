@@ -97,7 +97,7 @@ var initCommand = &cli.Command{
 		var rootData io.ReadCloser
 		if path := cmd.String("root"); path != "" {
 			var err error
-			rootData, err = os.Open(cmd.String("root"))
+			rootData, err = os.Open(cmd.String("root")) //nolint:forbidigo // user-controlled host path
 			if err != nil {
 				return fmt.Errorf("invalid --root: %w", err)
 			}
