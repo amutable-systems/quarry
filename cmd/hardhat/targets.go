@@ -245,7 +245,7 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 				return fmt.Errorf("invalid root.json: %w", err)
 			}
 			// Assume the root is validly signed.
-			keyIDs = root.Signed.Roles[tufmetadata.ROOT].KeyIDs
+			keyIDs = root.Signed.Roles[tufmetadata.TARGETS].KeyIDs
 		case cmd.IsSet("keyid"):
 			keyIDs = cmd.StringSlice("keyid")
 		default:
