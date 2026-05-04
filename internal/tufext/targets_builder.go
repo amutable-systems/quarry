@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"maps"
+	"sync"
 	"time"
 
 	"github.com/opencontainers/go-digest"
@@ -19,6 +20,8 @@ import (
 // TargetsBuilder is a wrapper type for building a signed TUF targets.json (or
 // delegated target) object.
 type TargetsBuilder struct {
+	mu sync.Mutex
+
 	inner tufmetadata.TargetsType
 
 	// RefTime is the reference time used for calculating expiries based on
@@ -62,7 +65,9 @@ func (builder *TargetsBuilder) AddTargetFile(filename string, size int64, hashes
 		}
 		fileMeta.Hashes[string(hash.Algorithm())] = digestBytes
 	}
+	builder.mu.Lock()
 	builder.inner.Targets[filename] = fileMeta
+	builder.mu.Unlock()
 	return fileMeta, nil
 }
 
@@ -70,6 +75,9 @@ func (builder *TargetsBuilder) AddTargetFile(filename string, size int64, hashes
 // keys. To configure the delegation you can modify the returned
 // [tufmetadata.DelegatedRole] reference directly.
 func (builder *TargetsBuilder) AddDelegation(roleName string, threshold int, keys ...keystore.PublicKey) (*tufmetadata.DelegatedRole, error) {
+	builder.mu.Lock()
+	defer builder.mu.Unlock()
+
 	if builder.inner.Delegations == nil {
 		builder.inner.Delegations = new(tufmetadata.Delegations)
 	}
@@ -113,14 +121,9 @@ func (builder *TargetsBuilder) AddDelegation(roleName string, threshold int, key
 	return role, nil
 }
 
-// TargetsType returns a pointer to the inner [tufmetadata.TargetsType] for
-// this builder, to allow for arbitrary modification.
-//
-// NOTE: You **MUST NOT** use both [AddDelegation] and this method to do slice
-// manipulations on the delegated roles slice (such changes will be
-// overwritten, and would be a poor design because it will cause pointers
-// returned from [AddDelegation] to become invalid).
-func (builder *TargetsBuilder) TargetsType() *tufmetadata.TargetsType {
+// targetsType is the internal implementation of [RootBuilder.targetsType].
+// Must be called with builder.mu held!
+func (builder *TargetsBuilder) targetsType() *tufmetadata.TargetsType {
 	// Replace the slice of delegated roles with the one stored internally to
 	// make sure it has the correct values.
 	if builder.delegatedRoles != nil {
@@ -137,11 +140,33 @@ func (builder *TargetsBuilder) TargetsType() *tufmetadata.TargetsType {
 	return &builder.inner
 }
 
+// TargetsType returns a pointer to the inner [tufmetadata.TargetsType] for
+// this builder, to allow for arbitrary modification.
+//
+// While [TargetsBuilder] is safe against racing access, the returned type is
+// not and so callers will need to serialise access against external accesses
+// *and* with [TargetsBuilder] operations.
+//
+// NOTE: You **MUST NOT** use both [AddDelegation] and this method to do slice
+// manipulations on the delegated roles slice (such changes will be
+// overwritten, and would be a poor design because it will cause pointers
+// returned from [AddDelegation] to become invalid).
+func (builder *TargetsBuilder) TargetsType() *tufmetadata.TargetsType {
+	builder.mu.Lock()
+	defer builder.mu.Unlock()
+
+	return builder.targetsType()
+}
+
 // SignWith signs the designed targets file with the given set of keys. The
 // returned [tufmetadata.Metadata] object contains a deep copy of the targets
 // data, and so can be manipulated independently of this TargetsBuilder.
 func (builder *TargetsBuilder) SignWith(ctx context.Context, store *keystore.Store, keys ...*keystore.GenericKey) (*SignedTargets, error) {
-	inner := builder.TargetsType() // to regenerate delegated roles slice
+	builder.mu.Lock()
+	defer builder.mu.Unlock()
+
+	inner := builder.targetsType() // to regenerate delegated roles slice
+
 	// TODO: Maybe we should just configure the defaults in NewTargetsBuilder?
 	if inner.Version <= 0 {
 		inner.Version = builder.RefTime.UnixMilli()

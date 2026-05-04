@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -425,4 +426,238 @@ func TestTargetsBuilder_TargetsType_ReflectsPointerMutations(t *testing.T) {
 	assert.Equal(t, []string{"alpha/*"}, inner.Delegations.Roles[0].Paths)
 	assert.True(t, inner.Delegations.Roles[0].Terminating)
 	assert.Equal(t, []string{"ff"}, inner.Delegations.Roles[0].PathHashPrefixes)
+}
+
+func TestTargetsBuilder_AddTargetFile_Concurrent(t *testing.T) {
+	// Concurrent AddTargetFile calls (disjoint filenames) must not race and
+	// every entry must land in Targets with the correct size and hash.
+	const numGoroutines = 32
+	const opsPerGoroutine = 16
+
+	builder := tufext.NewTargetsBuilder()
+
+	type entry struct {
+		filename string
+		size     int64
+		hash     digest.Digest
+	}
+	work := make([][]entry, numGoroutines)
+	returned := make([][]*tufmetadata.TargetFiles, numGoroutines)
+	for g := 0; g < numGoroutines; g++ {
+		work[g] = make([]entry, opsPerGoroutine)
+		returned[g] = make([]*tufmetadata.TargetFiles, opsPerGoroutine)
+		for i := 0; i < opsPerGoroutine; i++ {
+			filename := fmt.Sprintf("file-%d-%d.bin", g, i)
+			work[g][i] = entry{
+				filename: filename,
+				size:     int64(g*opsPerGoroutine + i + 1),
+				hash:     digest.SHA256.FromBytes([]byte(filename)),
+			}
+		}
+	}
+
+	var wg sync.WaitGroup
+	barrier := make(chan struct{})
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			<-barrier
+			for i, e := range work[g] {
+				meta, err := builder.AddTargetFile(e.filename, e.size, e.hash)
+				assert.NoError(t, err)
+				returned[g][i] = meta
+			}
+		}(g)
+	}
+	close(barrier)
+	wg.Wait()
+
+	targets := builder.TargetsType().Targets
+	require.Len(t, targets, numGoroutines*opsPerGoroutine)
+	for g := 0; g < numGoroutines; g++ {
+		for i, e := range work[g] {
+			stored, ok := targets[e.filename]
+			require.True(t, ok, "target %q should be present", e.filename)
+			assert.Same(t, returned[g][i], stored,
+				"stored target pointer for %q should match what AddTargetFile returned", e.filename)
+			assert.Equal(t, e.size, stored.Length)
+			expectedHash, err := hex.DecodeString(e.hash.Encoded())
+			require.NoError(t, err)
+			assert.EqualValues(t, expectedHash, stored.Hashes[string(e.hash.Algorithm())])
+		}
+	}
+}
+
+func TestTargetsBuilder_AddDelegation_Concurrent(t *testing.T) {
+	// Concurrent AddDelegation calls must not race and every role must land
+	// in Delegations. Insertion order across goroutines is non-deterministic,
+	// so role assertions check membership, not position.
+	const numGoroutines = 32
+	const opsPerGoroutine = 16
+
+	builder := tufext.NewTargetsBuilder()
+
+	type entry struct {
+		roleName string
+		key      keystore.PublicKey
+		keyID    string
+	}
+	work := make([][]entry, numGoroutines)
+	expected := make(map[string]string, numGoroutines*opsPerGoroutine)
+	for g := 0; g < numGoroutines; g++ {
+		work[g] = make([]entry, opsPerGoroutine)
+		for i := 0; i < opsPerGoroutine; i++ {
+			k := generateTestPublicKey(t)
+			roleName := fmt.Sprintf("deleg-%d-%d", g, i)
+			id := keyIDOf(t, k)
+			work[g][i] = entry{roleName: roleName, key: k, keyID: id}
+			expected[roleName] = id
+		}
+	}
+
+	var wg sync.WaitGroup
+	barrier := make(chan struct{})
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			<-barrier
+			for _, e := range work[g] {
+				_, err := builder.AddDelegation(e.roleName, 1, e.key)
+				assert.NoError(t, err)
+			}
+		}(g)
+	}
+	close(barrier)
+	wg.Wait()
+
+	inner := builder.TargetsType()
+	require.NotNil(t, inner.Delegations)
+	require.Len(t, inner.Delegations.Roles, len(expected))
+	require.Len(t, inner.Delegations.Keys, len(expected))
+
+	gotRoles := make(map[string]tufmetadata.DelegatedRole, len(inner.Delegations.Roles))
+	for _, r := range inner.Delegations.Roles {
+		gotRoles[r.Name] = r
+	}
+	for roleName, keyID := range expected {
+		got, ok := gotRoles[roleName]
+		require.True(t, ok, "role %q should be present", roleName)
+		assert.Equal(t, 1, got.Threshold)
+		assert.Equal(t, []string{keyID}, got.KeyIDs)
+		assert.Contains(t, inner.Delegations.Keys, keyID)
+	}
+}
+
+func TestTargetsBuilder_AddTargetFileAndDelegation_Concurrent(t *testing.T) {
+	// AddTargetFile and AddDelegation goroutines running together must not
+	// race against each other.
+	const numFileGoroutines = 16
+	const numDelegGoroutines = 16
+	const opsPerGoroutine = 16
+
+	builder := tufext.NewTargetsBuilder()
+
+	files := make([][]struct {
+		filename string
+		size     int64
+		hash     digest.Digest
+	}, numFileGoroutines)
+	expectedFiles := make(map[string]int64, numFileGoroutines*opsPerGoroutine)
+	for g := 0; g < numFileGoroutines; g++ {
+		files[g] = make([]struct {
+			filename string
+			size     int64
+			hash     digest.Digest
+		}, opsPerGoroutine)
+		for i := 0; i < opsPerGoroutine; i++ {
+			filename := fmt.Sprintf("file-%d-%d.bin", g, i)
+			size := int64(g*opsPerGoroutine + i + 1)
+			h := digest.SHA256.FromBytes([]byte(filename))
+			files[g][i].filename = filename
+			files[g][i].size = size
+			files[g][i].hash = h
+			expectedFiles[filename] = size
+		}
+	}
+
+	delegs := make([][]struct {
+		roleName string
+		key      keystore.PublicKey
+		keyID    string
+	}, numDelegGoroutines)
+	expectedDelegs := make(map[string]string, numDelegGoroutines*opsPerGoroutine)
+	for g := 0; g < numDelegGoroutines; g++ {
+		delegs[g] = make([]struct {
+			roleName string
+			key      keystore.PublicKey
+			keyID    string
+		}, opsPerGoroutine)
+		for i := 0; i < opsPerGoroutine; i++ {
+			k := generateTestPublicKey(t)
+			roleName := fmt.Sprintf("deleg-%d-%d", g, i)
+			id := keyIDOf(t, k)
+			delegs[g][i].roleName = roleName
+			delegs[g][i].key = k
+			delegs[g][i].keyID = id
+			expectedDelegs[roleName] = id
+		}
+	}
+
+	var wg sync.WaitGroup
+	barrier := make(chan struct{})
+	for g := 0; g < numFileGoroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			<-barrier
+			for _, e := range files[g] {
+				_, err := builder.AddTargetFile(e.filename, e.size, e.hash)
+				assert.NoError(t, err)
+			}
+		}(g)
+	}
+	for g := 0; g < numDelegGoroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			<-barrier
+			for _, e := range delegs[g] {
+				_, err := builder.AddDelegation(e.roleName, 1, e.key)
+				assert.NoError(t, err)
+			}
+		}(g)
+	}
+	close(barrier)
+	wg.Wait()
+
+	inner := builder.TargetsType()
+
+	require.Len(t, inner.Targets, numFileGoroutines*opsPerGoroutine)
+	for g := 0; g < numFileGoroutines; g++ {
+		for _, e := range files[g] {
+			got, ok := inner.Targets[e.filename]
+			require.True(t, ok, "target %q should be present", e.filename)
+			assert.Equal(t, e.size, got.Length)
+			expectedHash, err := hex.DecodeString(e.hash.Encoded())
+			require.NoError(t, err)
+			assert.EqualValues(t, expectedHash, got.Hashes[string(e.hash.Algorithm())])
+		}
+	}
+
+	require.NotNil(t, inner.Delegations)
+	require.Len(t, inner.Delegations.Roles, numDelegGoroutines*opsPerGoroutine)
+	require.Len(t, inner.Delegations.Keys, numDelegGoroutines*opsPerGoroutine)
+	gotRoles := make(map[string]tufmetadata.DelegatedRole, len(inner.Delegations.Roles))
+	for _, r := range inner.Delegations.Roles {
+		gotRoles[r.Name] = r
+	}
+	for roleName, keyID := range expectedDelegs {
+		got, ok := gotRoles[roleName]
+		require.True(t, ok, "role %q should be present", roleName)
+		assert.Equal(t, 1, got.Threshold)
+		assert.Equal(t, []string{keyID}, got.KeyIDs)
+		assert.Contains(t, inner.Delegations.Keys, keyID)
+	}
 }

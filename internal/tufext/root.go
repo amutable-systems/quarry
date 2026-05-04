@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"sync"
 	"time"
 
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
@@ -17,6 +18,8 @@ import (
 
 // RootBuilder is a wrapper type for building an initial TUF root.json object.
 type RootBuilder struct {
+	mu sync.Mutex
+
 	inner tufmetadata.RootType
 
 	// RefTime is the reference time used for calculating expiries based on
@@ -41,10 +44,9 @@ func NewRootBuilder() *RootBuilder {
 	}
 }
 
-// AddRole configures the given role to use the given set of keys.
-//
-// TODO: Should we return the old value if we're replacing it...?
-func (builder *RootBuilder) AddRole(roleName string, threshold int, keys ...keystore.PublicKey) (*tufmetadata.Role, error) {
+// addRole is the internal implementation of [RootBuilder.AddRole].
+// Must be called with builder.mu held!
+func (builder *RootBuilder) addRole(roleName string, threshold int, keys ...keystore.PublicKey) (*tufmetadata.Role, error) {
 	// TODO: Should we generate additional keys if there are fewer than the
 	// threshold? hardhat open-codes this but it might be a useful thing to
 	// do...
@@ -62,18 +64,32 @@ func (builder *RootBuilder) AddRole(roleName string, threshold int, keys ...keys
 		keyMap[keyID] = &key
 		keyIDs = append(keyIDs, keyID)
 	}
-	maps.Copy(builder.inner.Keys, keyMap)
-
 	role := &tufmetadata.Role{
 		Threshold: threshold,
 		KeyIDs:    keyIDs,
 	}
+
+	maps.Copy(builder.inner.Keys, keyMap)
 	builder.inner.Roles[roleName] = role
 	return role, nil
 }
 
+// AddRole configures the given role to use the given set of keys.
+//
+// TODO: Should we return the old value if we're replacing it...?
+func (builder *RootBuilder) AddRole(roleName string, threshold int, keys ...keystore.PublicKey) (*tufmetadata.Role, error) {
+	builder.mu.Lock()
+	defer builder.mu.Unlock()
+
+	return builder.addRole(roleName, threshold, keys...)
+}
+
 // RootType returns the inner partially-built root.json structure for further
 // manipulation.
+//
+// While [RootBuilder] is safe against racing access, the returned type is not
+// and so callers will need to serialise access against external accesses *and*
+// with [RootBuilder] operations.
 func (builder *RootBuilder) RootType() *tufmetadata.RootType {
 	return &builder.inner
 }
@@ -85,6 +101,10 @@ func (builder *RootBuilder) RootType() *tufmetadata.RootType {
 // so can be manipulated independently of this RootBuilder.
 func (builder *RootBuilder) Sign(ctx context.Context, store *keystore.Store, extraKeys ...*keystore.GenericKey) (_ *SignedRoot, _ []keystore.KeyID, Err error) {
 	inner := builder.RootType()
+
+	builder.mu.Lock()
+	defer builder.mu.Unlock()
+
 	// TODO: Maybe we should just configure the defaults in NewRootBuilder?
 	if inner.Expires.IsZero() {
 		inner.Expires = builder.RefTime.Add(builder.ExpireAfter)
@@ -116,7 +136,7 @@ func (builder *RootBuilder) Sign(ctx context.Context, store *keystore.Store, ext
 			return nil, nil, fmt.Errorf("cannot generate default key for role %s: %w", roleName, err)
 		}
 		newKeyIDs = append(newKeyIDs, newKeyID)
-		if _, err := builder.AddRole(roleName, 1, newKey.Public); err != nil {
+		if _, err := builder.addRole(roleName, 1, newKey.Public); err != nil {
 			return nil, nil, fmt.Errorf("cannot add default key %s to role %s: %w", newKeyID, roleName, err)
 		}
 	}

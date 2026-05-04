@@ -3,6 +3,8 @@
 package tufext_test
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -204,4 +206,65 @@ func TestRootBuilder_RootType_ReflectsMutations(t *testing.T) {
 
 	inner := builder.RootType()
 	assert.Equal(t, 2, inner.Roles[tufmetadata.ROOT].Threshold)
+}
+
+func TestRootBuilder_AddRole_Concurrent(t *testing.T) {
+	// Concurrent AddRole calls (disjoint role names) must not race and every
+	// entry must land in the final state. Run with -race.
+	const numGoroutines = 32
+	const opsPerGoroutine = 16
+
+	builder := tufext.NewRootBuilder()
+
+	type entry struct {
+		roleName string
+		key      keystore.PublicKey
+		keyID    string
+	}
+	work := make([][]entry, numGoroutines)
+	returned := make([][]*tufmetadata.Role, numGoroutines)
+	expected := make(map[string]string, numGoroutines*opsPerGoroutine)
+	for g := 0; g < numGoroutines; g++ {
+		work[g] = make([]entry, opsPerGoroutine)
+		returned[g] = make([]*tufmetadata.Role, opsPerGoroutine)
+		for i := 0; i < opsPerGoroutine; i++ {
+			k := generateTestPublicKey(t)
+			roleName := fmt.Sprintf("role-%d-%d", g, i)
+			id := keyIDOf(t, k)
+			work[g][i] = entry{roleName: roleName, key: k, keyID: id}
+			expected[roleName] = id
+		}
+	}
+
+	var wg sync.WaitGroup
+	barrier := make(chan struct{})
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			<-barrier
+			for i, e := range work[g] {
+				role, err := builder.AddRole(e.roleName, 1, e.key)
+				assert.NoError(t, err)
+				returned[g][i] = role
+			}
+		}(g)
+	}
+	close(barrier)
+	wg.Wait()
+
+	inner := builder.RootType()
+	require.Len(t, inner.Roles, len(expected))
+	require.Len(t, inner.Keys, len(expected))
+	for g := 0; g < numGoroutines; g++ {
+		for i, e := range work[g] {
+			stored, ok := inner.Roles[e.roleName]
+			require.True(t, ok, "role %q should be present", e.roleName)
+			assert.Same(t, returned[g][i], stored,
+				"stored role pointer for %q should match what AddRole returned", e.roleName)
+			assert.Equal(t, 1, stored.Threshold)
+			assert.Equal(t, []string{e.keyID}, stored.KeyIDs)
+			assert.Contains(t, inner.Keys, e.keyID)
+		}
+	}
 }
