@@ -1,5 +1,7 @@
 # Copyright (C) 2026 Amutable GmbH
 
+config_version = 1
+
 # Official AmutableOS update repository.
 [repo."updates.example.com/alpha"]
 root_trust = { type = "bundled", path = "/usr/share/amutable-os/quarry/trusted/%eR-root.json" }

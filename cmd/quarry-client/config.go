@@ -274,8 +274,14 @@ type Repository struct {
 	DataRootURL *tomlURL `toml:"data_root_url"`
 }
 
+// ConfigVersion is the current version of the configuration file format.
+const ConfigVersion = 1
+
 // Config is the top-level configuration object for quarry-client.
 type Config struct {
+	// Version is the format version of this configuration file.
+	Version int64 `toml:"config_version"`
+
 	// TODO: Add --cache-dir to this config.
 
 	// Repos is the set of repositories configured for the client.
@@ -293,15 +299,21 @@ type Config struct {
 	Repos map[string]*Repository `toml:"repo"`
 }
 
+var errUnsupportedVersion = errors.New("unsupported config_version")
+
 func parseConfig(rdr io.Reader) (*Config, error) {
 	var cfg Config
 	meta, err := toml.NewDecoder(rdr).Decode(&cfg)
 	if err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
+	if v := cfg.Version; v != ConfigVersion {
+		return nil, fmt.Errorf("%w %d: only version %d is supported", errUnsupportedVersion, v, ConfigVersion)
+	}
 	if unknown := meta.Undecoded(); len(unknown) > 0 {
 		return nil, fmt.Errorf("invalid config: unknown toml keys: %v", unknown)
 	}
+
 	expander := expand.NewExpansions()
 	repos := make(map[string]*Repository)
 	for oldName, repo := range cfg.Repos {

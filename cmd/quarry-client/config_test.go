@@ -18,6 +18,7 @@ var uuidRe = regexp.MustCompile(`^` + uuidPat + `$`)
 
 func repoBlock(rootTrust string) string {
 	return `
+config_version = 1
 [repo.example]
 ` + rootTrust + `
 meta_root_url = "https://example.com/repo"
@@ -137,14 +138,38 @@ func TestParseConfig_RootTrust_Invalid(t *testing.T) {
 	}
 }
 
-func TestParseConfig_Empty(t *testing.T) {
-	conf, err := parseConfig(strings.NewReader(""))
+func TestParseConfig_OnlyVersion(t *testing.T) {
+	conf, err := parseConfig(strings.NewReader(`config_version = 1`))
 	require.NoError(t, err)
 	assert.Empty(t, conf.Repos)
 }
 
+func TestParseConfig_VersionMissing(t *testing.T) {
+	_, err := parseConfig(strings.NewReader(""))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errUnsupportedVersion)
+}
+
+func TestParseConfig_VersionUnsupported(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version string
+	}{
+		{"Zero", "0"},
+		{"Future", "2"},
+		{"Negative", "-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseConfig(strings.NewReader(`config_version = ` + tc.version))
+			require.Error(t, err)
+			assert.ErrorIs(t, err, errUnsupportedVersion)
+		})
+	}
+}
+
 func TestParseConfig_RepoMissingRootTrust(t *testing.T) {
 	_, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo.example]
 meta_root_url = "https://example.com"
 `))
@@ -154,6 +179,7 @@ meta_root_url = "https://example.com"
 
 func TestParseConfig_RepoNameFromKey(t *testing.T) {
 	conf, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo."updates.example.com/alpha"]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com"
@@ -165,6 +191,7 @@ meta_root_url = "https://example.com"
 
 func TestParseConfig_DefaultMetaRootURL(t *testing.T) {
 	conf, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo."updates.example.com/alpha"]
 root_trust = "insecure-tofu"
 `))
@@ -178,6 +205,7 @@ root_trust = "insecure-tofu"
 
 func TestParseConfig_DefaultDataRootURL(t *testing.T) {
 	conf, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
 meta_root_url = "https://meta.example.com/sub"
@@ -191,6 +219,7 @@ meta_root_url = "https://meta.example.com/sub"
 
 func TestParseConfig_CustomURLs(t *testing.T) {
 	conf, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
 meta_root_url = "https://meta.example.com"
@@ -204,6 +233,7 @@ data_root_url = "https://data.example.com/blobs"
 
 func TestParseConfig_MultipleRepos(t *testing.T) {
 	conf, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo.alpha]
 root_trust = "insecure-tofu"
 meta_root_url = "https://alpha.example.com"
@@ -229,6 +259,7 @@ data_root_url = "https://beta.example.com/data"
 
 func TestParseConfig_UnknownTopLevelKey(t *testing.T) {
 	_, err := parseConfig(strings.NewReader(`
+config_version = 1
 some_unknown_key = "value"
 
 [repo.example]
@@ -241,6 +272,7 @@ meta_root_url = "https://example.com"
 
 func TestParseConfig_UnknownRepoKey(t *testing.T) {
 	_, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com"
@@ -260,6 +292,7 @@ func TestParseConfig_BadURL(t *testing.T) {
 	// [toml.ParseError] has no Unwrap so [errors.As] cannot reach the
 	// underlying [url.EscapeError]; match a structural substring instead.
 	_, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com/%zz"
@@ -321,6 +354,7 @@ func TestParseConfig_Expand_RepoName(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conf, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo."` + tc.key + `"]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com"
@@ -339,6 +373,7 @@ meta_root_url = "https://example.com"
 
 func TestParseConfig_Expand_RepoName_MachineIDConsistent(t *testing.T) {
 	conf, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo."a/%m"]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com/%m"
@@ -394,6 +429,7 @@ func TestParseConfig_Expand_URL(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conf, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo."example.com/foo"]
 root_trust = "insecure-tofu"
 meta_root_url = "` + tc.template + `"
@@ -412,6 +448,7 @@ meta_root_url = "` + tc.template + `"
 
 func TestParseConfig_Expand_URL_PercentEncoded(t *testing.T) {
 	conf, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com/100%25-uptime/%2A/%aF"
@@ -427,6 +464,7 @@ meta_root_url = "https://example.com/100%25-uptime/%2A/%aF"
 
 func TestParseConfig_Expand_URL_PerRepoR(t *testing.T) {
 	conf, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo.alpha]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com/%R"
@@ -471,6 +509,7 @@ func TestParseConfig_Expand_Bundled(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conf, err := parseConfig(strings.NewReader(`
+config_version = 1
 [repo."example.com/foo"]
 root_trust = { type = "bundled", path = "` + tc.path + `" }
 meta_root_url = "https://example.com"
@@ -498,6 +537,7 @@ func TestParseConfig_Expand_Invalid(t *testing.T) {
 		{
 			name: "UnknownPredicateInRepoName",
 			config: `
+config_version = 1
 [repo."%Z"]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com"`,
@@ -506,6 +546,7 @@ meta_root_url = "https://example.com"`,
 		{
 			name: "RepoNameSourceNotInRepoName",
 			config: `
+config_version = 1
 [repo."%R"]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com"`,
@@ -514,6 +555,7 @@ meta_root_url = "https://example.com"`,
 		{
 			name: "TrailingPercentInRepoName",
 			config: `
+config_version = 1
 [repo."foo%"]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com"`,
@@ -522,6 +564,7 @@ meta_root_url = "https://example.com"`,
 		{
 			name: "IncompletePredicateInRepoName",
 			config: `
+config_version = 1
 [repo."foo/%e"]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com"`,
@@ -530,6 +573,7 @@ meta_root_url = "https://example.com"`,
 		{
 			name: "UnknownPredicateInURL",
 			config: `
+config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com/%Z"`,
@@ -538,6 +582,7 @@ meta_root_url = "https://example.com/%Z"`,
 		{
 			name: "TrailingPercentInURL",
 			config: `
+config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com/%"`,
@@ -546,6 +591,7 @@ meta_root_url = "https://example.com/%"`,
 		{
 			name: "TruncatedPercentEncodedInURL",
 			config: `
+config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com/%2"`,
@@ -554,6 +600,7 @@ meta_root_url = "https://example.com/%2"`,
 		{
 			name: "InvalidPercentEncodedInURL",
 			config: `
+config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com/%2X"`,
@@ -562,6 +609,7 @@ meta_root_url = "https://example.com/%2X"`,
 		{
 			name: "DuplicatePredicateInURL",
 			config: `
+config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
 meta_root_url = "https://example.com/%eeR"`,
@@ -570,6 +618,7 @@ meta_root_url = "https://example.com/%eeR"`,
 		{
 			name: "UnknownPredicateInBundledPath",
 			config: `
+config_version = 1
 [repo.example]
 root_trust = { type = "bundled", path = "/etc/%Z" }
 meta_root_url = "https://example.com"`,
