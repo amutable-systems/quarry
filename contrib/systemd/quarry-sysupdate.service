@@ -1,0 +1,31 @@
+# Copyright (C) 2026 Amutable GmbH
+
+# Intended to be a drop-in replacement for systemd-sysupdate.timer.
+
+[Unit]
+Description=Quarry-Based Automatic System Update
+Wants=network-online.target
+After=network-online.target
+
+# For containers we assume that the manager will handle updates. And we likely
+# can't even access our backing block device anyway.
+ConditionVirtualization=!container
+
+[Service]
+Type=simple
+NotifyAccess=main
+ExecStart=/usr/bin/quarry-sysupdate
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_FSETID CAP_MKNOD CAP_SETFCAP CAP_SYS_ADMIN CAP_SETPCAP CAP_DAC_OVERRIDE CAP_LINUX_IMMUTABLE
+NoNewPrivileges=yes
+MemoryDenyWriteExecute=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictNamespaces=net
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service @mount
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+LockPersonality=yes
+
+[Install]
+Also=quarry-sysupdate.timer

@@ -66,6 +66,18 @@ quarry-client-http server, sysupdate can pull from TUF repositories completely
 transparently without needing any changes to sysupdate.
 %endif
 
+%package sysupdate
+Summary:        Quarry-Based sysupdate Runner
+Requires:       %{name} = %{version}
+Requires:       %{name}-client = %{version}
+%if %{with http}
+Requires:       %{name}-client-http = %{version}
+%endif
+
+%description sysupdate
+This is a wrapper around systemd-sysupdate to permit more flexible update
+schemes than are currently supported by upstream systemd.
+
 %prep
 %autosetup
 
@@ -99,6 +111,8 @@ install -Dm0644 ./contrib/systemd/quarry-client-http.sysusers %{buildroot}%{_sys
 # Directory for bundled trust roots.
 install -dm0755 %{buildroot}%{_datarootdir}/amutable/%{name}/bundled
 
+just install_sysupdate
+
 %if %{with http}
 %post client
 %systemd_post %{name}-client-http.socket %{name}-client-http.service
@@ -109,6 +123,15 @@ install -dm0755 %{buildroot}%{_datarootdir}/amutable/%{name}/bundled
 %postun client
 %systemd_postun_with_restart %{name}-client-http.socket %{name}-client-http.service
 %endif
+
+%post sysupdate
+%systemd_post %{name}-sysupdate.timer %{name}-sysupdate.service
+
+%preun sysupdate
+%systemd_preun %{name}-sysupdate.timer %{name}-sysupdate.service
+
+%postun sysupdate
+%systemd_postun_with_restart %{name}-sysupdate.timer %{name}-sysupdate.service
 
 %files
 %defattr(-,root,root)
@@ -141,6 +164,10 @@ install -dm0755 %{buildroot}%{_datarootdir}/amutable/%{name}/bundled
 %{_tmpfilesdir}/%{name}-client.conf
 %{_sysusersdir}/%{name}-client-http.conf
 %endif
+
+%files sysupdate
+%{_bindir}/%{name}-sysupdate
+%{_unitdir}/%{name}-sysupdate*
 
 %changelog
 %autochangelog

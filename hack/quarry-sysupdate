@@ -1,0 +1,52 @@
+#!/bin/bash
+
+# Copyright (C) 2026 Amutable GmbH
+# quarry-sysupdate -- a runner for sysupdate using quarry-client
+
+set -Eeuo pipefail
+
+function quarry-client() {
+	run0 -u quarry -g quarry quarry-client "$@"
+}
+
+# Use a special prefix for all of our "magic" behaviour.
+SPECIAL_PREFIX=".zzz-quarry-special"
+
+# Apply sysupdate.d/*.{feature,transfer} files before running sysupdate.
+SYSUPDATE_PREFIX="$SPECIAL_PREFIX/sysupdate.d"
+LOCAL_SYSUPDATE_DIR=/run/sysupdate.d
+
+readarray -t special_files < <(quarry-client list --format="%n::%R" | grep -F "$SPECIAL_PREFIX" || :)
+for target in "${special_files[@]}"; do
+	repo="${target##*::}"
+	target_path="${target%::*}"
+	local_path=
+	case "$target_path" in
+		"$SYSUPDATE_PREFIX"/*)
+			local_path="${LOCAL_SYSUPDATE_DIR}/${target_path#"$SYSUPDATE_PREFIX"/}"
+			mkdir -p "${LOCAL_SYSUPDATE_DIR}"
+			;;
+		*)
+			echo "Unsupported extension $target_path in repository $repo -- skipping." >&2
+			continue
+			;;
+	esac
+	# The quarry user does not have access to /run/sysupdate.d, so we need to
+	# run this download process as root. Less than ideal, but better than
+	# saving to some other path and renaming.
+	command quarry-client fetch --repo="$repo" --output="$local_path" "$target_path"
+	# Make sure the above command did not accidentally create new files with
+	# root ownership (this would only happen if the repo was updated between
+	# the list and fetch commands).
+	# TODO: It should be possible for quarry-client to have a --no-refresh
+	# mode, but unfortunately go-tuf doesn't provide proper support for it...
+	chown -R quarry:quarry "/run/quarry-client/cache/$repo"
+done
+# TODO: Figure out how to clean up transfer files no longer included in the
+# repo but are still present on the local machine. Deleting them is easy but
+# actually triggering a clean uninstall seems unclear...
+
+# Run sysupdate.
+/usr/lib/systemd/systemd-sysupdate update
+# TODO: Should we put this in a separate service / timer?
+/usr/lib/systemd/systemd-sysupdate reboot
