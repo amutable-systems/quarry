@@ -27,7 +27,7 @@ import (
 
 	"go.amutable.dev/quarry/cmd/internal/pprint"
 	"go.amutable.dev/quarry/internal/expand"
-	"go.amutable.dev/quarry/internal/linux"
+	"go.amutable.dev/quarry/internal/pathrsext"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufext"
 )
@@ -35,23 +35,30 @@ import (
 func makeUpdater(ctx context.Context, name string, repo *Repository) (_ *tufupdater.Updater, Err error) {
 	cacheDir := ctxCacheDir(ctx)
 
-	repoCacheDir, err := cacheDir.MkdirAll(name, 0o755)
+	repoCacheDirHandle, err := cacheDir.MkdirAll(name, 0o755)
 	if err != nil {
 		return nil, fmt.Errorf("open repo cache dir: %w", err)
 	}
+	defer funchelpers.VerifyClose(&Err, repoCacheDirHandle)
+
+	repoCacheDir, err := pathrs.RootFromFile(repoCacheDirHandle.IntoFile())
+	if err != nil {
+		return nil, fmt.Errorf("convert repo cache dir to root: %w", err)
+	}
 	defer funchelpers.VerifyClose(&Err, repoCacheDir)
 
-	rootFile, err := linux.Openat(repoCacheDir.IntoFile(), "root.json", unix.O_RDONLY|unix.O_NOFOLLOW)
+	rootFile, err := repoCacheDir.OpenFile("root.json", unix.O_RDONLY|unix.O_NOFOLLOW)
 	if errors.Is(err, fs.ErrNotExist) {
 		// Fallback to fetch from the trusted root source.
 		rootData, err := repo.RootTrust.FetchRoot(ctx, repo)
 		if err != nil {
 			return nil, fmt.Errorf("fetch trusted root.json: %w", err)
 		}
-		rootFile, err = linux.Openat(repoCacheDir.IntoFile(), "root.json", unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o644)
+		rootFile, err = repoCacheDir.Create(".", unix.O_TMPFILE|unix.O_RDWR|unix.O_NOFOLLOW, 0o644)
 		if err != nil {
-			return nil, fmt.Errorf("create root.json for cache: %w", err)
+			return nil, fmt.Errorf("create tmpfile for cached root.json: %w", err)
 		}
+		defer funchelpers.VerifyClose(&Err, rootFile)
 		if _, err := rootFile.Write(rootData); err != nil {
 			return nil, fmt.Errorf("write cached root.json: %w", err)
 		}
@@ -59,9 +66,26 @@ func makeUpdater(ctx context.Context, name string, repo *Repository) (_ *tufupda
 			return nil, fmt.Errorf("sync cached root.json: %w", err)
 		}
 		_, _ = rootFile.Seek(0, io.SeekStart) // reset the file
+		// Check if the local root.json is actually valid JSON before attaching
+		// it. This should not happen with well-behaved servers but if we
+		// accidentally commit an invalid root.json, the cache will be poisoned
+		// permanently. For bundled root.json, this will cause us to never copy
+		// the root.json data to the cache, but that's okay -- the bundled data
+		// is static anyway.
+		if root, err := tufmetadata.Root().FromBytes(rootData); err != nil {
+			return nil, fmt.Errorf("root_trust root.json is invalid: %w", err)
+		} else if err := root.VerifyDelegate(tufmetadata.ROOT, root); err != nil {
+			// root.json must be self-signed.
+			return nil, fmt.Errorf("root_trust root.json is not self-signed: %w", err)
+		}
+		// Attach as cached root.json.
+		if err := pathrsext.AttachIntoRoot(repoCacheDir, "root.json", rootFile); err != nil {
+			return nil, fmt.Errorf("attach trusted root.json to cache: %w", err)
+		}
 	} else if err != nil {
 		return nil, fmt.Errorf("open cached root.json: %w", err)
 	}
+	defer funchelpers.VerifyClose(&Err, rootFile)
 
 	rootData, err := io.ReadAll(rootFile)
 	if err != nil {
@@ -138,7 +162,17 @@ func verifiedHTTPGet(ctx context.Context, url *url.URL, length int64, hashes tuf
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", url, err)
 	}
-
+	if res.StatusCode >= 300 {
+		if res.Body != nil {
+			_ = res.Body.Close()
+		}
+		err := fmt.Errorf("fetch %s failed with status code %.3d", url, res.StatusCode)
+		if res.StatusCode == http.StatusNotFound {
+			// Emulate ENOENT for 404.
+			err = fmt.Errorf("%w: %w", err, fs.ErrNotExist)
+		}
+		return nil, err
+	}
 	rdr := res.Body
 	for _, digest := range digests {
 		rdr = &hardening.VerifiedReadCloser{

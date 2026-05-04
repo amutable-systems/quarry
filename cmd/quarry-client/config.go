@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"net/http"
 	"net/url"
@@ -202,6 +203,17 @@ func (tofuRootTrust) FetchRoot(ctx context.Context, repo *Repository) (_ []byte,
 	res, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", rootURL, err)
+	}
+	if res.StatusCode >= 300 {
+		if res.Body != nil {
+			_ = res.Body.Close()
+		}
+		err := fmt.Errorf("fetch %s failed with status code %.3d", rootURL, res.StatusCode)
+		if res.StatusCode == http.StatusNotFound {
+			// Emulate ENOENT for 404.
+			err = fmt.Errorf("%w: %w", err, fs.ErrNotExist)
+		}
+		return nil, err
 	}
 	rdr := http.MaxBytesReader(nil, res.Body, maxRootBytes) // use same max as client
 	defer funchelpers.VerifyClose(&Err, rdr)
