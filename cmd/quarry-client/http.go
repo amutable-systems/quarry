@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,6 +48,12 @@ func httpErrHandler(fn func(http.ResponseWriter, *http.Request) error) func(http
 // sha256Empty is the sha256 hash of the empty string (used as a dummy
 // value for BEST-BEFORE-YYYY-MM-DD).
 const sha256Empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+func validSystemdFilename(path string) bool {
+	const _PATH_MAX = 4096 //nolint:revive // match unix.PAGE_SIZE naming style
+	return path != "" && path != "." && path != ".." &&
+		!strings.Contains(path, "/") && len(path) <= _PATH_MAX
+}
 
 func serveSHA256SUMS(rw http.ResponseWriter, req *http.Request) error {
 	ctx := req.Context()
@@ -89,6 +96,16 @@ func serveSHA256SUMS(rw http.ResponseWriter, req *http.Request) error {
 		for target, err := range tufext.IterTargetFiles(ctx, fetchFn) {
 			if err != nil {
 				return fmt.Errorf("error while scanning repo %s: %w", repoName, err)
+			}
+			// sysupdate does not permit certain pathnames in repos, while TUF
+			// basically allows everything. Would could path-escape the paths
+			// but then we would need to unescape them on get, so just strip
+			// them for now. Currently this is only planned to be used for
+			// sysupdate.d/ injection (which is handled outside of sysupdate --
+			// specifically, by hack/quarry-sysupdate -- anyway).
+			if !validSystemdFilename(target.Path) {
+				// TODO: Should we encode the path or emit some kind of log...?
+				continue
 			}
 			fmt.Fprintf(sumfileBuf, "%s  %s\n", target.Hashes["sha256"], target.Path)
 		}
