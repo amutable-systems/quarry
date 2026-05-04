@@ -1,0 +1,35 @@
+# Copyright (C) 2026 Amutable GmbH
+
+[Unit]
+Description=Quarry Client sysupdate HTTP Provider
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+Environment=QUARRY_CLIENT_CONFIG=/etc/quarry-client.conf
+ExecStart=@bindir@/quarry-client http -H 127.0.0.1:@client_http_port@
+Restart=on-failure
+RestartSec=5s
+
+User=quarry
+Group=quarry
+
+ProtectSystem=strict
+ProtectHostname=yes
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+NoNewPrivileges=yes
+
+[Install]
+Also=quarry-client-http.socket

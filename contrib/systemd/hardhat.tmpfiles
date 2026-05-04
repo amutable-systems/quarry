@@ -1,0 +1,5 @@
+# Copyright (C) 2026 Amutable GmbH
+
+#Type Path                                     Mode  User     Group    Age  Argument
+v     /run/quarry                              0755  hardhat  hardhat  -    -
+e     /run/quarry/keys                         0700  hardhat  hardhat  -    -

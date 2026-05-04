@@ -1,0 +1,14 @@
+# Copyright (C) 2026 Amutable GmbH
+
+[Unit]
+Description=Socket for Quarry Client sysupdate HTTP Provider
+Wants=network-online.target
+After=network-online.target
+
+[Socket]
+ListenStream=127.0.0.1:@client_http_port@
+FileDescriptorName=quarry-client-http
+Accept=no
+
+[Install]
+Also=quarry-client-http.socket
