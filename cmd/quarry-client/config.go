@@ -15,6 +15,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"go.amutable.dev/quarry/internal/expand"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 )
 
@@ -125,6 +126,31 @@ func (t *tomlRootTrust) UnmarshalTOML(data any) error {
 	return fmt.Errorf("invalid root_trust value: %v (%T)", data, data)
 }
 
+// Expand applies the given [expand.Expansions] to the underlying
+// [RootTrustSource].
+func (t *tomlRootTrust) Expand(exp *expand.Expansions) error {
+	var newRootTrust RootTrustSource
+	switch rootTrust := t.RootTrustSource.(type) {
+	case tofuRootTrust:
+		// nothing to expand
+		newRootTrust = rootTrust
+	case bundledRootTrust:
+		path, err := exp.ExpandString(rootTrust.Path)
+		if err != nil {
+			return fmt.Errorf("cannot %%-expand path %q: %w", rootTrust.Path, err)
+		}
+		rootTrust.Path = path
+		newRootTrust = rootTrust
+	default:
+		// Programmer error.
+		panic(fmt.Sprintf("missing type switch to expand type %T", rootTrust))
+	}
+	// We need to re-assign here because tomlRootTrust.RootTrustSource is not a
+	// pointer (and cannot be).
+	t.RootTrustSource = newRootTrust
+	return nil
+}
+
 // tofuRootTrust indicates that makeUpdater should fetch the root.json
 // directly from the repository with a trust-on-first-use policy.
 // *This is inherently insecure*.
@@ -200,12 +226,31 @@ func (t bundledRootTrust) FetchRoot(_ context.Context, _ *Repository) ([]byte, e
 // serialised as a TOML string.
 type tomlURL struct {
 	url.URL
+	rawString string
 }
 
-// The Go stdlib does not provide this method because of concerns around
+// UnmarshalText is implemented because we need to post-process the URL later.
+//
+// Also, the Go stdlib does not provide this method because of concerns around
 // compatibility, so we need to work around this. <https://go.dev/issue/25705>
-func (u *tomlURL) UnmarshalText(data []byte) error {
-	return u.UnmarshalBinary(data) // implements string-based unmarshalling
+func (u *tomlURL) UnmarshalText(data []byte) error { //nolint:unparam // encoding.TextUnmarshaler interface
+	u.rawString = string(data)
+	return nil
+}
+
+// Expand applies the given [expand.Expansions] to a URL.
+func (u *tomlURL) Expand(exp *expand.Expansions) error {
+	str := u.rawString
+	expanded, err := exp.ExpandString(str)
+	if err != nil {
+		return fmt.Errorf("cannot %%-expand %q: %w", str, err)
+	}
+	rootURL, err := url.Parse(expanded)
+	if err != nil {
+		return fmt.Errorf("expanded url %q is invalid: %w", expanded, err)
+	}
+	u.URL = *rootURL
+	return nil
 }
 
 // Repository represents a single TUF repository.
@@ -234,38 +279,75 @@ type Config struct {
 	// TODO: Add --cache-dir to this config.
 
 	// Repos is the set of repositories configured for the client.
+	//
+	// The following %-expansions are supported for the repository name:
+	//
+	//    %m -- app-specific machine id (in UUID form)
+	//    %e[x] -- "systemd-escape --path" the expando %[x]
+	//    %NN -- HTTP-style percent encoding (output is unexpanded)
+	//
+	// The following additioanl %-expansions are supported for certain fields
+	// within each repository specification:
+	//
+	//    %R -- repository name
 	Repos map[string]*Repository `toml:"repo"`
 }
 
 func parseConfig(rdr io.Reader) (*Config, error) {
-	var conf Config
-	meta, err := toml.NewDecoder(rdr).Decode(&conf)
+	var cfg Config
+	meta, err := toml.NewDecoder(rdr).Decode(&cfg)
 	if err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 	if unknown := meta.Undecoded(); len(unknown) > 0 {
 		return nil, fmt.Errorf("invalid config: unknown toml keys: %v", unknown)
 	}
-	for name, repo := range conf.Repos {
+	expander := expand.NewExpansions()
+	repos := make(map[string]*Repository)
+	for oldName, repo := range cfg.Repos {
+		var err error
+		repo.Name, err = expander.ExpandString(oldName)
+		if err != nil {
+			return nil, fmt.Errorf("repository %s has invalid %%-expansion: %w", oldName, err)
+		}
+		// Save with the updated repo name.
+		if _, ok := repos[repo.Name]; ok {
+			return nil, fmt.Errorf("repository %s clobbers existing repository %s", oldName, repo.Name)
+		}
+		repos[repo.Name] = repo
+
+		// Add repo name expansion for repo config options URLs.
+		subExpander := expander.Clone().WithSource('R', func(_ *[]any) (string, error) {
+			return repo.Name, nil
+		})
+
 		if repo.RootTrust == nil {
-			return nil, fmt.Errorf("repository %s is missing root_trust specification", name)
+			return nil, fmt.Errorf("repository %s is missing root_trust specification", oldName)
 		}
-		repo.Name = name
-		// If unspecified, assume that the metadata URL is the same as the
-		// repository name.
+		if err := repo.RootTrust.Expand(subExpander); err != nil {
+			return nil, fmt.Errorf("repository %s has invalid root_trust value: %w", oldName, err)
+		}
+
 		if repo.MetaRootURL == nil {
-			defaultURL := "https://" + name
-			metaRootURL, err := url.Parse(defaultURL)
-			if err != nil {
-				return nil, fmt.Errorf("repository %s cannot use default meta_root_url value: %q is not a valid URL: %w", name, defaultURL, err)
-			}
-			repo.MetaRootURL = &tomlURL{*metaRootURL}
+			// If unspecified, assume that the metadata URL is the same as the
+			// repository name.
+			repo.MetaRootURL = &tomlURL{rawString: "https://" + repo.Name}
 		}
-		// If unspecified, assume that the targets URL is a subdirectory of the
-		// metadata URL (this matches the stock go-tuf client behaviour).
+		if err := repo.MetaRootURL.Expand(subExpander); err != nil {
+			return nil, fmt.Errorf("repository %s has invalid meta_root_url value: %w", oldName, err)
+		}
+
 		if repo.DataRootURL == nil {
-			repo.DataRootURL = &tomlURL{*repo.MetaRootURL.JoinPath("targets")}
+			// If unspecified, assume that the targets URL is a subdirectory of
+			// the metadata URL (this matches the stock go-tuf client
+			// behaviour).
+			rootURL := repo.MetaRootURL.JoinPath("targets")
+			repo.DataRootURL = &tomlURL{rawString: rootURL.String()}
+		}
+		if err := repo.DataRootURL.Expand(subExpander); err != nil {
+			return nil, fmt.Errorf("repository %s has invalid data_root_url value: %w", oldName, err)
 		}
 	}
-	return &conf, nil
+	cfg.Repos = repos
+	return &cfg, nil
 }

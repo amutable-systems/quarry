@@ -4,12 +4,17 @@ package main
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+const uuidPat = `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
+
+var uuidRe = regexp.MustCompile(`^` + uuidPat + `$`)
 
 func repoBlock(rootTrust string) string {
 	return `
@@ -277,7 +282,7 @@ func TestParseConfig_ExampleFile(t *testing.T) {
 
 	assert.Equal(t, repoName, repo.Name)
 	assert.Equal(t,
-		bundledRootTrust{Path: "/usr/share/amutable-os/updates.example.com-alpha-root.json"},
+		bundledRootTrust{Path: "/usr/share/amutable-os/quarry/trusted/updates.example.com-alpha-root.json"},
 		repo.RootTrust.RootTrustSource)
 	assert.Equal(t, "https://updates.example.com/alpha", repo.MetaRootURL.String())
 	assert.Equal(t, "https://updates.example.com/update", repo.DataRootURL.String())
@@ -300,6 +305,281 @@ func TestParseTomlRootTrust_WrongType(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := tc.fn(tc.data)
 			assert.ErrorIs(t, err, errWrongType)
+		})
+	}
+}
+
+func TestParseConfig_Expand_RepoName(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		key        string
+		wantNameRe string
+	}{
+		{"LiteralPercent", "100%%-secure", `^100%-secure$`},
+		{"MachineID", "machine/%m", `^machine/` + uuidPat + `$`},
+		{"MachineIDEscaped", "%em", `^[0-9a-f]{8}\\x2d[0-9a-f]{4}\\x2d[0-9a-f]{4}\\x2d[0-9a-f]{4}\\x2d[0-9a-f]{12}$`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conf, err := parseConfig(strings.NewReader(`
+[repo."` + tc.key + `"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com"
+`))
+			require.NoError(t, err)
+			require.Len(t, conf.Repos, 1)
+			var gotName string
+			for k := range conf.Repos {
+				gotName = k
+			}
+			assert.Regexp(t, tc.wantNameRe, gotName)
+			assert.Equal(t, gotName, conf.Repos[gotName].Name)
+		})
+	}
+}
+
+func TestParseConfig_Expand_RepoName_MachineIDConsistent(t *testing.T) {
+	conf, err := parseConfig(strings.NewReader(`
+[repo."a/%m"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com/%m"
+data_root_url = "https://example.com/%m/data"
+`))
+	require.NoError(t, err)
+	require.Len(t, conf.Repos, 1)
+	var repo *Repository
+	for _, r := range conf.Repos {
+		repo = r
+	}
+
+	id, ok := strings.CutPrefix(repo.Name, "a/")
+	require.True(t, ok, "repo name %q lacks expected prefix", repo.Name)
+	assert.Regexp(t, uuidRe, id)
+
+	assert.Equal(t, "https://example.com/"+id, repo.MetaRootURL.String())
+	assert.Equal(t, "https://example.com/"+id+"/data", repo.DataRootURL.String())
+}
+
+func TestParseConfig_Expand_URL(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		template   string
+		wantMeta   string
+		wantMetaRe string
+	}{
+		{
+			name:     "RepoName",
+			template: "https://meta.example.com/%R",
+			wantMeta: "https://meta.example.com/example.com/foo",
+		},
+		{
+			name:     "RepoNameEscaped",
+			template: "https://meta.example.com/%eR",
+			wantMeta: "https://meta.example.com/example.com-foo",
+		},
+		{
+			name:     "PredicateAfterSourceIsLiteral",
+			template: "https://meta.example.com/%Re-suffix",
+			wantMeta: "https://meta.example.com/example.com/fooe-suffix",
+		},
+		{
+			name:     "LiteralPercent",
+			template: "https://example.com/%%25",
+			wantMeta: "https://example.com/%25",
+		},
+		{
+			name:       "MachineID",
+			template:   "https://example.com/m/%m",
+			wantMetaRe: `^https://example\.com/m/` + uuidPat + `$`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conf, err := parseConfig(strings.NewReader(`
+[repo."example.com/foo"]
+root_trust = "insecure-tofu"
+meta_root_url = "` + tc.template + `"
+`))
+			require.NoError(t, err)
+			repo := conf.Repos["example.com/foo"]
+			require.NotNil(t, repo)
+			if tc.wantMetaRe != "" {
+				assert.Regexp(t, tc.wantMetaRe, repo.MetaRootURL.String())
+			} else {
+				assert.Equal(t, tc.wantMeta, repo.MetaRootURL.String())
+			}
+		})
+	}
+}
+
+func TestParseConfig_Expand_URL_PercentEncoded(t *testing.T) {
+	conf, err := parseConfig(strings.NewReader(`
+[repo.example]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com/100%25-uptime/%2A/%aF"
+`))
+	require.NoError(t, err)
+	repo := conf.Repos["example"]
+	require.NotNil(t, repo)
+	assert.Equal(t, "https://example.com/100%25-uptime/%2A/%aF", repo.MetaRootURL.String())
+	// data_root_url is defaulted from the expanded meta URL, so the %XX
+	// sequences pass through a second Expand pass.
+	assert.Equal(t, "https://example.com/100%25-uptime/%2A/%aF/targets", repo.DataRootURL.String())
+}
+
+func TestParseConfig_Expand_URL_PerRepoR(t *testing.T) {
+	conf, err := parseConfig(strings.NewReader(`
+[repo.alpha]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com/%R"
+
+[repo.beta]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com/%R"
+`))
+	require.NoError(t, err)
+	require.Len(t, conf.Repos, 2)
+	assert.Equal(t, "https://example.com/alpha", conf.Repos["alpha"].MetaRootURL.String())
+	assert.Equal(t, "https://example.com/beta", conf.Repos["beta"].MetaRootURL.String())
+}
+
+func TestParseConfig_Expand_Bundled(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		path       string
+		wantPath   string
+		wantPathRe string
+	}{
+		{
+			name:     "LiteralPercent",
+			path:     `/etc/root%%foo.json`,
+			wantPath: `/etc/root%foo.json`,
+		},
+		{
+			name:     "RepoName",
+			path:     `/etc/%R/root.json`,
+			wantPath: `/etc/example.com/foo/root.json`,
+		},
+		{
+			name:     "RepoNameEscaped",
+			path:     `/etc/quarry/trusted/%eR-root.json`,
+			wantPath: `/etc/quarry/trusted/example.com-foo-root.json`,
+		},
+		{
+			name:       "MachineID",
+			path:       `/etc/quarry/keys/%m.json`,
+			wantPathRe: `^/etc/quarry/keys/` + uuidPat + `\.json$`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conf, err := parseConfig(strings.NewReader(`
+[repo."example.com/foo"]
+root_trust = { type = "bundled", path = "` + tc.path + `" }
+meta_root_url = "https://example.com"
+`))
+			require.NoError(t, err)
+			repo := conf.Repos["example.com/foo"]
+			require.NotNil(t, repo)
+			bundled, ok := repo.RootTrust.RootTrustSource.(bundledRootTrust)
+			require.True(t, ok)
+			if tc.wantPathRe != "" {
+				assert.Regexp(t, tc.wantPathRe, bundled.Path)
+			} else {
+				assert.Equal(t, tc.wantPath, bundled.Path)
+			}
+		})
+	}
+}
+
+func TestParseConfig_Expand_Invalid(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		config  string
+		wantErr string
+	}{
+		{
+			name: "UnknownPredicateInRepoName",
+			config: `
+[repo."%Z"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com"`,
+			wantErr: `invalid predicate Z`,
+		},
+		{
+			name: "RepoNameSourceNotInRepoName",
+			config: `
+[repo."%R"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com"`,
+			wantErr: `invalid predicate R`,
+		},
+		{
+			name: "TrailingPercentInRepoName",
+			config: `
+[repo."foo%"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com"`,
+			wantErr: `trailing % at end of string`,
+		},
+		{
+			name: "IncompletePredicateInRepoName",
+			config: `
+[repo."foo/%e"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com"`,
+			wantErr: `incomplete expando "%e"`,
+		},
+		{
+			name: "UnknownPredicateInURL",
+			config: `
+[repo.example]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com/%Z"`,
+			wantErr: `invalid predicate Z`,
+		},
+		{
+			name: "TrailingPercentInURL",
+			config: `
+[repo.example]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com/%"`,
+			wantErr: `trailing % at end of string`,
+		},
+		{
+			name: "TruncatedPercentEncodedInURL",
+			config: `
+[repo.example]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com/%2"`,
+			wantErr: `truncated http expando "%2"`,
+		},
+		{
+			name: "InvalidPercentEncodedInURL",
+			config: `
+[repo.example]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com/%2X"`,
+			wantErr: `invalid char X in http expando "%2X"`,
+		},
+		{
+			name: "DuplicatePredicateInURL",
+			config: `
+[repo.example]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com/%eeR"`,
+			wantErr: `duplicate predicate e`,
+		},
+		{
+			name: "UnknownPredicateInBundledPath",
+			config: `
+[repo.example]
+root_trust = { type = "bundled", path = "/etc/%Z" }
+meta_root_url = "https://example.com"`,
+			wantErr: `invalid predicate Z`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseConfig(strings.NewReader(tc.config))
+			require.Error(t, err)
+			assert.ErrorContains(t, err, tc.wantErr)
 		})
 	}
 }

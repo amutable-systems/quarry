@@ -33,8 +33,6 @@ import (
 func makeUpdater(ctx context.Context, name string, repo *Repository) (_ *tufupdater.Updater, Err error) {
 	cacheDir := ctxCacheDir(ctx)
 
-	// TODO(tmpl): If we add template support, we need to expand it here.
-
 	repoCacheDir, err := cacheDir.MkdirAll(name, 0o755)
 	if err != nil {
 		return nil, fmt.Errorf("open repo cache dir: %w", err)
