@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,6 +24,7 @@ import (
 	"github.com/urfave/cli/v3"
 	"golang.org/x/sys/unix"
 
+	"go.amutable.dev/quarry/cmd/internal/cliext"
 	"go.amutable.dev/quarry/internal/keystore"
 	"go.amutable.dev/quarry/internal/linux"
 	"go.amutable.dev/quarry/internal/pathrsext"
@@ -85,10 +88,35 @@ func hashToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalP
 	return nil
 }
 
+const dataRootURLCtxKey ctxKey = "--data-root-url"
+
+func ctxDataRoolURL(ctx context.Context) *url.URL {
+	return cliext.CtxValue[*url.URL](ctx, dataRootURLCtxKey)
+}
+
 // sumFileRe matches the "standard" line format for "hashsum" files.
 var sumFileRe = regexp.MustCompile(`^([0-9a-fA-F]+)\s+(.+)$`)
 
-func addPrehashedToTargets(_ context.Context, builder *tufext.TargetsBuilder, logicalPath string, sumFile *os.File) error {
+func getContentLength(ctx context.Context, url *url.URL) (int64, error) {
+	// TODO: Should we try to use HEAD? Though, RFC 9110 says that
+	// Content-Length is not guaranteed to be set with HEAD. R2 does support it
+	// but my testing indicated there wasn't really any speed improvement.
+	req, err := http.NewRequestWithContext(ctx, "GET", url.String(), nil)
+	if err != nil {
+		return -1, fmt.Errorf("cannot create http request GET %q: %w", url, err)
+	}
+	client := http.DefaultClient
+	res, err := client.Do(req)
+	if err != nil {
+		return -1, fmt.Errorf("fetch %s: %w", url, err)
+	}
+	_ = res.Body.Close()
+	return res.ContentLength, nil
+}
+
+func addPrehashedToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalPath string, sumFile *os.File) error {
+	dataRootURL := ctxDataRoolURL(ctx)
+
 	if filepath.Join("/", logicalPath) == "/" { //nolint:forbidigo // lexical paths
 		return fmt.Errorf("--skip-components value too large -- no components left for sumfile %s", sumFile.Name())
 	}
@@ -128,14 +156,25 @@ func addPrehashedToTargets(_ context.Context, builder *tufext.TargetsBuilder, lo
 		digest := digest.NewDigestFromEncoded(hashAlgorithm, hash)
 
 		// Get the size.
-		st, err := pathrsext.Stat(root, subpath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "cannot stat hashed file %q: %v\n", subpath, err)
-			skippedLines++
-			continue
+		size := int64(-1)
+		if dataRootURL != nil {
+			var err error
+			size, err = getContentLength(ctx, dataRootURL.JoinPath(logicalSubpath))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to fetch %q from --data-root-url (%v) -- falling back to local file stat\n", logicalSubpath, err)
+			}
+		}
+		if size < 0 {
+			st, err := pathrsext.Stat(root, subpath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "cannot stat hashed file %q: %v\n", subpath, err)
+				skippedLines++
+				continue
+			}
+			size = st.Size()
 		}
 
-		if _, err := builder.AddTargetFile(logicalSubpath, st.Size(), digest); err != nil {
+		if _, err := builder.AddTargetFile(logicalSubpath, size, digest); err != nil {
 			return fmt.Errorf("add file %s to targets data: %w", logicalSubpath, err)
 		}
 	}
@@ -160,6 +199,10 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		&cli.UintFlag{
 			Name:  "strip-components",
 			Usage: "strip N parent components from paths when adding them to target.json",
+		},
+		&cli.StringFlag{
+			Name:  "data-root-url",
+			Usage: "base url for target files (with --pre-hashed this allows you to generate a target.json entirely from a SHA256SUMS file)",
 		},
 		&cli.BoolFlag{
 			Name:    "pre-hashed",
@@ -215,6 +258,19 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			},
 			Required: true,
 		},
+	},
+	Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
+		if urlStr := cmd.String("data-root-url"); urlStr != "" {
+			if !cmd.Bool("pre-hashed") {
+				return nil, fmt.Errorf("--data-root-url doesn't make sense without --pre-hashed")
+			}
+			rootURL, err := url.Parse(urlStr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid --data-root-url=%q: %w", urlStr, err)
+			}
+			ctx = context.WithValue(ctx, dataRootURLCtxKey, rootURL)
+		}
+		return ctx, nil
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		store := ctxKeystore(ctx)
