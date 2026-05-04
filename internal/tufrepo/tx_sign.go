@@ -349,6 +349,34 @@ func (tx *Transaction) signRole(ctx context.Context, store *keystore.Store, role
 	return tx.UpdateRoleData(roleName, roleData)
 }
 
+// canSignRole returns true if the given [keystore.Store] can re-sign the given
+// role, to determine if we should do some opportunistic operations (such as
+// automated expiry bumping).
+func (tx *Transaction) canSignRole(ctx context.Context, store *keystore.Store, roleName string) (bool, error) {
+	for delegator, err := range tx.findRoleDelegators(ctx, roleName) {
+		if err != nil {
+			return false, fmt.Errorf("failed to find delegator for role %s: %w", roleName, err)
+		}
+		for quorum, err := range computeDelegatorKeyQuorums(delegator, roleName) {
+			if err != nil {
+				return false, fmt.Errorf("failed to compute key quorum for role %s: %w", roleName, err)
+			}
+			var haveKeys int
+			for keyID := range quorum.keys {
+				if _, err := store.GetKey(ctx, keyID); err == nil {
+					// TODO: Is it okay to assume we can sign with the key if
+					// we can look the key up in the store?
+					haveKeys++
+				}
+			}
+			if haveKeys < 1 || haveKeys < quorum.threshold {
+				return false, nil // cannot sign for this quorum
+			}
+		}
+	}
+	return true, nil // we checked all of the delegators
+}
+
 // checkNeedsBump returns whether the data for the given role in this
 // transaction has been changed in a way that requires bumping its metadata.
 func (tx *Transaction) checkNeedsBump(ctx context.Context, roleName string, roleData any) (_ bool, Err error) {
@@ -422,6 +450,10 @@ var (
 	DefaultSnapshotExpiry  = DefaultTargetsExpiry     // 1 week
 	DefaultTargetsExpiry   = (7*24 + 6) * time.Hour   // 1 week
 )
+
+// DefaultExpiryRefreshWindow is how long before an object expires will
+// [Transaction.Sign] auto-bump the expiry.
+var DefaultExpiryRefreshWindow = 6 * time.Hour
 
 // expiry returns the duration to use when extending the expiry for the given
 // role.
@@ -507,18 +539,41 @@ func (tx *Transaction) BumpExpiry(ctx context.Context, roleName string, expiryFn
 // TODO: This is quite ugly, especially when considering the snapshot and
 // timestamp roles (which have their own version / expiry update logic in their
 // update routines...).
-func (tx *Transaction) bumpExpiries(ctx context.Context) (Err error) {
-	for roleName := range tx.dirty {
+func (tx *Transaction) bumpExpiries(ctx context.Context, store *keystore.Store) (Err error) {
+	// Go through all of the roles and bump them if appropriate.
+	for roleName := range tx.Roles(ctx) {
 		if err := tx.BumpExpiry(ctx, roleName, func(oldExpiry time.Time, roleData any) (*time.Time, error) {
-			if needsBump, err := tx.checkNeedsBump(ctx, roleName, roleData); err != nil {
-				return nil, fmt.Errorf("failed to check if expiry bump for role %s is needed: %w", roleName, err)
-			} else if !needsBump {
-				// If the signed portion has not been modified we do not need to
-				// bump the expiries and we will not need to re-sign it either.
-				// TODO: We should bump the expiry if it has expired (or will
-				// expire soon) but only if we have the necessary signing keys.
-				// Otherwise we really need to log that we are about to publish
-				// a repo state with expired data (or even error out?).
+			var needsBump bool
+
+			// If the role is dirty and will need to be re-signed anyway, bump
+			// the expiry to something reasonable.
+			if _, ok := tx.dirty[roleName]; ok {
+				var err error
+				needsBump, err = tx.checkNeedsBump(ctx, roleName, roleData)
+				if err != nil {
+					return nil, fmt.Errorf("failed to check if expiry bump for role %s is needed: %w", roleName, err)
+				}
+			}
+
+			// If the expiry is within a fixed expiry window and we can re-sign
+			// it, bump it anyway.
+			//
+			// NOTE: If the root is about to expire and we have access to the
+			// root signing keys (indavisable as that is), we should just bump
+			// the root like any other role. In practice that will never
+			// happen, but might as well treat root the same as everything
+			// else.
+			// TODO: In future, purely bumping the root expiry will not trigger
+			// new timestamp keys, but that needs to be implemented later.
+			if !needsBump && oldExpiry.Sub(tx.RefTime) <= DefaultExpiryRefreshWindow {
+				canSign, err := tx.canSignRole(ctx, store, roleName)
+				if err != nil {
+					return nil, fmt.Errorf("failed to check if we can bump soon-to-expire-role %s: %w", roleName, err)
+				}
+				needsBump = canSign
+			}
+
+			if !needsBump {
 				return nil, nil //nolint:nilnil // nil indicates no change needed
 			}
 
@@ -670,11 +725,11 @@ func (tx *Transaction) Sign(ctx context.Context, store *keystore.Store) (newKeyI
 	// checkRoleSignatures and invalidating the cache when the internal copy
 	// gets dirtied).
 
+	if err := tx.bumpExpiries(ctx, store); err != nil {
+		return nil, fmt.Errorf("could not bump TUF metadata expiries: %w", err)
+	}
 	if err := tx.bumpRevisions(ctx); err != nil {
 		return nil, fmt.Errorf("could not bump TUF metadata revisions: %w", err)
-	}
-	if err := tx.bumpExpiries(ctx); err != nil {
-		return nil, fmt.Errorf("could not bump TUF metadata expiries: %w", err)
 	}
 
 	// If there is a new root, we need to rotate the timestamp role keys.

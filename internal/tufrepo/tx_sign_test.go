@@ -706,3 +706,285 @@ func TestBumpExpiry_DiscardsClosureMutationsOnNilReturn(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, got.Signed.Targets, "ghost")
 }
+
+// ----- bumpExpiries auto-refresh ---------------------------------------
+
+// Snapshot/timestamp assertions here are correctness checks, not isolation
+// pins -- they would also move via the updateSnapshot/updateTimestamp
+// cascade. See TestSign_AutoRefreshTimestampOnly_NoCascade for isolation.
+func TestSign_AutoRefreshesSoonToExpireRoles(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t, withDelegation("a"))
+
+	withRefreshWindow(t, 2*tufrepo.DefaultTargetsExpiry)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	origRoot, err := tx.RootRoleData(ctx)
+	require.NoError(t, err)
+	origTargets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	origDelegated, err := tx.TargetsRoleData(ctx, "a")
+	require.NoError(t, err)
+	origSnap, err := tx.SnapshotRoleData(ctx)
+	require.NoError(t, err)
+	origTs, err := tx.TimestampRoleData(ctx)
+	require.NoError(t, err)
+
+	newKeys, err := tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+	assert.Empty(t, newKeys)
+
+	afterTargets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	assert.Greater(t, afterTargets.Signed.Version, origTargets.Signed.Version)
+	assert.True(t, afterTargets.Signed.Expires.After(origTargets.Signed.Expires))
+	assertRootDelegates(ctx, t, tx, tufmetadata.TARGETS, afterTargets)
+
+	afterDelegated, err := tx.TargetsRoleData(ctx, "a")
+	require.NoError(t, err)
+	assert.Greater(t, afterDelegated.Signed.Version, origDelegated.Signed.Version)
+	assert.True(t, afterDelegated.Signed.Expires.After(origDelegated.Signed.Expires))
+	require.NoError(t, afterTargets.VerifyDelegate("a", afterDelegated))
+
+	afterSnap, err := tx.SnapshotRoleData(ctx)
+	require.NoError(t, err)
+	assert.Greater(t, afterSnap.Signed.Version, origSnap.Signed.Version)
+	assert.True(t, afterSnap.Signed.Expires.After(origSnap.Signed.Expires))
+	assertRootDelegates(ctx, t, tx, tufmetadata.SNAPSHOT, afterSnap)
+
+	afterTs, err := tx.TimestampRoleData(ctx)
+	require.NoError(t, err)
+	assert.Greater(t, afterTs.Signed.Version, origTs.Signed.Version)
+	assert.True(t, afterTs.Signed.Expires.After(origTs.Signed.Expires))
+	assertRootDelegates(ctx, t, tx, tufmetadata.TIMESTAMP, afterTs)
+
+	afterRoot, err := tx.RootRoleData(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, origRoot.Signed.Version, afterRoot.Signed.Version)
+	assert.True(t, origRoot.Signed.Expires.Equal(afterRoot.Signed.Expires))
+	assert.Equal(t, origRoot.Signatures, afterRoot.Signatures)
+}
+
+// Window covers timestamp (~30h) but excludes the ~174h targets/snapshot/
+// delegated roles, so the cascade through updateSnapshot/updateTimestamp
+// does not fire and timestamp must move solely via bumpExpiries.
+func TestSign_AutoRefreshTimestampOnly_NoCascade(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t, withDelegation("a"))
+
+	withRefreshWindow(t, tufrepo.DefaultTimestampExpiry+12*time.Hour)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	origTargets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	origDelegated, err := tx.TargetsRoleData(ctx, "a")
+	require.NoError(t, err)
+	origSnap, err := tx.SnapshotRoleData(ctx)
+	require.NoError(t, err)
+	origTs, err := tx.TimestampRoleData(ctx)
+	require.NoError(t, err)
+
+	_, err = tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+
+	afterTs, err := tx.TimestampRoleData(ctx)
+	require.NoError(t, err)
+	assert.Greater(t, afterTs.Signed.Version, origTs.Signed.Version)
+	assert.True(t, afterTs.Signed.Expires.After(origTs.Signed.Expires))
+	assertRootDelegates(ctx, t, tx, tufmetadata.TIMESTAMP, afterTs)
+
+	afterTargets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	assert.Equal(t, origTargets.Signed.Version, afterTargets.Signed.Version)
+	assert.Equal(t, origTargets.Signatures, afterTargets.Signatures)
+
+	afterDelegated, err := tx.TargetsRoleData(ctx, "a")
+	require.NoError(t, err)
+	assert.Equal(t, origDelegated.Signed.Version, afterDelegated.Signed.Version)
+	assert.Equal(t, origDelegated.Signatures, afterDelegated.Signatures)
+
+	afterSnap, err := tx.SnapshotRoleData(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, origSnap.Signed.Version, afterSnap.Signed.Version)
+	assert.Equal(t, origSnap.Signatures, afterSnap.Signatures)
+}
+
+// Roles just outside the window must not be touched.
+func TestSign_NoAutoRefreshOutsideWindow(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t, withDelegation("a"))
+
+	withRefreshWindow(t, tufrepo.DefaultTargetsExpiry-1*time.Hour)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	origTargets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	origDelegated, err := tx.TargetsRoleData(ctx, "a")
+	require.NoError(t, err)
+	origSnap, err := tx.SnapshotRoleData(ctx)
+	require.NoError(t, err)
+
+	_, err = tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+
+	afterTargets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	assert.Equal(t, origTargets.Signed.Version, afterTargets.Signed.Version)
+	assert.Equal(t, origTargets.Signatures, afterTargets.Signatures)
+
+	afterDelegated, err := tx.TargetsRoleData(ctx, "a")
+	require.NoError(t, err)
+	assert.Equal(t, origDelegated.Signed.Version, afterDelegated.Signed.Version)
+	assert.Equal(t, origDelegated.Signatures, afterDelegated.Signatures)
+
+	afterSnap, err := tx.SnapshotRoleData(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, origSnap.Signed.Version, afterSnap.Signed.Version)
+	assert.Equal(t, origSnap.Signatures, afterSnap.Signatures)
+}
+
+// `oldExpiry.Sub(tx.RefTime) <= window` includes negative durations, so an
+// already-expired role auto-refreshes even under the default 6h window.
+func TestSign_AutoRefreshFiresOnAlreadyExpiredRole(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t, withDelegation("a"))
+
+	rewriteDelegatedExpiry(ctx, t, bs, "a", time.Now().Add(-1*time.Hour).UTC())
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	origDelegated, err := tx.TargetsRoleData(ctx, "a")
+	require.NoError(t, err)
+	require.True(t, origDelegated.Signed.Expires.Before(tx.RefTime))
+
+	_, err = tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+
+	afterDelegated, err := tx.TargetsRoleData(ctx, "a")
+	require.NoError(t, err)
+	assert.True(t, afterDelegated.Signed.Expires.After(tx.RefTime))
+	assert.Greater(t, afterDelegated.Signed.Version, origDelegated.Signed.Version)
+	afterTargets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	require.NoError(t, afterTargets.VerifyDelegate("a", afterDelegated))
+}
+
+// canSignRole gates auto-refresh per role: the unsignable role stays put,
+// in-window peers still refresh.
+func TestSign_AutoRefreshSkippedWhenSigningKeyMissing(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t, withDelegation("a"))
+
+	delegatedID, err := bs.delegatedKeys["a"].ID()
+	require.NoError(t, err)
+	require.NoError(t, bs.store.UnlinkKey(ctx, delegatedID))
+
+	withRefreshWindow(t, 2*tufrepo.DefaultTargetsExpiry)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	origDelegated, err := tx.TargetsRoleData(ctx, "a")
+	require.NoError(t, err)
+	origTargets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+
+	_, err = tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+
+	afterDelegated, err := tx.TargetsRoleData(ctx, "a")
+	require.NoError(t, err)
+	assert.Equal(t, origDelegated.Signed.Version, afterDelegated.Signed.Version)
+	assert.True(t, origDelegated.Signed.Expires.Equal(afterDelegated.Signed.Expires))
+	assert.Equal(t, origDelegated.Signatures, afterDelegated.Signatures)
+
+	// Other in-window roles still refresh -- skip is per-role, not whole-pass.
+	afterTargets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	assert.Greater(t, afterTargets.Signed.Version, origTargets.Signed.Version)
+}
+
+// canSignRole is bypassed on the dirty path: a dirty role with a missing key
+// still triggers Sign to attempt (and fail at) signRole.
+func TestSign_DirtyRoleBypassesKeyAvailabilityCheck(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	targetsID, err := bs.targetsKey.ID()
+	require.NoError(t, err)
+	require.NoError(t, bs.store.UnlinkKey(ctx, targetsID))
+
+	withRefreshWindow(t, 2*tufrepo.DefaultTargetsExpiry)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+	require.NoError(t, tx.Apply(ctx, addTargetOp("dirty/me", 1)))
+
+	_, err = tx.Sign(ctx, bs.store)
+	require.Error(t, err)
+}
+
+// Pins the no-shortening guard at tx_sign.go:586-588.
+func TestSign_DoesNotShortenFarFutureExpiry(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	farFuture := tx.RefTime.Add(2 * tufrepo.DefaultTargetsExpiry)
+	require.NoError(t, tx.BumpExpiry(ctx, tufmetadata.TARGETS,
+		func(time.Time, any) (*time.Time, error) { return &farFuture, nil }))
+
+	_, err = tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+
+	got, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	assert.True(t, farFuture.Equal(got.Signed.Expires))
+}
+
+// Auto-refreshing root falls into the existing isDirty(ROOT) branch and
+// rotates the timestamp keys -- the in-tree comment in tx_sign.go marks this
+// as deliberate-for-now.
+func TestSign_AutoRefreshOfRootRotatesTimestampKey(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	withRefreshWindow(t, 3*tufrepo.DefaultRootExpiry)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	origRoot, err := tx.RootRoleData(ctx)
+	require.NoError(t, err)
+	origTimestampKeyIDs := append([]string(nil), origRoot.Signed.Roles[tufmetadata.TIMESTAMP].KeyIDs...)
+
+	newKeys, err := tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+	assert.NotEmpty(t, newKeys)
+
+	afterRoot, err := tx.RootRoleData(ctx)
+	require.NoError(t, err)
+	assert.Greater(t, afterRoot.Signed.Version, origRoot.Signed.Version)
+	newTimestampKeyIDs := afterRoot.Signed.Roles[tufmetadata.TIMESTAMP].KeyIDs
+	assert.NotEqual(t, origTimestampKeyIDs, newTimestampKeyIDs)
+
+	wantIDs := make([]string, len(newKeys))
+	for i, id := range newKeys {
+		wantIDs[i] = string(id)
+	}
+	assert.ElementsMatch(t, newTimestampKeyIDs, wantIDs)
+
+	assertRootDelegates(ctx, t, tx, tufmetadata.ROOT, afterRoot)
+	afterTs, err := tx.TimestampRoleData(ctx)
+	require.NoError(t, err)
+	assertRootDelegates(ctx, t, tx, tufmetadata.TIMESTAMP, afterTs)
+}

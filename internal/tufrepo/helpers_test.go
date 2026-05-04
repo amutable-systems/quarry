@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	_ "go.amutable.dev/quarry/internal/keystore/insecure"
 	"go.amutable.dev/quarry/internal/tufext"
 	"go.amutable.dev/quarry/internal/tufrepo"
+	storeopts "go.amutable.dev/quarry/internal/tufrepo/opts"
 )
 
 // bootstrap is a fully-signed initial TUF repository, along with the
@@ -305,3 +307,50 @@ type errReader struct {
 }
 
 func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// withRefreshWindow swaps [tufrepo.DefaultExpiryRefreshWindow] for one test.
+// Tests in this package do not run with t.Parallel(), so this is safe.
+func withRefreshWindow(t *testing.T, d time.Duration) {
+	t.Helper()
+	orig := tufrepo.DefaultExpiryRefreshWindow
+	tufrepo.DefaultExpiryRefreshWindow = d
+	t.Cleanup(func() { tufrepo.DefaultExpiryRefreshWindow = orig })
+}
+
+// rewriteDelegatedExpiry overwrites a delegated targets role on disk with a
+// fresh copy carrying `expiry` and re-stitches snapshot+timestamp. Lets tests
+// install states Sign would refuse to produce (e.g. already-expired roles).
+func rewriteDelegatedExpiry(ctx context.Context, t *testing.T, bs *bootstrap, roleName string, expiry time.Time) {
+	t.Helper()
+
+	delegated := tufext.DefaultTargets(expiry)
+	delegated.Signed.Version = 1
+	signMeta(ctx, t, delegated, bs.delegatedKeys[roleName])
+	_, _, err := bs.repo.PutVersionedFile(ctx, roleName, delegated, storeopts.Clobber)
+	require.NoError(t, err)
+
+	rdr, _, err := bs.repo.GetVersionedFile(ctx, tufmetadata.SNAPSHOT, 1)
+	require.NoError(t, err)
+	body, err := io.ReadAll(rdr)
+	require.NoError(t, rdr.Close())
+	require.NoError(t, err)
+	snap := decodeJSON[tufmetadata.SnapshotType](t, body)
+
+	delegatedHash, err := tufrepo.HashMetaFile(ctx, delegated)
+	require.NoError(t, err)
+	snap.Signed.Meta[roleName+".json"] = delegatedHash
+	snap.Signatures = nil
+	signMeta(ctx, t, snap, bs.snapshotKey)
+	_, _, err = bs.repo.PutVersionedFile(ctx, tufmetadata.SNAPSHOT, snap, storeopts.Clobber)
+	require.NoError(t, err)
+
+	ts := currentTimestamp(ctx, t, bs.repo)
+	snapHash, err := tufrepo.HashMetaFile(ctx, snap)
+	require.NoError(t, err)
+	ts.Signed.Meta[tufmetadata.SNAPSHOT+".json"] = snapHash
+	ts.Signatures = nil
+	signMeta(ctx, t, ts, bs.timestampKey)
+	_, err = bs.repo.PutBlob(ctx, "timestamp.json", bytes.NewReader(mustEncode(t, ts)),
+		storeopts.Clobber)
+	require.NoError(t, err)
+}
