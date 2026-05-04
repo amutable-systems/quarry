@@ -13,7 +13,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-var app = withCacheDirFlag(withConfigFlag(&cli.Command{
+var app = withConfigFlag(&cli.Command{
 	Name:  "quarry-client",
 	Usage: "TUF client acting as a sysupdate bridge",
 	Flags: []cli.Flag{
@@ -39,7 +39,7 @@ var app = withCacheDirFlag(withConfigFlag(&cli.Command{
 		refreshCommand,
 		// TODO: infoCommand?
 	},
-}))
+})
 
 func Main(args []string) error {
 	return app.Run(context.Background(), args)

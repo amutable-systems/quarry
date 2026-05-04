@@ -17,29 +17,56 @@ import (
 
 type ctxKey string
 
-const cacheDirCtxKey ctxKey = "--cache-dir"
+const (
+	configCtxKey   ctxKey = "--config"
+	cacheDirCtxKey ctxKey = "--cache-dir"
+)
 
-func withCacheDirFlag(cmd *cli.Command) *cli.Command {
+func withConfigFlag(cmd *cli.Command) *cli.Command {
 	cmd.Flags = append(cmd.Flags,
 		&cli.StringFlag{
-			Name:      "cache-dir",
-			Usage:     "local cache directory for TUF metadata (must be non-volatile)",
+			Name:      "config",
+			Usage:     "path to the quarry-client configuration file",
 			Required:  true,
+			TakesFile: true,
+			Value:     "/etc/quarry-client.toml",
+			Sources:   cli.EnvVars("QUARRY_CLIENT_CONFIG"),
+		},
+		&cli.StringFlag{
+			Name:      "cache-dir",
+			Usage:     "local cache directory for TUF metadata",
 			TakesFile: true,
 			Value:     "/var/lib/quarry-client/cache",
 			Sources:   cli.EnvVars("QUARRY_CLIENT_CACHEDIR"),
 		})
 
 	cmd.Before = cliext.WrapBeforeFuncs(cmd.Before, func(ctx context.Context, cmd *cli.Command) (_ context.Context, Err error) {
-		cacheDirPath := cmd.String("cache-dir")
-		if err := os.MkdirAll(cacheDirPath, 0o755); err != nil { //nolint:forbidigo // user-controlled host path
+		configPath := cmd.String("config")
+
+		configFile, err := os.Open(configPath) //nolint:forbidigo // user-controlled host path
+		if err != nil {
+			return nil, fmt.Errorf("open config: %w", err)
+		}
+		defer funchelpers.VerifyClose(&Err, configFile)
+
+		config, err := parseConfig(configFile)
+		if err != nil {
+			return nil, fmt.Errorf("invalid config %s: %w", configPath, err)
+		}
+		ctx = context.WithValue(ctx, configCtxKey, config)
+
+		if config.CacheDir == "" || cmd.IsSet("cache-dir") {
+			config.CacheDir = cmd.String("cache-dir")
+		}
+		if err := os.MkdirAll(config.CacheDir, 0o755); err != nil { //nolint:forbidigo // user-controlled host path
 			return nil, err
 		}
-		cacheDir, err := pathrs.OpenRoot(cacheDirPath)
+		cacheDir, err := pathrs.OpenRoot(config.CacheDir)
 		if err != nil {
 			return nil, err
 		}
 		ctx = context.WithValue(ctx, cacheDirCtxKey, cacheDir)
+
 		return ctx, nil
 	})
 
@@ -56,40 +83,6 @@ func withCacheDirFlag(cmd *cli.Command) *cli.Command {
 
 func ctxCacheDir(ctx context.Context) *pathrs.Root {
 	return cliext.CtxValue[*pathrs.Root](ctx, cacheDirCtxKey)
-}
-
-const configCtxKey ctxKey = "--config"
-
-func withConfigFlag(cmd *cli.Command) *cli.Command {
-	cmd.Flags = append(cmd.Flags,
-		&cli.StringFlag{
-			Name:      "config",
-			Usage:     "path to the quarry-client configuration file",
-			Required:  true,
-			TakesFile: true,
-			Value:     "/etc/quarry-client.toml",
-			Sources:   cli.EnvVars("QUARRY_CLIENT_CONFIG"),
-		})
-
-	cmd.Before = cliext.WrapBeforeFuncs(cmd.Before, func(ctx context.Context, cmd *cli.Command) (_ context.Context, Err error) {
-		configPath := cmd.String("config")
-
-		configFile, err := os.Open(configPath) //nolint:forbidigo // user-controlled host path
-		if err != nil {
-			return nil, fmt.Errorf("open config: %w", err)
-		}
-		defer funchelpers.VerifyClose(&Err, configFile)
-
-		config, err := parseConfig(configFile)
-		if err != nil {
-			return nil, fmt.Errorf("invalid config %s: %w", configPath, err)
-		}
-
-		ctx = context.WithValue(ctx, configCtxKey, config)
-		return ctx, nil
-	})
-
-	return cmd
 }
 
 func ctxConfig(ctx context.Context) *Config {

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 
 	"github.com/BurntSushi/toml"
@@ -282,7 +283,15 @@ type Config struct {
 	// Version is the format version of this configuration file.
 	Version int64 `toml:"config_version"`
 
-	// TODO: Add --cache-dir to this config.
+	// CacheDir is a path to the root of the local client cache directory,
+	// which stores local copies of the latest repository metadata.
+	//
+	// The following %-expansions are supported for the cache dir:
+	//
+	//    %m -- app-specific machine id (in UUID form)
+	//    %e[x] -- "systemd-escape --path" the expando %[x]
+	//    %NN -- HTTP-style percent encoding (output is unexpanded)
+	CacheDir string `toml:"cache_dir"`
 
 	// Repos is the set of repositories configured for the client.
 	//
@@ -315,6 +324,15 @@ func parseConfig(rdr io.Reader) (*Config, error) {
 	}
 
 	expander := expand.NewExpansions()
+
+	cfg.CacheDir, err = expander.ExpandString(cfg.CacheDir)
+	if err != nil {
+		return nil, fmt.Errorf("config cache_dir an invalid %%-expansion: %w", err)
+	}
+	if cfg.CacheDir != "" && !filepath.IsAbs(cfg.CacheDir) {
+		return nil, fmt.Errorf("config cache_dir invalid value: %q must be an absolute path", cfg.CacheDir)
+	}
+
 	repos := make(map[string]*Repository)
 	for oldName, repo := range cfg.Repos {
 		var err error

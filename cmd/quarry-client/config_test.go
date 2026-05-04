@@ -528,6 +528,59 @@ meta_root_url = "https://example.com"
 	}
 }
 
+func TestParseConfig_Expand_CacheDir(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		cacheDir  string
+		wantDir   string
+		wantDirRe string
+	}{
+		{
+			name:     "Empty",
+			cacheDir: ``,
+			wantDir:  ``,
+		},
+		{
+			name:     "Literal",
+			cacheDir: `/var/cache/quarry`,
+			wantDir:  `/var/cache/quarry`,
+		},
+		{
+			name:     "LiteralPercent",
+			cacheDir: `/var/cache/100%%`,
+			wantDir:  `/var/cache/100%`,
+		},
+		{
+			name:      "MachineID",
+			cacheDir:  `/var/cache/quarry/%m`,
+			wantDirRe: `^/var/cache/quarry/` + uuidPat + `$`,
+		},
+		{
+			name:      "MachineIDEscaped",
+			cacheDir:  `/var/cache/quarry/%em`,
+			wantDirRe: `^/var/cache/quarry/[0-9a-f]{8}\\x2d[0-9a-f]{4}\\x2d[0-9a-f]{4}\\x2d[0-9a-f]{4}\\x2d[0-9a-f]{12}$`,
+		},
+		{
+			name:     "PercentEncoded",
+			cacheDir: `/var/cache/quarry/%2Ffoo`,
+			wantDir:  `/var/cache/quarry/%2Ffoo`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conf, err := parseConfig(strings.NewReader(`
+config_version = 1
+cache_dir = "` + tc.cacheDir + `"
+`))
+			require.NoError(t, err)
+			if tc.wantDirRe != "" {
+				assert.Regexp(t, tc.wantDirRe, conf.CacheDir)
+			} else {
+				assert.Equal(t, tc.wantDir, conf.CacheDir)
+			}
+		})
+	}
+}
+
 func TestParseConfig_Expand_Invalid(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -623,6 +676,34 @@ config_version = 1
 root_trust = { type = "bundled", path = "/etc/%Z" }
 meta_root_url = "https://example.com"`,
 			wantErr: `invalid predicate Z`,
+		},
+		{
+			name: "UnknownPredicateInCacheDir",
+			config: `
+config_version = 1
+cache_dir = "/var/cache/%Z"`,
+			wantErr: `invalid predicate Z`,
+		},
+		{
+			name: "RepoNameSourceNotInCacheDir",
+			config: `
+config_version = 1
+cache_dir = "/var/cache/%R"`,
+			wantErr: `invalid predicate R`,
+		},
+		{
+			name: "RelativeCacheDir",
+			config: `
+config_version = 1
+cache_dir = "var/cache/quarry"`,
+			wantErr: `must be an absolute path`,
+		},
+		{
+			name: "RelativeAfterExpansion",
+			config: `
+config_version = 1
+cache_dir = "%m"`,
+			wantErr: `must be an absolute path`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
