@@ -326,13 +326,13 @@ func (tx *Transaction) UpdateRoleData(roleName string, roleData any) (Err error)
 
 // Roles returns an iterator over all roles that are actually included in the
 // repository data.
-func (tx *Transaction) Roles(_ context.Context) iter.Seq2[string, error] {
-	return generics.ErrorIter(func(yield func(string) bool) error {
+func (tx *Transaction) Roles(_ context.Context) iter.Seq[string] {
+	return func(yield func(string) bool) {
 		seen := make(map[string]struct{})
 		// Return the top-level roles first.
 		for _, role := range tufmetadata.TOP_LEVEL_ROLE_NAMES {
 			if !yield(role) {
-				return nil
+				return
 			}
 			seen[role] = struct{}{}
 		}
@@ -342,12 +342,11 @@ func (tx *Transaction) Roles(_ context.Context) iter.Seq2[string, error] {
 				continue
 			}
 			if !yield(role) {
-				return nil
+				return
 			}
 			seen[role] = struct{}{}
 		}
-		return nil
-	})
+	}
 }
 
 // DefinedRoles returns an iterator over all role names that are referenced by

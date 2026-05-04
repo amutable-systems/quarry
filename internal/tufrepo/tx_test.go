@@ -554,8 +554,7 @@ func TestTransaction_Roles(t *testing.T) {
 	require.NoError(t, err)
 
 	var got []string
-	for role, err := range tx.Roles(ctx) {
-		require.NoError(t, err)
+	for role := range tx.Roles(ctx) {
 		got = append(got, role)
 	}
 
@@ -578,8 +577,7 @@ func TestTransaction_Roles_BreakStopsIteration(t *testing.T) {
 	require.NoError(t, err)
 
 	var got []string
-	for role, err := range tx.Roles(ctx) {
-		require.NoError(t, err)
+	for role := range tx.Roles(ctx) {
 		got = append(got, role)
 		if len(got) == 2 {
 			break
