@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"cyphar.com/go-pathrs"
@@ -130,57 +132,86 @@ func addPrehashedToTargets(ctx context.Context, builder *tufext.TargetsBuilder, 
 		return fmt.Errorf("failed to open parent directory of sumfile %s: %w", sumFile.Name(), err)
 	}
 
-	var skippedLines uint
-	scanner := bufio.NewScanner(sumFile)
+	var (
+		scanner      = bufio.NewScanner(sumFile)
+		skippedLines atomic.Uint64
+		wg           sync.WaitGroup
+		queueCh      = make(chan struct{}, 32)
+		errCh        = make(chan error, 32)
+	)
 	for scanner.Scan() {
-		parts := sumFileRe.FindStringSubmatch(scanner.Text())
-		if len(parts) != 3 {
-			// This line does not contain a hashsum line (it might be empty or
-			// a inline-signed sumfile that contains non-hash lines).
-			// TODO: Add logging?
-			skippedLines++
-			continue
-		}
-		hash, subpath := strings.ToLower(parts[1]), parts[2]
-
-		// Compute the logical subpath of the referenced file.
-		logicalSubpath := filepath.Join(logicalPath, subpath) //nolint:forbidigo // lexical paths
-
-		// Make sure the digest is valid.
-		if err := hashAlgorithm.Validate(hash); err != nil {
-			// TODO: Add proper logging.
-			fmt.Fprintf(os.Stderr, "skipping invalid hash %q: %v\n", hash, err)
-			skippedLines++
-			continue
-		}
-		digest := digest.NewDigestFromEncoded(hashAlgorithm, hash)
-
-		// Get the size.
-		size := int64(-1)
-		if dataRootURL != nil {
-			var err error
-			size, err = getContentLength(ctx, dataRootURL.JoinPath(logicalSubpath))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "failed to fetch %q from --data-root-url (%v) -- falling back to local file stat\n", logicalSubpath, err)
+		text := scanner.Text()
+		wg.Go(func() {
+			parts := sumFileRe.FindStringSubmatch(text)
+			if len(parts) != 3 {
+				// This line does not contain a hashsum line (it might be empty or
+				// a inline-signed sumfile that contains non-hash lines).
+				// TODO: Add logging?
+				skippedLines.Add(1)
+				return
 			}
-		}
-		if size < 0 {
-			st, err := pathrsext.Stat(root, subpath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "cannot stat hashed file %q: %v\n", subpath, err)
-				skippedLines++
-				continue
-			}
-			size = st.Size()
-		}
+			hash, subpath := strings.ToLower(parts[1]), parts[2]
 
-		if _, err := builder.AddTargetFile(logicalSubpath, size, digest); err != nil {
-			return fmt.Errorf("add file %s to targets data: %w", logicalSubpath, err)
-		}
+			// Wait for a slot.
+			select {
+			case <-ctx.Done():
+				return // early exit
+			case queueCh <- struct{}{}:
+				defer func() { <-queueCh }()
+			}
+
+			// Compute the logical subpath of the referenced file.
+			logicalSubpath := filepath.Join(logicalPath, subpath) //nolint:forbidigo // lexical paths
+
+			// Make sure the digest is valid.
+			if err := hashAlgorithm.Validate(hash); err != nil {
+				// TODO: Add proper logging.
+				fmt.Fprintf(os.Stderr, "skipping invalid hash %q: %v\n", hash, err)
+				skippedLines.Add(1)
+				return
+			}
+			digest := digest.NewDigestFromEncoded(hashAlgorithm, hash)
+
+			// Get the size.
+			size := int64(-1)
+			if dataRootURL != nil {
+				var err error
+				size, err = getContentLength(ctx, dataRootURL.JoinPath(logicalSubpath))
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "failed to fetch %q from --data-root-url (%v) -- falling back to local file stat\n", logicalSubpath, err)
+				}
+			}
+			if size < 0 {
+				st, err := pathrsext.Stat(root, subpath)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "cannot stat hashed file %q: %v\n", subpath, err)
+					skippedLines.Add(1)
+					return
+				}
+				size = st.Size()
+			}
+			if _, err := builder.AddTargetFile(logicalSubpath, size, digest); err != nil {
+				errCh <- fmt.Errorf("add file %s to targets data: %w", logicalSubpath, err)
+				return
+			}
+		})
 	}
-	if skippedLines > 0 {
+	waitCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(waitCh)
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-waitCh:
+	case err := <-errCh:
+		// This will cause ctx to get cancelled by urfave/cli.
+		return fmt.Errorf("error during targets generation: %w", err)
+	}
+	if skipped := skippedLines.Load(); skipped > 0 {
 		// TODO: Add proper logging.
-		fmt.Fprintf(os.Stderr, "== SKIPPED %d invalid lines in %s ==\n", skippedLines, sumFile.Name())
+		fmt.Fprintf(os.Stderr, "== SKIPPED %d invalid lines in %s ==\n", skipped, sumFile.Name())
 	}
 	return nil
 }
