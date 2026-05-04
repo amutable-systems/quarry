@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 
 	"cyphar.com/go-pathrs"
@@ -25,6 +26,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"go.amutable.dev/quarry/cmd/internal/pprint"
+	"go.amutable.dev/quarry/internal/expand"
 	"go.amutable.dev/quarry/internal/linux"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufext"
@@ -217,4 +219,20 @@ func pprintTargetFile(prefix string, repo *Repository, target *tufmetadata.Targe
 		pprint.JSON(prefix+"\t", "\t", []byte(*target.Custom))
 	}
 	// TODO(ext): UnrecogniedFields
+}
+
+func expandTargetFile(fmtStr string, repo *Repository, target *tufmetadata.TargetFiles) error {
+	expander := expand.NewExpansions().
+		WithSource('R', func(_ *[]any) (string, error) { return repo.Name, nil }).
+		WithSource('n', func(_ *[]any) (string, error) { return target.Path, nil }).
+		WithSource('s', func(_ *[]any) (string, error) { return strconv.FormatInt(target.Length, 10), nil }).
+		WithSource('h', func(_ *[]any) (string, error) { return fmt.Sprintf("%x", target.Hashes["sha256"]), nil }).
+		WithSource('u', func(_ *[]any) (string, error) { return repo.DataRootURL.JoinPath(target.Path).String(), nil })
+
+	expanded, err := expander.ExpandString(fmtStr)
+	if err != nil {
+		return fmt.Errorf("invalid --format: %w", err)
+	}
+	fmt.Println(expanded)
+	return nil
 }

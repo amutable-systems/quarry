@@ -40,6 +40,13 @@ var listCommand = withRefTimeFlag(&cli.Command{
 					},
 				},
 				{
+					&cli.StringFlag{
+						Name:    "format",
+						Usage:   "output formatted text for each target file (%%R = repo, %%n = target name, %%s = size, %%h = sha256 hash, %%u = download URL)",
+						Aliases: []string{"f"},
+					},
+				},
+				{
 					&cli.BoolFlag{
 						Name:  "uapi-16",
 						Usage: "output the list as a UAPI.16 manifest (for sysupdate) to the given path ('-' for stdout)",
@@ -91,6 +98,10 @@ var listCommand = withRefTimeFlag(&cli.Command{
 					})
 				} else if cmd.Bool("verbose") {
 					pprintTargetFile("", repo, target.TargetFiles)
+				} else if fmtStr := cmd.String("format"); cmd.IsSet("format") {
+					if err := expandTargetFile(fmtStr, repo, target.TargetFiles); err != nil {
+						return fmt.Errorf("error while %%-formatting target file %s from repo %s: %w", target.Path, repoName, err)
+					}
 				} else {
 					fmt.Println(target.Path)
 				}
