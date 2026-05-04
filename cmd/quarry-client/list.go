@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"maps"
 	"os"
 	"slices"
@@ -21,18 +20,32 @@ import (
 var listCommand = withRefTimeFlag(&cli.Command{
 	Name:  "list",
 	Usage: "get a list of available update files",
-	Flags: []cli.Flag{
-		&cli.StringFlag{
-			Name:  "uapi-16",
-			Usage: "output the list as a UAPI.16 manifest (for sysupdate) to the given path ('-' for stdout)",
-		},
-	},
+	Flags: []cli.Flag{},
 	Arguments: []cli.Argument{
 		&cli.StringArgs{
 			Name:      "repo-name",
 			UsageText: "[repo-name]...",
 			Min:       0,
 			Max:       -1,
+		},
+	},
+	MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{
+		{
+			Flags: [][]cli.Flag{
+				{
+					&cli.BoolFlag{
+						Name:    "verbose",
+						Usage:   "output more textual information about each target file",
+						Aliases: []string{"v"},
+					},
+				},
+				{
+					&cli.BoolFlag{
+						Name:  "uapi-16",
+						Usage: "output the list as a UAPI.16 manifest (for sysupdate) to the given path ('-' for stdout)",
+					},
+				},
+			},
 		},
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -48,12 +61,10 @@ var listCommand = withRefTimeFlag(&cli.Command{
 			// Make sure we iterate over the repos in order.
 			repoNames = slices.Sorted(maps.Keys(updaters))
 		}
-
 		var manifest *uapi16.Manifest
-		if cmd.IsSet("uapi-16") {
+		if cmd.Bool("uapi-16") {
 			manifest = uapi16.New()
 		}
-
 		for _, repoName := range repoNames {
 			updater := updaters[repoName]
 			repo := config.Repos[repoName]
@@ -78,30 +89,16 @@ var listCommand = withRefTimeFlag(&cli.Command{
 						DataSize: uint64(target.Length),
 						SHA256:   digest.SHA256.Encode(target.Hashes["sha256"]),
 					})
-				} else {
+				} else if cmd.Bool("verbose") {
 					pprintTargetFile("", repo, target.TargetFiles)
+				} else {
+					fmt.Println(target.Path)
 				}
 			}
 		}
 		if manifest != nil {
-			var output io.Writer
-			if outPath := cmd.String("uapi-16"); outPath != "-" {
-				outFile, err := os.Create(outPath) //nolint:forbidigo // user-controlled host path
-				if err != nil {
-					return fmt.Errorf("invalid --output argument: %w", err)
-				}
-				defer outFile.Close() //nolint:errcheck // poc cli code
-				output = outFile
-			} else {
-				output = os.Stdout
-			}
-			if err := json.NewEncoder(output).Encode(manifest); err != nil {
+			if err := json.NewEncoder(os.Stdout).Encode(manifest); err != nil {
 				return fmt.Errorf("write uapi16 manifest: %w", err)
-			}
-			if output != os.Stdout {
-				fmt.Printf("Wrote UAPI.16 manifest to %q.", cmd.String("uapi-16"))
-			} else {
-				fmt.Printf("\n")
 			}
 		}
 		return nil
