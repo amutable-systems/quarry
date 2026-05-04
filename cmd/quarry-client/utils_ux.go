@@ -27,9 +27,8 @@ func withConfigFlag(cmd *cli.Command) *cli.Command {
 		&cli.StringFlag{
 			Name:      "config",
 			Usage:     "path to the quarry-client configuration file",
-			Required:  true,
 			TakesFile: true,
-			Value:     "/etc/quarry-client.toml",
+			Value:     findDefaultConfigPath(),
 			Sources:   cli.EnvVars("QUARRY_CLIENT_CONFIG"),
 		},
 		&cli.StringFlag{

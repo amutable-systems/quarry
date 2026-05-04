@@ -15,6 +15,7 @@ import (
 	"slices"
 
 	"github.com/BurntSushi/toml"
+	"golang.org/x/sys/unix"
 
 	"go.amutable.dev/quarry/internal/expand"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
@@ -24,6 +25,23 @@ import (
 const (
 	maxRootBytes = 512_000 // 512k
 )
+
+var defaultConfigCandidates = [...]string{
+	"/etc/quarry-client.toml",
+	"/run/quarry-client/config.toml",
+	"/usr/local/lib/quarry-client/config.toml",
+	"/usr/lib/quarry-client/config.toml",
+}
+
+func findDefaultConfigPath() string {
+	for _, path := range defaultConfigCandidates {
+		if err := unix.Access(path, unix.F_OK); err == nil {
+			return path
+		}
+	}
+	// If none of the candidates are available, just show the first one.
+	return defaultConfigCandidates[0]
+}
 
 // RootTrustSource represents a source of trust for the initial state of a
 // client's locally cached root.json.
