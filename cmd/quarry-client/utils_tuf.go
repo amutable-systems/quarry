@@ -32,6 +32,8 @@ import (
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
+var errSkippableRepo = errors.New("skippable repository error")
+
 func makeUpdater(ctx context.Context, name string, repo *Repository) (_ *tufupdater.Updater, Err error) {
 	cacheDir := ctxCacheDir(ctx)
 
@@ -52,7 +54,7 @@ func makeUpdater(ctx context.Context, name string, repo *Repository) (_ *tufupda
 		// Fallback to fetch from the trusted root source.
 		rootData, err := repo.RootTrust.FetchRoot(ctx, repo)
 		if err != nil {
-			return nil, fmt.Errorf("fetch trusted root.json: %w", err)
+			return nil, fmt.Errorf("(%w) fetch trusted root.json: %w", errSkippableRepo, err)
 		}
 		rootFile, err = repoCacheDir.Create(".", unix.O_TMPFILE|unix.O_RDWR|unix.O_NOFOLLOW, 0o644)
 		if err != nil {
@@ -73,10 +75,10 @@ func makeUpdater(ctx context.Context, name string, repo *Repository) (_ *tufupda
 		// the root.json data to the cache, but that's okay -- the bundled data
 		// is static anyway.
 		if root, err := tufmetadata.Root().FromBytes(rootData); err != nil {
-			return nil, fmt.Errorf("root_trust root.json is invalid: %w", err)
+			return nil, fmt.Errorf("(%w) root_trust root.json is invalid: %w", errSkippableRepo, err)
 		} else if err := root.VerifyDelegate(tufmetadata.ROOT, root); err != nil {
 			// root.json must be self-signed.
-			return nil, fmt.Errorf("root_trust root.json is not self-signed: %w", err)
+			return nil, fmt.Errorf("(%w) root_trust root.json is not self-signed: %w", errSkippableRepo, err)
 		}
 		// Attach as cached root.json.
 		if err := pathrsext.AttachIntoRoot(repoCacheDir, "root.json", rootFile); err != nil {
@@ -132,6 +134,13 @@ func getUpdaters(ctx context.Context, repoNames ...string) (map[string]*tufupdat
 			return nil, fmt.Errorf("unknown repository %s", name)
 		}
 		updater, err := makeUpdater(ctx, name, repo)
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, errSkippableRepo) {
+			// If the root.json could not be fetched from the trust source,
+			// skip it (the repository doesn't exist). This is not an issue for
+			// repositories where we have already cached root.json.
+			slog.Info("Cannot fetch repository root.json from root_trust -- skipping.", "error", err.Error(), "repository", name)
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("bad repo %s: %w", name, err)
 		}
