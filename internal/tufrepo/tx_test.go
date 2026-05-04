@@ -586,6 +586,50 @@ func TestTransaction_Roles_BreakStopsIteration(t *testing.T) {
 	assert.Len(t, got, 2)
 }
 
+func TestTransaction_Roles_PartialInitTxn(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestKeystore(t)
+
+	rootKey := generateInsecureKey(ctx, t, store)
+	targetsKey := generateInsecureKey(ctx, t, store)
+	snapshotKey := generateInsecureKey(ctx, t, store)
+	timestampKey := generateInsecureKey(ctx, t, store)
+
+	builder := tufext.NewRootBuilder()
+	_, err := builder.AddRole(tufmetadata.ROOT, 1, rootKey.Public)
+	require.NoError(t, err)
+	_, err = builder.AddRole(tufmetadata.TARGETS, 1, targetsKey.Public)
+	require.NoError(t, err)
+	_, err = builder.AddRole(tufmetadata.SNAPSHOT, 1, snapshotKey.Public)
+	require.NoError(t, err)
+	_, err = builder.AddRole(tufmetadata.TIMESTAMP, 1, timestampKey.Public)
+	require.NoError(t, err)
+	signedRoot, _, err := builder.Sign(ctx, store)
+	require.NoError(t, err)
+
+	t.Run("OnlyRoot", func(t *testing.T) {
+		tx := tufrepo.InitTxn(signedRoot)
+
+		var got []string
+		for role := range tx.Roles(ctx) {
+			got = append(got, role)
+		}
+		assert.Equal(t, []string{tufmetadata.ROOT}, got)
+	})
+
+	t.Run("RootAndTargets", func(t *testing.T) {
+		tx := tufrepo.InitTxn(signedRoot)
+		targets := tufext.DefaultTargets(time.Now().Add(time.Hour))
+		require.NoError(t, tx.UpdateRoleData(tufmetadata.TARGETS, targets))
+
+		var got []string
+		for role := range tx.Roles(ctx) {
+			got = append(got, role)
+		}
+		assert.Equal(t, []string{tufmetadata.ROOT, tufmetadata.TARGETS}, got)
+	})
+}
+
 func TestTransaction_DefinedRoles(t *testing.T) {
 	ctx := context.Background()
 	bs := bootstrapRepo(t, withDelegation("delegA"))
