@@ -23,15 +23,28 @@ SPECIAL_PREFIX=".zzz-quarry-special"
 # Apply sysupdate.d/*.{feature,transfer} files before running sysupdate.
 SYSUPDATE_PREFIX="$SPECIAL_PREFIX/sysupdate."
 
+# We need to patch transfer files to use Path=<our http bridge> for [Source].
+function postinst_sysupdate() {
+	local local_path="$1"
+	# TODO: Compute this from our live config (in theory sysupdate should be
+	# able to show this?).
+	local proxy_url="http://127.0.0.1:555/"
+	# FIXME: We don't have awk in the base image so we can't write a nice
+	# script that only does this for [Source] regardless of the Path= format.
+	sed -Ei 's|^Path=https?://.*|Path='"$proxy_url"'|' "$local_path"
+}
+
 readarray -t special_files < <(quarry-client list --format="%n::%R" | grep -F "$SPECIAL_PREFIX" || :)
 for target in "${special_files[@]}"; do
 	repo="${target##*::}"
 	target_path="${target%::*}"
 	local_path=
+	postinst_command=
 	case "$target_path" in
 		"$SYSUPDATE_PREFIX"*)
 			local_path="/run/${target_path#"$SPECIAL_PREFIX"/}"
 			mkdir -p /etc/extensions
+			postinst_command=postinst_sysupdate
 			;;
 		*)
 			warn "Unsupported extension $target_path in repository $repo -- skipping."
@@ -43,10 +56,15 @@ for target in "${special_files[@]}"; do
 		info "Removing pre-existing $local_path."
 	fi
 	info "Pre-update install ($repo) $target_path ==> $local_path."
+
 	# The quarry user does not have access to /run/sysupdate.d, so we need to
 	# run this download process as root. Less than ideal, but better than
 	# saving to some other path and renaming.
 	command quarry-client fetch --repo="$repo" --output="$local_path" "$target_path"
+
+	# Run the post-install command if applicable.
+	[ -z "$postinst_command" ] || "$postinst_command" "$local_path"
+
 	# Make sure the above command did not accidentally create new files in the
 	# client cache with root ownership (this would only happen if the repo was
 	# updated between the list and fetch commands).
