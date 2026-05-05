@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// ApplicationID is the UUID of quarry as an application, used with
+// ApplicationID is the UUID used by all Amutable applications, used with
 // systemd-id128 to produce application-specific machine IDs. Represented
-// traditionally, this UUID is "7ad9c7cd-e1e1-4188-a43f-10dc889df417".
-var ApplicationID = uuid.MustParse("7ad9c7cd-e1e1-4188-a43f-10dc889df417")
+// traditionally, this UUID is "04ec60eb-87dd-434a-9733-1009bb5c4b34".
+var ApplicationID = uuid.MustParse("04ec60eb-87dd-434a-9733-1009bb5c4b34")
