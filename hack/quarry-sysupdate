@@ -9,12 +9,19 @@ function quarry-client() {
 	run0 -u quarry -g quarry quarry-client "$@"
 }
 
+function info() {
+	echo "[INFO]" "$@" >&2
+}
+
+function warn() {
+	echo "[WARN]" "$@" >&2
+}
+
 # Use a special prefix for all of our "magic" behaviour.
 SPECIAL_PREFIX=".zzz-quarry-special"
 
 # Apply sysupdate.d/*.{feature,transfer} files before running sysupdate.
-SYSUPDATE_PREFIX="$SPECIAL_PREFIX/sysupdate.d"
-LOCAL_SYSUPDATE_DIR=/run/sysupdate.d
+SYSUPDATE_PREFIX="$SPECIAL_PREFIX/sysupdate."
 
 readarray -t special_files < <(quarry-client list --format="%n::%R" | grep -F "$SPECIAL_PREFIX" || :)
 for target in "${special_files[@]}"; do
@@ -22,31 +29,51 @@ for target in "${special_files[@]}"; do
 	target_path="${target%::*}"
 	local_path=
 	case "$target_path" in
-		"$SYSUPDATE_PREFIX"/*)
-			local_path="${LOCAL_SYSUPDATE_DIR}/${target_path#"$SYSUPDATE_PREFIX"/}"
-			mkdir -p "${LOCAL_SYSUPDATE_DIR}"
+		"$SYSUPDATE_PREFIX"*)
+			local_path="/run/${target_path#"$SPECIAL_PREFIX"/}"
+			mkdir -p /etc/extensions
 			;;
 		*)
-			echo "Unsupported extension $target_path in repository $repo -- skipping." >&2
+			warn "Unsupported extension $target_path in repository $repo -- skipping."
 			continue
 			;;
 	esac
+	if [ -e "$local_path" ]; then
+		rm -f "$local_path"
+		info "Removing pre-existing $local_path."
+	fi
+	info "Pre-update install ($repo) $target_path ==> $local_path."
 	# The quarry user does not have access to /run/sysupdate.d, so we need to
 	# run this download process as root. Less than ideal, but better than
 	# saving to some other path and renaming.
 	command quarry-client fetch --repo="$repo" --output="$local_path" "$target_path"
-	# Make sure the above command did not accidentally create new files with
-	# root ownership (this would only happen if the repo was updated between
-	# the list and fetch commands).
+	# Make sure the above command did not accidentally create new files in the
+	# client cache with root ownership (this would only happen if the repo was
+	# updated between the list and fetch commands).
 	# TODO: It should be possible for quarry-client to have a --no-refresh
 	# mode, but unfortunately go-tuf doesn't provide proper support for it...
 	chown -R quarry:quarry "/run/quarry-client/cache/$repo"
 done
+
 # TODO: Figure out how to clean up transfer files no longer included in the
 # repo but are still present on the local machine. Deleting them is easy but
 # actually triggering a clean uninstall seems unclear...
 
-# Run sysupdate.
-/usr/lib/systemd/systemd-sysupdate update
+# Run sysupdate for all components.
+readarray -t components < <(/usr/lib/systemd/systemd-sysupdate components)
+for component in "${components[@]}"; do
+	flags=()
+	# <default> is a dummy name that doesn't need a --component flag.
+	[[ "$component" != "<default>" ]] && flags+=("--component=$component")
+	info "Update component $component."
+	/usr/lib/systemd/systemd-sysupdate "${flags[@]}" update
+done
+
 # TODO: Should we put this in a separate service / timer?
-/usr/lib/systemd/systemd-sysupdate reboot
+for component in "${components[@]}"; do
+	flags=()
+	# <default> is a dummy name that doesn't need a --component flag.
+	[[ "$component" != "<default>" ]] && flags+=("--component=$component")
+	info "Try-reboot with component $component."
+	/usr/lib/systemd/systemd-sysupdate "${flags[@]}" reboot
+done
