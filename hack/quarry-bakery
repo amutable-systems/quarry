@@ -1,0 +1,76 @@
+#!/bin/bash
+
+# Copyright (C) 2026 Amutable GmbH
+# quarry-bakery -- generate targets.json from flatcar/sysext-bakery components
+
+set -Eeuo pipefail
+
+HARDHAT="${HARDHAT:-"$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/..")/hardhat"}"
+
+function hardhat() {
+	"$HARDHAT" "$@"
+}
+
+function info() {
+	echo "[INFO]" "$@" >&2
+}
+
+function warn() {
+	echo "[WARN]" "$@" >&2
+}
+
+function usage() {
+	echo "usage: $0 sysext-name [hardhat targets flags]..." >&2
+	exit 1
+}
+
+[ "$#" -ge 1 ] || usage
+
+sysext="$1"
+shift
+hardhat_targets_flags=("$@")
+
+# Grab the SHA256SUM file from the pinned release of the same name.
+SHA256SUMS="$(mktemp "quarry-bakery-$sysext.SHA256SUMS.XXXXXX")"
+trap 'rm -f "$SHA256SUMS"' EXIT
+curl -sSL -o "$SHA256SUMS" "https://github.com/flatcar/sysext-bakery/releases/download/$sysext/SHA256SUMS"
+
+# Pre-compute the special .zzz-quarry-special/sysupdate.FOO.d/* entries for the
+# repository to insert it into the targets.json.
+sysext_transfer_url="https://github.com/flatcar/sysext-bakery/releases/download/$sysext/$sysext.conf"
+sysext_transfer="$(curl -sSL -o- "$sysext_transfer_url")"
+
+# TODO: Support passing unsigned structures to hardhat targets --import-from.
+sysext_transfer_entry="$(cat <<-EOF
+{
+	"signed": {
+		"_type": "targets",
+		"expires": "$(date  +'%Y-%m-%dT%H:%M:%S.%NZ' --utc --date="1997-03-25")",
+		"version": 1,
+		"spec_version": "1.0.31",
+		"targets": {
+			".zzz-quarry-special/sysupdate.$sysext.d/$sysext.transfer": {
+				"hashes": {
+				  "sha256": "$(sha256sum <<<"$sysext_transfer" | awk '{ print $1 }')"
+				},
+				"length": $(wc -c <<<"$sysext_transfer"),
+				"x-quarry-override-url": "$sysext_transfer_url"
+			}
+		}
+	},
+	"signatures": []
+}
+EOF
+)"
+
+# TODO: Should we parse this from the transfer file instead?
+root_url="https://extensions.flatcar.org/extensions/$sysext"
+
+hardhat targets \
+	"${hardhat_targets_flags[@]}" \
+	--strip-components=0 \
+	--include-from=<(cat <<<"$sysext_transfer_entry") \
+	--pre-hashed \
+	--data-root-url="$root_url" \
+	--ext-override-url \
+	"$SHA256SUMS"
