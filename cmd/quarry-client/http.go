@@ -166,12 +166,15 @@ func proxyTargetFile(rw http.ResponseWriter, req *http.Request) error {
 			}
 			return err
 		}
-		remoteURL := repo.DataRootURL.JoinPath(targetPath)
+		targetURL, err := getTargetURL(repo, targetInfo)
+		if err != nil {
+			return fmt.Errorf("bad target data in repo %s for target %s: cannot compute target url: %w", repoName, targetPath, err)
+		}
 		// TODO: Is it really not possible to provide Content-Length and
 		// Content-Digest here...?
 		rw.Header().Set("X-Quarry-Content-Length", strconv.FormatInt(targetInfo.Length, 10))
 		rw.Header()["X-Quarry-Content-Digest"] = hashesToContentDigest(targetInfo.Hashes)
-		http.Redirect(rw, req, remoteURL.String(), http.StatusFound)
+		http.Redirect(rw, req, targetURL.String(), http.StatusFound)
 		return nil
 	}
 	// Could not find the target file.

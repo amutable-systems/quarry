@@ -97,6 +97,12 @@ func ctxDataRoolURL(ctx context.Context) *url.URL {
 	return cliext.CtxValue[*url.URL](ctx, dataRootURLCtxKey)
 }
 
+const extOverrideURLCtxKey ctxKey = "--ext-override-url"
+
+func ctxExtOverrideURL(ctx context.Context) bool {
+	return cliext.CtxValue[bool](ctx, extOverrideURLCtxKey)
+}
+
 // sumFileRe matches the "standard" line format for "hashsum" files.
 var sumFileRe = regexp.MustCompile(`^([0-9a-fA-F]+)\s+(.+)$`)
 
@@ -119,6 +125,7 @@ func getContentLength(ctx context.Context, url *url.URL) (int64, error) {
 
 func addPrehashedToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalPath string, sumFile *os.File) error {
 	dataRootURL := ctxDataRoolURL(ctx)
+	extOverrideURL := ctxExtOverrideURL(ctx)
 
 	if filepath.Join("/", logicalPath) == "/" { //nolint:forbidigo // lexical paths
 		return fmt.Errorf("--skip-components value too large -- no components left for sumfile %s", sumFile.Name())
@@ -173,11 +180,16 @@ func addPrehashedToTargets(ctx context.Context, builder *tufext.TargetsBuilder, 
 			}
 			digest := digest.NewDigestFromEncoded(hashAlgorithm, hash)
 
+			var dataURL *url.URL
+			if dataRootURL != nil {
+				dataURL = dataRootURL.JoinPath(logicalSubpath)
+			}
+
 			// Get the size.
 			size := int64(-1)
-			if dataRootURL != nil {
+			if dataURL != nil {
 				var err error
-				size, err = getContentLength(ctx, dataRootURL.JoinPath(logicalSubpath))
+				size, err = getContentLength(ctx, dataURL)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "failed to fetch %q from --data-root-url (%v) -- falling back to local file stat\n", logicalSubpath, err)
 				}
@@ -191,9 +203,13 @@ func addPrehashedToTargets(ctx context.Context, builder *tufext.TargetsBuilder, 
 				}
 				size = st.Size()
 			}
-			if _, err := builder.AddTargetFile(logicalSubpath, size, digest); err != nil {
+			target, err := builder.AddTargetFile(logicalSubpath, size, digest)
+			if err != nil {
 				errCh <- fmt.Errorf("add file %s to targets data: %w", logicalSubpath, err)
 				return
+			}
+			if extOverrideURL {
+				tufext.TargetFilesExt(target).WithOverrideURL(dataURL)
 			}
 		})
 	}
@@ -235,6 +251,10 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		&cli.StringSliceFlag{
 			Name:  "include-from",
 			Usage: "include targets defined in the given targets.json files (later files take precedence, with <files> arguments taking highest precedence)",
+		},
+		&cli.BoolFlag{
+			Name:  "ext-override-url",
+			Usage: "when using --data-root-url --pre-hashed, add an override URL to each target file to make clients fetch from --data-root-url",
 		},
 		&cli.StringFlag{
 			Name:  "data-root-url",
@@ -305,6 +325,12 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 				return nil, fmt.Errorf("invalid --data-root-url=%q: %w", urlStr, err)
 			}
 			ctx = context.WithValue(ctx, dataRootURLCtxKey, rootURL)
+		}
+		if cmd.Bool("ext-override-url") {
+			if !cmd.IsSet("data-root-url") {
+				return nil, fmt.Errorf("--ext-override-url doesn't make sense without --data-root-url (and --pre-hashed)")
+			}
+			ctx = context.WithValue(ctx, extOverrideURLCtxKey, true)
 		}
 		return ctx, nil
 	},

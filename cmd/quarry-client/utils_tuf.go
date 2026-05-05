@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"cyphar.com/go-pathrs"
+	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/umoci/pkg/hardening"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 	tufconfig "github.com/theupdateframework/go-tuf/v2/metadata/config"
@@ -30,6 +31,7 @@ import (
 	"go.amutable.dev/quarry/internal/pathrsext"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufext"
+	"go.amutable.dev/quarry/internal/uapi16"
 )
 
 var errSkippableRepo = errors.New("skippable repository error")
@@ -244,6 +246,30 @@ func trustedMetadataTargetsFetcher(cacheDir *pathrs.Root, repo *Repository, meta
 	}
 }
 
+func uapi16FromTargetFile(repo *Repository, target *tufmetadata.TargetFiles) (*uapi16.File, error) {
+	targetURL, err := getTargetURL(repo, target)
+	if err != nil {
+		return nil, err
+	}
+	return &uapi16.File{
+		// TODO: What should we do about separators here?
+		Name:     target.Path,
+		DataURL:  targetURL.String(),
+		DataSize: uint64(target.Length),
+		SHA256:   digest.SHA256.Encode(target.Hashes["sha256"]),
+	}, nil
+}
+
+func getTargetURL(repo *Repository, target *tufmetadata.TargetFiles) (*url.URL, error) {
+	targetExt := tufext.TargetFilesExt(target)
+	if overrideURL, err := targetExt.OverrideURL(); err != nil {
+		return nil, fmt.Errorf("invalid override url: %w", err)
+	} else if overrideURL != nil {
+		return overrideURL, nil
+	}
+	return repo.DataRootURL.JoinPath(targetExt.Path), nil
+}
+
 func pprintHashes(prefix string, hashes tufmetadata.Hashes) {
 	fmt.Printf("%sHashes:\n", prefix)
 	for algoName, hashBytes := range hashes {
@@ -252,9 +278,16 @@ func pprintHashes(prefix string, hashes tufmetadata.Hashes) {
 }
 
 func pprintTargetFile(prefix string, repo *Repository, target *tufmetadata.TargetFiles) {
+	var targetURLStr string
+	if targetURL, err := getTargetURL(repo, target); err != nil {
+		targetURLStr = fmt.Sprintf("<invalid target url: %v>", err)
+	} else {
+		targetURLStr = targetURL.String()
+	}
+
 	fmt.Printf("%s%s:\n", prefix, target.Path)
 	prefix += "\t"
-	fmt.Printf("%sURL: %s\n", prefix, repo.DataRootURL.JoinPath(target.Path))
+	fmt.Printf("%sURL: %s\n", prefix, targetURLStr)
 	fmt.Printf("%sSize: %d\n", prefix, target.Length)
 	pprintHashes(prefix, target.Hashes)
 	if target.Custom != nil {
@@ -270,7 +303,13 @@ func expandTargetFile(fmtStr string, repo *Repository, target *tufmetadata.Targe
 		WithSource('n', func(_ *[]any) (string, error) { return target.Path, nil }).
 		WithSource('s', func(_ *[]any) (string, error) { return strconv.FormatInt(target.Length, 10), nil }).
 		WithSource('h', func(_ *[]any) (string, error) { return fmt.Sprintf("%x", target.Hashes["sha256"]), nil }).
-		WithSource('u', func(_ *[]any) (string, error) { return repo.DataRootURL.JoinPath(target.Path).String(), nil })
+		WithSource('u', func(_ *[]any) (string, error) {
+			url, err := getTargetURL(repo, target)
+			if err != nil {
+				return "", err
+			}
+			return url.String(), nil
+		})
 
 	expanded, err := expander.ExpandString(fmtStr)
 	if err != nil {

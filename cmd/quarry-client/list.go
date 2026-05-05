@@ -10,7 +10,6 @@ import (
 	"os"
 	"slices"
 
-	"github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v3"
 
 	"go.amutable.dev/quarry/internal/tufext"
@@ -89,13 +88,11 @@ var listCommand = withRefTimeFlag(&cli.Command{
 					return fmt.Errorf("error while scanning repo %s: %w", repoName, err)
 				}
 				if manifest != nil {
-					manifest.Files = append(manifest.Files, &uapi16.File{
-						// TODO: What should we do about separators here?
-						Name:     target.Path,
-						DataURL:  repo.DataRootURL.JoinPath(target.Path).String(),
-						DataSize: uint64(target.Length),
-						SHA256:   digest.SHA256.Encode(target.Hashes["sha256"]),
-					})
+					uapi16File, err := uapi16FromTargetFile(repo, target.TargetFiles)
+					if err != nil {
+						return fmt.Errorf("error while uapi16 formatting target file %s from repo %s: %w", target.Path, repoName, err)
+					}
+					manifest.Files = append(manifest.Files, uapi16File)
 				} else if cmd.Bool("verbose") {
 					pprintTargetFile("", repo, target.TargetFiles)
 				} else if fmtStr := cmd.String("format"); cmd.IsSet("format") {
