@@ -121,8 +121,8 @@ func serveSHA256SUMS(rw http.ResponseWriter, req *http.Request) error {
 		fmt.Fprintf(sumfileBuf, "%s  BEST-BEFORE-%s\n", sha256Empty, expiry.Format(time.DateOnly))
 	}
 
-	rw.Header()["Content-Length"] = []string{strconv.Itoa(sumfileBuf.Len())}
-	rw.Header()["Content-Type"] = []string{"text/plain"}
+	rw.Header().Set("Content-Length", strconv.Itoa(sumfileBuf.Len()))
+	rw.Header().Set("Content-Type", "text/plain")
 
 	_, _ = io.Copy(rw, sumfileBuf)
 	return nil
@@ -169,7 +169,7 @@ func proxyTargetFile(rw http.ResponseWriter, req *http.Request) error {
 		remoteURL := repo.DataRootURL.JoinPath(targetPath)
 		// TODO: Is it really not possible to provide Content-Length and
 		// Content-Digest here...?
-		rw.Header()["X-Quarry-Content-Length"] = []string{strconv.FormatInt(targetInfo.Length, 10)}
+		rw.Header().Set("X-Quarry-Content-Length", strconv.FormatInt(targetInfo.Length, 10))
 		rw.Header()["X-Quarry-Content-Digest"] = hashesToContentDigest(targetInfo.Hashes)
 		http.Redirect(rw, req, remoteURL.String(), http.StatusFound)
 		return nil
