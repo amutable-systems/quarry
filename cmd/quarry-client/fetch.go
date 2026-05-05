@@ -53,9 +53,13 @@ var fetchCommand = withRefTimeFlag(&cli.Command{
 			if strings.HasSuffix(outputPath, "/") {
 				outputPath = filepath.Join(outputPath, target) //nolint:forbidigo // user-controlled host path
 			}
+			dirPath := filepath.Dir(outputPath)
+			if err := os.MkdirAll(dirPath, 0o755); err != nil { //nolint:forbidigo // user-controlled host path
+				return fmt.Errorf("make parent directories for %s: %w", outputPath, err)
+			}
 			// We use an O_TMPFILE so that we do not expose untrusted data to
 			// the filesystem until we have verified its hash.
-			outputFile, err := os.OpenFile(filepath.Dir(outputPath), unix.O_TMPFILE|unix.O_WRONLY, 0o644) //nolint:forbidigo // O_TMPFILE
+			outputFile, err := os.OpenFile(dirPath, unix.O_TMPFILE|unix.O_WRONLY, 0o644) //nolint:forbidigo // O_TMPFILE
 			if err != nil {
 				return fmt.Errorf("create target tmpfile: %w", err)
 			}
