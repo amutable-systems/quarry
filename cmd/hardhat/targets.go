@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -231,6 +232,10 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			Name:  "strip-components",
 			Usage: "strip N parent components from paths when adding them to target.json",
 		},
+		&cli.StringSliceFlag{
+			Name:  "include-from",
+			Usage: "include targets defined in the given targets.json files (later files take precedence, with <files> arguments taking highest precedence)",
+		},
 		&cli.StringFlag{
 			Name:  "data-root-url",
 			Usage: "base url for target files (with --pre-hashed this allows you to generate a target.json entirely from a SHA256SUMS file)",
@@ -355,6 +360,30 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		}
 		if cmd.IsSet("expire-after") {
 			builder.ExpireAfter = cmd.Duration("expire-after")
+		}
+
+		for _, includePath := range cmd.StringSlice("include-from") {
+			data, err := os.ReadFile(includePath) //nolint:forbidigo // user-controlled host path
+			if err != nil {
+				return fmt.Errorf("--include-from=%q file is invalid: %w", includePath, err)
+			}
+			// TODO: Support unsigned targets.json files?
+			var targets *tufext.SignedTargets
+			if err := json.Unmarshal(data, &targets); err != nil {
+				return fmt.Errorf("--include-from=%q file is invalid json: %w", includePath, err)
+			}
+			// Make sure it is a targets.json (though we don't care about
+			// signatures).
+			if err := tufext.CheckMetadataType(tufmetadata.TARGETS, targets); err != nil {
+				return fmt.Errorf("--include-from=%q file is invalid targets.json: %w", includePath, err)
+			}
+			// TODO: Support delegations...
+			if targets.Signed.Delegations != nil {
+				return fmt.Errorf("--include-from=%s file is unsupported: hardhat does not yet support delegations", includePath)
+			}
+			// Copy all of the target file specifications into the builder,
+			// including any possible extension fields!
+			maps.Copy(builder.TargetsType().Targets, targets.Signed.Targets)
 		}
 
 		// TODO: Support adding delegations.
