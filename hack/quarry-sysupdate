@@ -17,6 +17,10 @@ function warn() {
 	echo "[WARN]" "$@" >&2
 }
 
+function NOOP() {
+	echo "[NOOP]" "$@" >&2
+}
+
 # Use a special prefix for all of our "magic" behaviour.
 SPECIAL_PREFIX=".zzz-quarry-special"
 
@@ -106,6 +110,6 @@ for component in "${components[@]}"; do
 	flags=()
 	# <default> is a dummy name that doesn't need a --component flag.
 	[[ "$component" != "<default>" ]] && flags+=("--component=$component")
-	info "Try-reboot with component $component."
-	/usr/lib/systemd/systemd-sysupdate "${flags[@]}" reboot
+	info "Try-reboot with component $component. (NOOP)"
+	NOOP /usr/lib/systemd/systemd-sysupdate "${flags[@]}" reboot
 done
