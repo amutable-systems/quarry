@@ -290,7 +290,7 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		&cli.StringArgs{
 			Name:      "files",
 			UsageText: "<file-or-dir> [<file-or-dir>]...",
-			Min:       1,
+			Min:       0,
 			Max:       -1,
 		},
 	},
