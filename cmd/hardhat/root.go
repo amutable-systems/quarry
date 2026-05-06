@@ -207,7 +207,7 @@ var rootCommand = withKeystoreFlag(&cli.Command{
 			return fmt.Errorf("failed to write targets data: %w", err)
 		}
 		if output != os.Stdout {
-			fmt.Printf("wrote %d bytes to %s", n, cmd.String("output"))
+			fmt.Printf("wrote %d bytes to %s\n", n, cmd.String("output"))
 			// Only output new key information if it won't cause issues with
 			// pipelines / redirects.
 			if len(newRoleKeyIDs) > 0 {

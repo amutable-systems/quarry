@@ -454,7 +454,7 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			return fmt.Errorf("failed to write targets data: %w", err)
 		}
 		if output != os.Stdout {
-			fmt.Printf("wrote %d bytes to %s", n, cmd.String("output"))
+			fmt.Printf("wrote %d bytes to %s\n", n, cmd.String("output"))
 		} else {
 			fmt.Printf("\n")
 		}
