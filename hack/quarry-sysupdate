@@ -29,12 +29,13 @@ SYSUPDATE_PREFIX="$SPECIAL_PREFIX/sysupdate."
 
 # Stash the existing volatile sysupdate.*.d files for cleanup.
 # TODO: Actually implement that?
+SYSUPDATE_VOLATILE_DIR=/etc
 SYSUPDATE_BACKUP_DIR="/var/lib/quarry-sysupdate/sysupdate-backup"
 backup_name="$(date --utc "+%s.%N")"
 backup_dir="$SYSUPDATE_BACKUP_DIR/$backup_name"
 info "Stash away old volatile sysupdate.* definitions to $backup_dir."
 mkdir -p "$backup_dir"
-find /run -maxdepth 1 -name "sysupdate.*" -print0 | \
+find "$SYSUPDATE_VOLATILE_DIR" -maxdepth 1 -name "sysupdate.*" -print0 | \
 	xargs -0r mv -vt "$backup_dir" --
 ln -sf "$backup_name" "$SYSUPDATE_BACKUP_DIR/last"
 
@@ -57,7 +58,7 @@ for target in "${special_files[@]}"; do
 	postinst_command=
 	case "$target_path" in
 		"$SYSUPDATE_PREFIX"*)
-			local_path="/run/${target_path#"$SPECIAL_PREFIX"/}"
+			local_path="$SYSUPDATE_VOLATILE_DIR/${target_path#"$SPECIAL_PREFIX"/}"
 			mkdir -p /etc/extensions
 			postinst_command=postinst_sysupdate
 			;;
