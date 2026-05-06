@@ -34,13 +34,23 @@ import (
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
-func stripComponents(path string, toStrip int) string {
-	path = filepath.Clean(path) //nolint:forbidigo // lexical paths
-	components := strings.SplitN(path, "/", toStrip+1)
-	if len(components) <= toStrip {
-		return "."
+// stripComponents removes the given number of leading path components, and is
+// equivalent to GNU tar's --strip-components flag. Absolute paths have the
+// leading slash stripped "for free" if the first component is also to be
+// stripped, and multiple "/"s are treated as a single separator.
+//
+// Unfortunately, GNU tar and bsdtar (libarchive) have different semantics, but
+// more users are probably familiar with GNU tar.
+func stripComponents(path string, n int) string {
+	for ; n > 0; n-- {
+		path = strings.TrimLeft(path, "/")
+		sepIdx := strings.IndexByte(path, '/')
+		if sepIdx < 0 {
+			return "." // ran out of components
+		}
+		path = strings.TrimLeft(path[sepIdx+1:], "/")
 	}
-	return components[toStrip]
+	return path
 }
 
 // TODO: Support specifying a set of hashes or at least a different hash algo.
