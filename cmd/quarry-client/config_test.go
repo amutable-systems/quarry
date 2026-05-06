@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const uuidPat = `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
+const uuidPat = `[0-9a-f]{32}`
 
 var uuidRe = regexp.MustCompile(`^` + uuidPat + `$`)
 
@@ -350,7 +350,7 @@ func TestParseConfig_Expand_RepoName(t *testing.T) {
 	}{
 		{"LiteralPercent", "100%%-secure", `^100%-secure$`},
 		{"MachineID", "machine/%m", `^machine/` + uuidPat + `$`},
-		{"MachineIDEscaped", "%em", `^[0-9a-f]{8}\\x2d[0-9a-f]{4}\\x2d[0-9a-f]{4}\\x2d[0-9a-f]{4}\\x2d[0-9a-f]{12}$`},
+		{"MachineIDEscaped", "%em", `^` + uuidPat + `$`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conf, err := parseConfig(strings.NewReader(`
@@ -558,7 +558,7 @@ func TestParseConfig_Expand_CacheDir(t *testing.T) {
 		{
 			name:      "MachineIDEscaped",
 			cacheDir:  `/var/cache/quarry/%em`,
-			wantDirRe: `^/var/cache/quarry/[0-9a-f]{8}\\x2d[0-9a-f]{4}\\x2d[0-9a-f]{4}\\x2d[0-9a-f]{4}\\x2d[0-9a-f]{12}$`,
+			wantDirRe: `^/var/cache/quarry/` + uuidPat + `$`,
 		},
 		{
 			name:     "PercentEncoded",
