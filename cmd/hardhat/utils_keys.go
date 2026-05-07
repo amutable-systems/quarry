@@ -17,12 +17,10 @@ import (
 // parsePublicKey takes public key specifications of the form <type>:<key> *or*
 // [keyid:]<keyid> and returns the corresponding public key.
 func parsePublicKey(ctx context.Context, store *keystore.Store, keySpec string) (*keystore.PublicKey, error) {
-	parts := strings.SplitN(keySpec, ":", 2)
-	// <keyid>
-	if len(parts) == 1 {
-		parts = append([]string{"keyid"}, parts...)
+	keyType, key, hadType := strings.Cut(keySpec, ":")
+	if !hadType {
+		keyType, key = "keyid", keyType
 	}
-	keyType, key := parts[0], parts[1]
 
 	switch keyType {
 	case "keyid":

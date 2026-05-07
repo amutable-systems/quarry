@@ -283,11 +283,10 @@ var repoctlSnapshotCommand = &cli.Command{
 		tx.RefTime = cmd.Timestamp("ref-time")
 
 		for _, targets := range cmd.StringArgs("targets") {
-			parts := strings.SplitN(targets, "=", 2)
-			if len(parts) != 2 {
+			roleName, path, ok := strings.Cut(targets, "=")
+			if !ok {
 				return fmt.Errorf("%q is an invalid spec: must in the form 'role=path'", targets)
 			}
-			roleName, path := parts[0], parts[1]
 			data, err := os.ReadFile(path) //nolint:forbidigo // user-controlled host path
 			if err != nil {
 				return fmt.Errorf("cannot read role %s data from path %s: %w", roleName, path, err)
