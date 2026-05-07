@@ -4,7 +4,10 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 
@@ -137,16 +140,33 @@ var keyctlListCommand = &cli.Command{
 var keyctlInfoCommand = &cli.Command{
 	Name:  "info",
 	Usage: "output information about the given key",
-	Flags: []cli.Flag{
-		&cli.BoolFlag{
-			Name:  "json",
-			Usage: "output information about the key in a JSON format",
-			Value: false,
-		},
-	},
+	Flags: []cli.Flag{},
 	Arguments: []cli.Argument{
 		&cli.StringArg{
 			Name: "keyid",
+		},
+	},
+	MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{
+		{
+			Flags: [][]cli.Flag{
+				{
+					&cli.StringFlag{
+						Name:  "pkix",
+						Usage: "output the public key in a PKIX ASN.1 DER form (--pkix=pem and --pkix=base64 are valid values)",
+						Validator: func(s string) error {
+							switch s {
+							case "pem", "base64":
+								return nil
+							}
+							return fmt.Errorf("%s is not a supported pkix encoding", s)
+						},
+					},
+					&cli.BoolFlag{
+						Name:  "json",
+						Usage: "output information about the key in a JSON format",
+					},
+				},
+			},
 		},
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -157,9 +177,42 @@ var keyctlInfoCommand = &cli.Command{
 		if err != nil {
 			return fmt.Errorf("failed to get key %s: %w", keyID, err)
 		}
-		if cmd.Bool("json") {
+		switch {
+		case cmd.Bool("json"):
 			return json.NewEncoder(os.Stdout).Encode(key)
+
+		case cmd.IsSet("pkix"):
+			pubKey, err := key.Public.ToPublicKey()
+			if err != nil {
+				return fmt.Errorf("parse public portion of key %s: %w", keyID, err)
+			}
+
+			der, err := x509.MarshalPKIXPublicKey(pubKey)
+			if err != nil {
+				return fmt.Errorf("marshal public key %s to pkix: %w", keyID, err)
+			}
+			switch cmd.String("pkix") {
+			case "pem":
+				if err := pem.Encode(os.Stdout, &pem.Block{
+					Type:  "PUBLIC KEY",
+					Bytes: der,
+				}); err != nil {
+					return err
+				}
+			case "base64":
+				b64 := base64.NewEncoder(base64.StdEncoding, os.Stdout)
+				if _, err := b64.Write(der); err != nil {
+					return err
+				}
+				if err := b64.Close(); err != nil {
+					return err
+				}
+				fmt.Println()
+			}
+
+		default:
+			return pprintGenericKey("", key)
 		}
-		return pprintGenericKey("", key)
+		return nil
 	},
 }

@@ -5,6 +5,8 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -38,6 +40,18 @@ func parsePublicKey(ctx context.Context, store *keystore.Store, keySpec string) 
 			return nil, fmt.Errorf("parse ed25519 key bytes: %w", err)
 		}
 		pubKey := ed25519.PublicKey(pubKeyBytes)
+		return tufmetadata.KeyFromPublicKey(pubKey)
+
+	case "pkix":
+		// Take it as a base64-encoded PKIX blob (*not* PEM encoded!).
+		der, err := base64.StdEncoding.DecodeString(key)
+		if err != nil {
+			return nil, fmt.Errorf("decode base64 pkix blob: %w", err)
+		}
+		pubKey, err := x509.ParsePKIXPublicKey(der)
+		if err != nil {
+			return nil, fmt.Errorf("parse pkix key: %w", err)
+		}
 		return tufmetadata.KeyFromPublicKey(pubKey)
 
 	// TODO: RSA.

@@ -42,14 +42,11 @@ hardhat --help &>/dev/null || bail "hardhat is not available (set HARDHAT to exe
 
 # keyid_to_publickey <keystore> <keyid>
 function keyid_to_publickey() {
-	# TODO: This only works for ed25519 keys -- RSA keys are PEM-encoded in TUF
-	# and so can't be easily passed as command-line arguments.
 	keystore="$1"
 	keyid="$2"
 
-	# The format for public keys *in hardhat* is <scheme>:<public-key>.
-	hardhat keyctl info --json --keystore="$keystore" "$keyid" | \
-		jq -rM '.publickey | "\(.scheme):\(.keyval.public)"'
+	pkix="$(hardhat keyctl info --pkix=base64 --keystore="$keystore" "$keyid")"
+	echo "pkix:$pkix"
 }
 
 function usage() {
