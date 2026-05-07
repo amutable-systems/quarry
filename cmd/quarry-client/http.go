@@ -114,7 +114,12 @@ func serveSHA256SUMS(rw http.ResponseWriter, req *http.Request) error {
 		// expiry in any of the enabled repositories.
 		timestampExpiry := meta.Timestamp.Signed.Expires
 		if expiry.IsZero() || expiry.After(timestampExpiry) {
-			expiry = timestampExpiry
+			// The BEST-BEFORE-* format only has day-resolution, so round to
+			// the next day so that we never indicate that a repository is
+			// invalid early. This tag in SHA256SUMS is also not really
+			// security critical, TUF is actually protecting against the freeze
+			// attack here.
+			expiry = timestampExpiry.Add(24 * time.Hour)
 		}
 	}
 	if !expiry.IsZero() {
