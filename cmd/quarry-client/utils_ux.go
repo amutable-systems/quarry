@@ -8,19 +8,16 @@ import (
 	"os"
 	"time"
 
-	"cyphar.com/go-pathrs"
 	"github.com/urfave/cli/v3"
 
 	"go.amutable.dev/quarry/cmd/internal/cliext"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
+	"go.amutable.dev/quarry/internal/tufclient/config"
 )
 
 type ctxKey string
 
-const (
-	configCtxKey   ctxKey = "--config"
-	cacheDirCtxKey ctxKey = "--cache-dir"
-)
+const configCtxKey ctxKey = "--config"
 
 func withConfigFlag(cmd *cli.Command) *cli.Command {
 	cmd.Flags = append(cmd.Flags,
@@ -28,7 +25,7 @@ func withConfigFlag(cmd *cli.Command) *cli.Command {
 			Name:      "config",
 			Usage:     "path to the quarry-client configuration file",
 			TakesFile: true,
-			Value:     findDefaultConfigPath(),
+			Value:     config.DefaultConfigPath(),
 			Sources:   cli.EnvVars("QUARRY_CLIENT_CONFIG"),
 		},
 		&cli.StringFlag{
@@ -40,52 +37,33 @@ func withConfigFlag(cmd *cli.Command) *cli.Command {
 		})
 
 	cmd.Before = cliext.WrapBeforeFuncs(cmd.Before, func(ctx context.Context, cmd *cli.Command) (_ context.Context, Err error) {
-		configPath := cmd.String("config")
+		cfgPath := cmd.String("config")
 
-		configFile, err := os.Open(configPath) //nolint:forbidigo // user-controlled host path
+		cfgFile, err := os.Open(cfgPath) //nolint:forbidigo // user-controlled host path
 		if err != nil {
 			return nil, fmt.Errorf("open config: %w", err)
 		}
-		defer funchelpers.VerifyClose(&Err, configFile)
+		defer funchelpers.VerifyClose(&Err, cfgFile)
 
-		config, err := parseConfig(configFile)
+		cfg, err := config.Parse(cfgFile)
 		if err != nil {
-			return nil, fmt.Errorf("invalid config %s: %w", configPath, err)
+			return nil, fmt.Errorf("invalid config %s: %w", cfgPath, err)
 		}
-		ctx = context.WithValue(ctx, configCtxKey, config)
-
-		if config.CacheDir == "" || cmd.IsSet("cache-dir") {
-			config.CacheDir = cmd.String("cache-dir")
+		// Replace the in-memory config option with --cache-dir if it was unset
+		// in the config or the user explicitly requested it.
+		if cfg.CacheDir == "" || cmd.IsSet("cache-dir") {
+			cfg.CacheDir = cmd.String("cache-dir")
 		}
-		if err := os.MkdirAll(config.CacheDir, 0o755); err != nil { //nolint:forbidigo // user-controlled host path
-			return nil, err
-		}
-		cacheDir, err := pathrs.OpenRoot(config.CacheDir)
-		if err != nil {
-			return nil, err
-		}
-		ctx = context.WithValue(ctx, cacheDirCtxKey, cacheDir)
+		ctx = context.WithValue(ctx, configCtxKey, cfg)
 
 		return ctx, nil
-	})
-
-	cmd.After = cliext.WrapAfterFuncs(cmd.After, func(ctx context.Context, _ *cli.Command) error {
-		cacheDir := ctxCacheDir(ctx)
-		if cacheDir != nil {
-			return cacheDir.Close()
-		}
-		return nil
 	})
 
 	return cmd
 }
 
-func ctxCacheDir(ctx context.Context) *pathrs.Root {
-	return cliext.CtxValue[*pathrs.Root](ctx, cacheDirCtxKey)
-}
-
-func ctxConfig(ctx context.Context) *Config {
-	return cliext.CtxValue[*Config](ctx, configCtxKey)
+func ctxConfig(ctx context.Context) *config.Config {
+	return cliext.CtxValue[*config.Config](ctx, configCtxKey)
 }
 
 const refTimeCtxKey ctxKey = "--ref-time"

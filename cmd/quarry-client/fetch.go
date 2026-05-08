@@ -4,12 +4,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"log/slog"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,10 +14,8 @@ import (
 	"github.com/urfave/cli/v3"
 	"golang.org/x/sys/unix"
 
-	"go.amutable.dev/quarry/internal/httputils"
 	"go.amutable.dev/quarry/internal/third_party/fdutils"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
-	"go.amutable.dev/quarry/internal/tufext"
 )
 
 var fetchCommand = withRefTimeFlag(&cli.Command{
@@ -46,8 +40,6 @@ var fetchCommand = withRefTimeFlag(&cli.Command{
 		},
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) (Err error) {
-		config := ctxConfig(ctx)
-
 		target := cmd.StringArg("target")
 		if target == "" {
 			return fmt.Errorf("target is a required argument")
@@ -78,57 +70,25 @@ var fetchCommand = withRefTimeFlag(&cli.Command{
 		}
 
 		repoName := cmd.String("repo")
-		updaters, err := getUpdaters(ctx, repoName)
+		client, err := getClient(ctx, repoName)
 		if err != nil {
-			return fmt.Errorf("get tuf-client updater for repo %s: %w", repoName, err)
+			return fmt.Errorf("get tuf client for repo %s: %w", repoName, err)
 		}
-		if len(updaters) != 1 {
-			return fmt.Errorf("incorrect number of updaters returned? %#v", updaters)
-		}
-		updater := updaters[repoName]
-		repo := config.Repos[repoName]
+		defer funchelpers.VerifyClose(&Err, client)
 
-		info, err := updater.GetTargetInfo(target)
+		rdr, info, err := client.FetchTargetFile(ctx, target)
 		if err != nil {
-			return fmt.Errorf("get target info for %s: %w", target, err)
+			return fmt.Errorf("fetch target %s: %w", target, err)
 		}
-		targetFile := tufext.TargetFilesExt(info)
+		defer funchelpers.VerifyClose(&Err, rdr)
 
-		// Rather than using the go-tuf DownloadTarget (which requires the data
-		// be stored in-memory) we fetch it directly.
+		bar := progressbar.DefaultBytes(info.Length, info.Path)
 
-		var (
-			targetRdr io.ReadCloser
-			targetURL *url.URL
-		)
-		for url, err := range targetFile.FetchURLs(&repo.DataRootURL.URL) {
-			if err != nil {
-				return fmt.Errorf("get url for target %s: %w", target, err)
-			}
-			rdr, _, err := httputils.VerifiedHTTPGet(ctx, url, targetFile.Length, targetFile.Hashes)
-			if errors.Is(err, fs.ErrNotExist) {
-				slog.Info("Target file not available at URL, trying next candidate...",
-					"repo", repo.Name, "target", target, "url", url.String())
-				continue
-			}
-			if err != nil {
-				return fmt.Errorf("fetch target candidate url %s: %w", url, err)
-			}
-			targetRdr, targetURL = rdr, url
-			break
+		if _, err := io.Copy(io.MultiWriter(output, bar), rdr); err != nil {
+			return fmt.Errorf("stream target %s to output: %w", target, err)
 		}
-		if targetRdr == nil {
-			return fmt.Errorf("%w: target %s not present at any fetch url", fs.ErrNotExist, target)
-		}
-		defer funchelpers.VerifyClose(&Err, targetRdr)
-
-		bar := progressbar.DefaultBytes(targetFile.Length, targetFile.Path)
-
-		if _, err := io.Copy(io.MultiWriter(output, bar), targetRdr); err != nil {
-			return fmt.Errorf("stream target %s (%s) to output: %w", target, targetURL, err)
-		}
-		if err := targetRdr.Close(); err != nil {
-			return fmt.Errorf("close check %s (%s) failed: %w", target, targetURL, err)
+		if err := rdr.Close(); err != nil {
+			return fmt.Errorf("close check %s failed: %w", target, err)
 		}
 
 		if outputPath != "-" {
@@ -140,7 +100,7 @@ var fetchCommand = withRefTimeFlag(&cli.Command{
 			}
 		}
 
-		fmt.Fprintf(os.Stderr, "Wrote %d bytes to %q.\n", targetFile.Length, outputPath)
+		fmt.Fprintf(os.Stderr, "Wrote %d bytes to %q.\n", info.Length, outputPath)
 		return nil
 	},
 })

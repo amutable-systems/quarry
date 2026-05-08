@@ -1,6 +1,8 @@
 // Copyright (C) 2026 Amutable GmbH
 
-package main
+// Package config provides helpers to parse the TOML configuration format used
+// by Quarry clients.
+package config
 
 import (
 	"context"
@@ -24,7 +26,7 @@ import (
 
 // TODO: Make these more configurable.
 const (
-	maxRootBytes = 512_000 // 512k
+	MaxRootBytes = 512_000 // 512k
 )
 
 var defaultConfigCandidates = [...]string{
@@ -34,7 +36,8 @@ var defaultConfigCandidates = [...]string{
 	"/usr/lib/quarry-client/config.toml",
 }
 
-func findDefaultConfigPath() string {
+// DefaultConfigPath returns the recommended default config path.
+func DefaultConfigPath() string {
 	for _, path := range defaultConfigCandidates {
 		if err := unix.Access(path, unix.F_OK); err == nil {
 			return path
@@ -215,7 +218,7 @@ func (tofuRootTrust) FetchRoot(ctx context.Context, repo *Repository) (_ []byte,
 		}
 		return nil, err
 	}
-	rdr := http.MaxBytesReader(nil, res.Body, maxRootBytes) // use same max as client
+	rdr := http.MaxBytesReader(nil, res.Body, MaxRootBytes) // use same max as client
 	defer funchelpers.VerifyClose(&Err, rdr)
 
 	return io.ReadAll(rdr)
@@ -264,7 +267,7 @@ type tomlURL struct {
 //
 // Also, the Go stdlib does not provide this method because of concerns around
 // compatibility, so we need to work around this. <https://go.dev/issue/25705>
-func (u *tomlURL) UnmarshalText(data []byte) error { //nolint:unparam // encoding.TextUnmarshaler interface
+func (u *tomlURL) UnmarshalText(data []byte) error {
 	u.rawString = string(data)
 	return nil
 }
@@ -338,16 +341,19 @@ type Config struct {
 	Repos map[string]*Repository `toml:"repo"`
 }
 
-var errUnsupportedVersion = errors.New("unsupported config_version")
+// ErrUnsupportedVersion is returned by [Parse] if the given configuration file
+// is newer than the one supported by this version of quarry.
+var ErrUnsupportedVersion = errors.New("unsupported config_version")
 
-func parseConfig(rdr io.Reader) (*Config, error) {
+// Parse parses the TOML form of [Config].
+func Parse(rdr io.Reader) (*Config, error) {
 	var cfg Config
 	meta, err := toml.NewDecoder(rdr).Decode(&cfg)
 	if err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 	if v := cfg.Version; v != ConfigVersion {
-		return nil, fmt.Errorf("%w %d: only version %d is supported", errUnsupportedVersion, v, ConfigVersion)
+		return nil, fmt.Errorf("%w %d: only version %d is supported", ErrUnsupportedVersion, v, ConfigVersion)
 	}
 	if unknown := meta.Undecoded(); len(unknown) > 0 {
 		return nil, fmt.Errorf("invalid config: unknown toml keys: %v", unknown)

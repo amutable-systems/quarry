@@ -6,11 +6,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
-	"slices"
 
 	"github.com/urfave/cli/v3"
+
+	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 )
 
 var refreshCommand = withRefTimeFlag(&cli.Command{
@@ -24,22 +24,17 @@ var refreshCommand = withRefTimeFlag(&cli.Command{
 			Max:       -1,
 		},
 	},
-	Action: func(ctx context.Context, cmd *cli.Command) error {
+	Action: func(ctx context.Context, cmd *cli.Command) (Err error) {
 		repoNames := cmd.StringArgs("repo-name")
 
-		updaters, err := getUpdaters(ctx, repoNames...)
+		client, err := getClient(ctx, repoNames...)
 		if err != nil {
-			return fmt.Errorf("failed to get tuf-client updaters: %w", err)
+			return fmt.Errorf("get tuf-client: %w", err)
 		}
-		if len(repoNames) == 0 {
-			// Make sure we iterate over the repos in order.
-			repoNames = slices.Sorted(maps.Keys(updaters))
-		}
+		defer funchelpers.VerifyClose(&Err, client)
 
 		var errs []error
-		for _, repoName := range repoNames {
-			updater := updaters[repoName]
-
+		for repoName, updater := range client.IterRepos(ctx) {
 			fmt.Printf("Refreshing %s ...", repoName)
 			_ = os.Stdout.Sync()
 
@@ -50,9 +45,6 @@ var refreshCommand = withRefTimeFlag(&cli.Command{
 				fmt.Printf(" OK!\n")
 			}
 		}
-		if err := errors.Join(errs...); err != nil {
-			return err
-		}
-		return nil
+		return errors.Join(errs...)
 	},
 })

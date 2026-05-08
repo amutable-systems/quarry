@@ -6,13 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
-	"slices"
 
 	"github.com/urfave/cli/v3"
 
-	"go.amutable.dev/quarry/internal/tufext"
+	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/uapi16"
 )
 
@@ -54,55 +52,38 @@ var listCommand = withRefTimeFlag(&cli.Command{
 			},
 		},
 	},
-	Action: func(ctx context.Context, cmd *cli.Command) error {
-		config := ctxConfig(ctx)
-		cacheDir := ctxCacheDir(ctx)
-		repoNames := cmd.StringArgs("repo-name")
-
-		updaters, err := getUpdaters(ctx, repoNames...)
+	Action: func(ctx context.Context, cmd *cli.Command) (Err error) {
+		client, err := getClient(ctx, cmd.StringArgs("repo-name")...)
 		if err != nil {
-			return fmt.Errorf("get tuf-client updaters: %w", err)
+			return fmt.Errorf("get tuf-client: %w", err)
 		}
-		if len(repoNames) == 0 {
-			// Make sure we iterate over the repos in order.
-			repoNames = slices.Sorted(maps.Keys(updaters))
-		}
+		defer funchelpers.VerifyClose(&Err, client)
+		// TODO: Do a client.Refresh here?
+
 		var manifest *uapi16.Manifest
 		if cmd.Bool("uapi-16") {
 			manifest = uapi16.New()
 		}
-		for _, repoName := range repoNames {
-			updater := updaters[repoName]
-			repo := config.Repos[repoName]
 
-			// Make sure to get a local copy of the core metadata.
-			if err := updater.Refresh(); err != nil {
-				return fmt.Errorf("update repo %s: %w", repoName, err)
+		for target, err := range client.IterTargetFiles(ctx) {
+			if err != nil {
+				return err
 			}
-
-			meta := updater.GetTrustedMetadataSet()
-			fetchFn := trustedMetadataTargetsFetcher(cacheDir, repo, &meta)
-
-			for target, err := range tufext.IterTargetFiles(ctx, fetchFn) {
-				if err != nil {
-					return fmt.Errorf("error while scanning repo %s: %w", repoName, err)
-				}
-				if manifest != nil {
-					for uapi16File, err := range uapi16FromTargetFile(repo, target.TargetFiles) {
-						if err != nil {
-							return fmt.Errorf("error while uapi16 formatting target file %s from repo %s: %w", target.Path, repoName, err)
-						}
-						manifest.Files = append(manifest.Files, uapi16File)
+			if manifest != nil {
+				for uapi16File, err := range uapi16FromTargetFile(target.Repo, target.TargetFiles) {
+					if err != nil {
+						return fmt.Errorf("error while uapi16 formatting target file %s from repo %s: %w", target.Path, target.Repo.Name, err)
 					}
-				} else if cmd.Bool("verbose") {
-					pprintTargetFile("", repo, target.TargetFiles)
-				} else if fmtStr := cmd.String("format"); cmd.IsSet("format") {
-					if err := expandTargetFile(fmtStr, repo, target.TargetFiles); err != nil {
-						return fmt.Errorf("error while %%-formatting target file %s from repo %s: %w", target.Path, repoName, err)
-					}
-				} else {
-					fmt.Println(target.Path)
+					manifest.Files = append(manifest.Files, uapi16File)
 				}
+			} else if cmd.Bool("verbose") {
+				pprintTargetFile("", target.Repo, target.TargetFiles)
+			} else if fmtStr := cmd.String("format"); cmd.IsSet("format") {
+				if err := expandTargetFile(fmtStr, target.Repo, target.TargetFiles); err != nil {
+					return fmt.Errorf("error while %%-formatting target file %s from repo %s: %w", target.Path, target.Repo.Name, err)
+				}
+			} else {
+				fmt.Println(target.Path)
 			}
 		}
 		if manifest != nil {

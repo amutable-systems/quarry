@@ -10,10 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,9 +25,9 @@ import (
 	"github.com/coreos/go-systemd/v22/daemon"
 	"github.com/gorilla/handlers"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
-	"github.com/theupdateframework/go-tuf/v2/metadata/trustedmetadata"
 	"github.com/urfave/cli/v3"
 
+	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
@@ -56,63 +56,41 @@ func validSystemdFilename(path string) bool {
 		!strings.Contains(path, "/") && len(path) <= _PATH_MAX
 }
 
-func serveSHA256SUMS(rw http.ResponseWriter, req *http.Request) error {
+func serveSHA256SUMS(rw http.ResponseWriter, req *http.Request) (Err error) {
 	ctx := req.Context()
-	config := ctxConfig(ctx)
-	cacheDir := ctxCacheDir(ctx)
 
-	// FIXME: These need to be fetched every time because go-tuf has no
+	// FIXME: This needs to be re-created every time because go-tuf has no
 	// mechanism to refresh an updater that has already been used to fetch
 	// information.
-	updaters, err := getUpdaters(ctx)
+	// TODO: Add support for a Refresh in Client that doesn't break like that.
+	client, err := getClient(ctx)
 	if err != nil {
 		return fmt.Errorf("get tuf-client updaters: %w", err)
 	}
+	defer funchelpers.VerifyClose(&Err, client)
 
 	// Refresh all of the updaters first.
 	var (
-		metas = make(map[string]*trustedmetadata.TrustedMetadata, len(updaters))
-		errs  []error
+		errs   []error
+		expiry time.Time
 	)
-	for name, updater := range updaters {
-		if err := updater.Refresh(); err != nil {
-			errs = append(errs, fmt.Errorf("refresh repo %s: %w", name, err))
-		}
-		meta := updater.GetTrustedMetadataSet()
-		metas[name] = &meta
-	}
-	if err := errors.Join(errs...); err != nil {
-		return fmt.Errorf("refresh repos: %w", err)
-	}
-
-	// TODO: We do not write to the ResponseWriter directly because we might
-	// encounter errors during execution -- is that okay?
-	sumfileBuf := bytes.NewBuffer(make([]byte, 0, 1<<16))
-
-	var expiry time.Time
-	for repoName, meta := range metas {
-		repo := config.Repos[repoName]
-		fetchFn := trustedMetadataTargetsFetcher(cacheDir, repo, meta)
-
-		for target, err := range tufext.IterTargetFiles(ctx, fetchFn) {
-			if err != nil {
-				return fmt.Errorf("error while scanning repo %s: %w", repoName, err)
-			}
-			// sysupdate does not permit certain pathnames in repos, while TUF
-			// basically allows everything. Would could path-escape the paths
-			// but then we would need to unescape them on get, so just strip
-			// them for now. Currently this is only planned to be used for
-			// sysupdate.d/ injection (which is handled outside of sysupdate --
-			// specifically, by hack/quarry-sysupdate -- anyway).
-			if !validSystemdFilename(target.Path) {
-				// TODO: Should we encode the path or emit some kind of log...?
-				continue
-			}
-			fmt.Fprintf(sumfileBuf, "%s  %s\n", target.Hashes["sha256"], target.Path)
-		}
-
+	for repoName, updater := range client.IterRepos(ctx) {
 		// Construct BEST-BEFORE-YYYY-MM-DD based on the earliest timestamp
 		// expiry in any of the enabled repositories.
+		meta := updater.GetTrustedMetadataSet()
+		if meta.Timestamp == nil {
+			// FIXME: The local client TrustedMetadata state does not get
+			// filled until we do a refresh but go-tuf's client does not
+			// allow Refresh on the same updater more than once(?!). So we
+			// do a refresh here opportunistically.
+			// TODO: Add a (*Client).Refresh helper to make this much less
+			// fragile.
+			if err := updater.Refresh(); err != nil {
+				err := fmt.Errorf("refresh repo %s: %w", repoName, err)
+				errs = append(errs, err)
+			}
+			meta = updater.GetTrustedMetadataSet()
+		}
 		timestampExpiry := meta.Timestamp.Signed.Expires
 		if expiry.IsZero() || expiry.After(timestampExpiry) {
 			// The BEST-BEFORE-* format only has day-resolution, so round to
@@ -123,8 +101,35 @@ func serveSHA256SUMS(rw http.ResponseWriter, req *http.Request) error {
 			expiry = timestampExpiry.Add(24 * time.Hour)
 		}
 	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("refresh repos: %w", err)
+	}
+
+	// TODO: We do not write to the ResponseWriter directly because we might
+	// encounter errors during execution -- is that okay?
+	sumfileBuf := bytes.NewBuffer(make([]byte, 0, 1<<16))
+
 	if !expiry.IsZero() {
 		fmt.Fprintf(sumfileBuf, "%s  BEST-BEFORE-%s\n", sha256Empty, expiry.Format(time.DateOnly))
+	}
+
+	for target, err := range client.IterTargetFiles(ctx) {
+		if err != nil {
+			return err
+		}
+		// sysupdate does not permit certain pathnames in repos, while TUF
+		// basically allows everything. Would could path-escape the paths
+		// but then we would need to unescape them on get, so just strip
+		// them for now. Currently this is only planned to be used for
+		// sysupdate.d/ injection (which is handled outside of sysupdate --
+		// specifically, by hack/quarry-sysupdate -- anyway).
+		if !validSystemdFilename(target.Path) {
+			// TODO: Should we encode the path?
+			slog.Info("Stripped sysupdate-incompatible pathname from generated SHA256SUMS",
+				"target", target.Path)
+			continue
+		}
+		fmt.Fprintf(sumfileBuf, "%s  %s\n", target.Hashes["sha256"], target.Path)
 	}
 
 	rw.Header().Set("Content-Length", strconv.Itoa(sumfileBuf.Len()))
@@ -142,58 +147,50 @@ func hashesToContentDigest(hashes tufmetadata.Hashes) []string {
 	return digests
 }
 
-func proxyTargetFile(rw http.ResponseWriter, req *http.Request) error {
+func proxyTargetFile(rw http.ResponseWriter, req *http.Request) (Err error) {
 	ctx := req.Context()
-	config := ctxConfig(ctx)
 
-	// FIXME: These need to be fetched every time because go-tuf has no
+	// FIXME: This needs to be re-created every time because go-tuf has no
 	// mechanism to refresh an updater that has already been used to fetch
 	// information.
-	updaters, err := getUpdaters(ctx)
+	// TODO: Add support for a Refresh in Client that doesn't break like that.
+	client, err := getClient(ctx)
 	if err != nil {
 		return fmt.Errorf("get tuf-client updaters: %w", err)
 	}
+	defer funchelpers.VerifyClose(&Err, client)
 
 	// TODO: The updaters really should be sorted here so we can pick the first
 	// one with a matching file.
 
 	targetPath := filepath.Join(".", req.PathValue("target")) //nolint:forbidigo // lexical path conversion from absolute to relative
 
-	for repoName, updater := range updaters {
-		repo := config.Repos[repoName]
+	info, err := client.GetTargetInfo(ctx, targetPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		// Could not find the target file.
+		http.NotFound(rw, req)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("fetch target %s info: %w", targetPath, err)
+	}
+	infoExt := tufext.TargetFilesExt(info.TargetFiles)
 
-		// We can safely assume that the updater has already been updated
-		// (sysupdate will only request a file after checking SHA256SUMS).
-		targetInfo, err := updater.GetTargetInfo(targetPath)
+	// Redirect to the first target URL.
+	// TODO(uapi16): Once we get UAPI.16 support into systemd, we would
+	// generate an entry for every URL candidate.
+	for url, err := range infoExt.FetchURLs(&info.Repo.DataRootURL.URL) {
 		if err != nil {
-			// FIXME: Grrr, why don't they use wrapped errors for this?!
-			if err.Error() == fmt.Sprintf("target %s not found", targetPath) {
-				continue
-			}
-			return err
-		}
-		targetInfoExt := tufext.TargetFilesExt(targetInfo)
-		// Get the first target URL.
-		// TODO(uapi16): Once we get UAPI.16 support into systemd, we would
-		// generate an entry for every URL candidate.
-		var targetURL *url.URL
-		for url, err := range targetInfoExt.FetchURLs(&repo.DataRootURL.URL) {
-			if err != nil {
-				return fmt.Errorf("bad target data in repo %s for target %s: cannot compute target url: %w", repoName, targetPath, err)
-			}
-			targetURL = url
-			break
+			return fmt.Errorf("bad target data in repo %s for target %s: cannot compute target url: %w", info.Repo.Name, targetPath, err)
 		}
 		// TODO: Is it really not possible to provide Content-Length and
 		// Content-Digest here...?
-		rw.Header().Set("X-Quarry-Content-Length", strconv.FormatInt(targetInfo.Length, 10))
-		rw.Header()["X-Quarry-Content-Digest"] = hashesToContentDigest(targetInfo.Hashes)
-		http.Redirect(rw, req, targetURL.String(), http.StatusFound)
+		rw.Header().Set("X-Quarry-Content-Length", strconv.FormatInt(info.Length, 10))
+		rw.Header()["X-Quarry-Content-Digest"] = hashesToContentDigest(info.Hashes)
+		http.Redirect(rw, req, url.String(), http.StatusFound)
 		return nil
 	}
-	// Could not find the target file.
-	http.NotFound(rw, req)
-	return nil
+	return errors.New("no fetch urls defined for target")
 }
 
 var httpCommand = &cli.Command{

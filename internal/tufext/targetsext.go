@@ -60,8 +60,13 @@ func (t targetFilesExt) OverrideURL() (*url.URL, error) {
 // FetchURL returns the set of URLs that can be used to fetch this resource. If
 // more than one URL is given, the target file being unavailable at one URL
 // does not mean it is not available at a later URL.
-func (t targetFilesExt) FetchURLs(baseURL *url.URL) iter.Seq2[*url.URL, error] {
+func (t targetFilesExt) FetchURLs(baseURLs ...*url.URL) iter.Seq2[*url.URL, error] {
 	return generics.ErrorIter(func(yield func(*url.URL) bool) error {
+		if len(baseURLs) < 1 {
+			// Programmer error.
+			return fmt.Errorf("target %s FetchURLs called with no baseURLs", t.Path)
+		}
+
 		// Prefer override URLs over alternatives.
 		if overrideURL, err := t.OverrideURL(); err != nil {
 			return fmt.Errorf("invalid override url: %w", err)
@@ -70,8 +75,12 @@ func (t targetFilesExt) FetchURLs(baseURL *url.URL) iter.Seq2[*url.URL, error] {
 				return nil
 			}
 		}
-		// Finally, yield the default URL.
-		yield(baseURL.JoinPath(t.Path))
+		// Finally, yield the default URLs.
+		for _, url := range baseURLs {
+			if !yield(url.JoinPath(t.Path)) {
+				return nil
+			}
+		}
 		return nil
 	})
 }

@@ -151,6 +151,9 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 			}
 			if _, ok := seen[thisRole.name]; ok {
 				// As per TUF specification s5.6.7.1.
+				// TODO: While the spec implies this is what we should do, in
+				// practice clients do not descend into roles that do not match
+				// so really we would need to collate .
 				continue roles
 			}
 			role, err := fetchFn(ctx, thisRole.name, thisRole.delegator)
