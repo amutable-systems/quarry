@@ -4,8 +4,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +21,7 @@ import (
 	"go.amutable.dev/quarry/internal/httputils"
 	"go.amutable.dev/quarry/internal/third_party/fdutils"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
+	"go.amutable.dev/quarry/internal/tufext"
 )
 
 var fetchCommand = withRefTimeFlag(&cli.Command{
@@ -83,31 +88,46 @@ var fetchCommand = withRefTimeFlag(&cli.Command{
 		updater := updaters[repoName]
 		repo := config.Repos[repoName]
 
-		targetFile, err := updater.GetTargetInfo(target)
+		info, err := updater.GetTargetInfo(target)
 		if err != nil {
 			return fmt.Errorf("get target info for %s: %w", target, err)
 		}
+		targetFile := tufext.TargetFilesExt(info)
 
 		// Rather than using the go-tuf DownloadTarget (which requires the data
 		// be stored in-memory) we fetch it directly.
 
-		targetURL, err := getTargetURL(repo, targetFile)
-		if err != nil {
-			return fmt.Errorf("get url for target %s: %w", target, err)
+		var (
+			targetRdr io.ReadCloser
+			targetURL *url.URL
+		)
+		for url, err := range targetFile.FetchURLs(&repo.DataRootURL.URL) {
+			if err != nil {
+				return fmt.Errorf("get url for target %s: %w", target, err)
+			}
+			rdr, _, err := httputils.VerifiedHTTPGet(ctx, url, targetFile.Length, targetFile.Hashes)
+			if errors.Is(err, fs.ErrNotExist) {
+				slog.Info("Target file not available at URL, trying next candidate...",
+					"repo", repo.Name, "target", target, "url", url.String())
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("fetch target candidate url %s: %w", url, err)
+			}
+			targetRdr, targetURL = rdr, url
+			break
 		}
-
-		rdr, _, err := httputils.VerifiedHTTPGet(ctx, targetURL, targetFile.Length, targetFile.Hashes)
-		if err != nil {
-			return fmt.Errorf("get target %s (%s): %w", target, targetURL, err)
+		if targetRdr == nil {
+			return fmt.Errorf("%w: target %s not present at any fetch url", fs.ErrNotExist, target)
 		}
-		defer funchelpers.VerifyClose(&Err, rdr)
+		defer funchelpers.VerifyClose(&Err, targetRdr)
 
 		bar := progressbar.DefaultBytes(targetFile.Length, targetFile.Path)
 
-		if _, err := io.Copy(io.MultiWriter(output, bar), rdr); err != nil {
+		if _, err := io.Copy(io.MultiWriter(output, bar), targetRdr); err != nil {
 			return fmt.Errorf("stream target %s (%s) to output: %w", target, targetURL, err)
 		}
-		if err := rdr.Close(); err != nil {
+		if err := targetRdr.Close(); err != nil {
 			return fmt.Errorf("close check %s (%s) failed: %w", target, targetURL, err)
 		}
 

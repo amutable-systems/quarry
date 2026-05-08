@@ -88,11 +88,12 @@ var listCommand = withRefTimeFlag(&cli.Command{
 					return fmt.Errorf("error while scanning repo %s: %w", repoName, err)
 				}
 				if manifest != nil {
-					uapi16File, err := uapi16FromTargetFile(repo, target.TargetFiles)
-					if err != nil {
-						return fmt.Errorf("error while uapi16 formatting target file %s from repo %s: %w", target.Path, repoName, err)
+					for uapi16File, err := range uapi16FromTargetFile(repo, target.TargetFiles) {
+						if err != nil {
+							return fmt.Errorf("error while uapi16 formatting target file %s from repo %s: %w", target.Path, repoName, err)
+						}
+						manifest.Files = append(manifest.Files, uapi16File)
 					}
-					manifest.Files = append(manifest.Files, uapi16File)
 				} else if cmd.Bool("verbose") {
 					pprintTargetFile("", repo, target.TargetFiles)
 				} else if fmtStr := cmd.String("format"); cmd.IsSet("format") {

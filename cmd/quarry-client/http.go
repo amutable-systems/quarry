@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -171,9 +172,17 @@ func proxyTargetFile(rw http.ResponseWriter, req *http.Request) error {
 			}
 			return err
 		}
-		targetURL, err := getTargetURL(repo, targetInfo)
-		if err != nil {
-			return fmt.Errorf("bad target data in repo %s for target %s: cannot compute target url: %w", repoName, targetPath, err)
+		targetInfoExt := tufext.TargetFilesExt(targetInfo)
+		// Get the first target URL.
+		// TODO(uapi16): Once we get UAPI.16 support into systemd, we would
+		// generate an entry for every URL candidate.
+		var targetURL *url.URL
+		for url, err := range targetInfoExt.FetchURLs(&repo.DataRootURL.URL) {
+			if err != nil {
+				return fmt.Errorf("bad target data in repo %s for target %s: cannot compute target url: %w", repoName, targetPath, err)
+			}
+			targetURL = url
+			break
 		}
 		// TODO: Is it really not possible to provide Content-Length and
 		// Content-Digest here...?

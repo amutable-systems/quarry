@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"iter"
 	"log/slog"
 	"maps"
-	"net/url"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -26,6 +26,7 @@ import (
 
 	"go.amutable.dev/quarry/cmd/internal/pprint"
 	"go.amutable.dev/quarry/internal/expand"
+	"go.amutable.dev/quarry/internal/generics"
 	"go.amutable.dev/quarry/internal/httputils"
 	"go.amutable.dev/quarry/internal/pathrsext"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
@@ -207,28 +208,27 @@ func trustedMetadataTargetsFetcher(cacheDir *pathrs.Root, repo *Repository, meta
 	}
 }
 
-func uapi16FromTargetFile(repo *Repository, target *tufmetadata.TargetFiles) (*uapi16.File, error) {
-	targetURL, err := getTargetURL(repo, target)
-	if err != nil {
-		return nil, err
-	}
-	return &uapi16.File{
-		// TODO: What should we do about separators here?
-		Name:     target.Path,
-		DataURL:  targetURL.String(),
-		DataSize: uint64(target.Length),
-		SHA256:   digest.SHA256.Encode(target.Hashes["sha256"]),
-	}, nil
-}
+func uapi16FromTargetFile(repo *Repository, target *tufmetadata.TargetFiles) iter.Seq2[*uapi16.File, error] {
+	return generics.ErrorIter(func(yield func(*uapi16.File) bool) error {
+		targetExt := tufext.TargetFilesExt(target)
 
-func getTargetURL(repo *Repository, target *tufmetadata.TargetFiles) (*url.URL, error) {
-	targetExt := tufext.TargetFilesExt(target)
-	if overrideURL, err := targetExt.OverrideURL(); err != nil {
-		return nil, fmt.Errorf("invalid override url: %w", err)
-	} else if overrideURL != nil {
-		return overrideURL, nil
-	}
-	return repo.DataRootURL.JoinPath(targetExt.Path), nil
+		for url, err := range targetExt.FetchURLs(&repo.DataRootURL.URL) {
+			if err != nil {
+				return fmt.Errorf("get target candidate url: %w", err)
+			}
+			file := &uapi16.File{
+				// TODO: What should we do about separators here?
+				Name:     target.Path,
+				DataURL:  url.String(),
+				DataSize: uint64(target.Length),
+				SHA256:   digest.SHA256.Encode(target.Hashes["sha256"]),
+			}
+			if !yield(file) {
+				return nil
+			}
+		}
+		return nil
+	})
 }
 
 func pprintHashes(prefix string, hashes tufmetadata.Hashes) {
@@ -239,37 +239,44 @@ func pprintHashes(prefix string, hashes tufmetadata.Hashes) {
 }
 
 func pprintTargetFile(prefix string, repo *Repository, target *tufmetadata.TargetFiles) {
-	var targetURLStr string
-	if targetURL, err := getTargetURL(repo, target); err != nil {
-		targetURLStr = fmt.Sprintf("<invalid target url: %v>", err)
-	} else {
-		targetURLStr = targetURL.String()
-	}
+	targetExt := tufext.TargetFilesExt(target)
 
 	fmt.Printf("%s%s:\n", prefix, target.Path)
 	prefix += "\t"
-	fmt.Printf("%sURL: %s\n", prefix, targetURLStr)
+	fmt.Printf("%sURL(s):\n", prefix)
+	for url, err := range targetExt.FetchURLs(&repo.DataRootURL.URL) {
+		if err != nil {
+			fmt.Printf("%s - <invalid target url: %v>\n", prefix, err)
+		}
+		fmt.Printf("%s - %s\n", prefix, url)
+	}
 	fmt.Printf("%sSize: %d\n", prefix, target.Length)
 	pprintHashes(prefix, target.Hashes)
 	if target.Custom != nil {
 		fmt.Printf("%sCustom:\n", prefix)
 		pprint.JSON(prefix+"\t", "\t", []byte(*target.Custom))
 	}
-	// TODO(ext): UnrecogniedFields
+	// TODO(ext): UnrecognisedFields
 }
 
 func expandTargetFile(fmtStr string, repo *Repository, target *tufmetadata.TargetFiles) error {
+	targetExt := tufext.TargetFilesExt(target)
+
 	expander := expand.NewExpansions().
 		WithSource('R', func(_ *[]any) (string, error) { return repo.Name, nil }).
 		WithSource('n', func(_ *[]any) (string, error) { return target.Path, nil }).
 		WithSource('s', func(_ *[]any) (string, error) { return strconv.FormatInt(target.Length, 10), nil }).
 		WithSource('h', func(_ *[]any) (string, error) { return target.Hashes["sha256"].String(), nil }).
 		WithSource('u', func(_ *[]any) (string, error) {
-			url, err := getTargetURL(repo, target)
-			if err != nil {
-				return "", err
+			// TODO: This doesn'T work
+			for url, err := range targetExt.FetchURLs(&repo.DataRootURL.URL) {
+				var urlStr string
+				if url != nil {
+					urlStr = url.String()
+				}
+				return urlStr, err
 			}
-			return url.String(), nil
+			return "", errors.New("no fetch urls defined for target")
 		})
 
 	expanded, err := expander.ExpandString(fmtStr)
