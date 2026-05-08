@@ -1,6 +1,6 @@
 // Copyright (C) 2026 Amutable GmbH
 
-package tufext_test
+package jsonutils_test
 
 import (
 	"encoding/json"
@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
+	"go.amutable.dev/quarry/internal/jsonutils"
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
@@ -29,11 +30,11 @@ func roundTripExtensionJSON[W any](t *testing.T, zero W) {
 	want := extPayload{Foo: "hello", Bar: 42}
 
 	obj := zero
-	old, err := tufext.SetExtensionJSON(&obj, extField, want)
+	old, err := jsonutils.SetExtensionJSON(&obj, extField, want)
 	require.NoError(t, err)
 	assert.Nil(t, old)
 
-	got, err := tufext.GetExtensionJSON[extPayload](obj, extField)
+	got, err := jsonutils.GetExtensionJSON[extPayload](obj, extField)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, want, *got)
@@ -44,7 +45,7 @@ func roundTripExtensionJSON[W any](t *testing.T, zero W) {
 	var decoded W
 	require.NoError(t, json.Unmarshal(encoded, &decoded))
 
-	got, err = tufext.GetExtensionJSON[extPayload](decoded, extField)
+	got, err = jsonutils.GetExtensionJSON[extPayload](decoded, extField)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, want, *got)
@@ -186,7 +187,7 @@ func TestExtensionJSON_CustomTypes(t *testing.T) {
 }
 
 func TestExtensionJSON_Get_Missing(t *testing.T) {
-	got, err := tufext.GetExtensionJSON[extPayload](tufmetadata.RootType{}, extField)
+	got, err := jsonutils.GetExtensionJSON[extPayload](tufmetadata.RootType{}, extField)
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
@@ -199,7 +200,7 @@ func TestExtensionJSON_Get_ExternallyPopulated(t *testing.T) {
 			extField: json.RawMessage(`{"foo":"hello","bar":42}`),
 		},
 	}
-	got, err := tufext.GetExtensionJSON[extPayload](obj, extField)
+	got, err := jsonutils.GetExtensionJSON[extPayload](obj, extField)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, extPayload{Foo: "hello", Bar: 42}, *got)
@@ -210,10 +211,10 @@ func TestExtensionJSON_Set_NilValue(t *testing.T) {
 	// is present), but the parsed payload is the zero value -- distinguishable
 	// from "field absent", which returns a nil pointer.
 	obj := tufmetadata.RootType{}
-	_, err := tufext.SetExtensionJSON(&obj, extField, nil)
+	_, err := jsonutils.SetExtensionJSON(&obj, extField, nil)
 	require.NoError(t, err)
 
-	got, err := tufext.GetExtensionJSON[extPayload](obj, extField)
+	got, err := jsonutils.GetExtensionJSON[extPayload](obj, extField)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, extPayload{}, *got)
@@ -234,10 +235,10 @@ func TestExtensionJSON_NestedValue(t *testing.T) {
 	}
 
 	obj := tufmetadata.RootType{}
-	_, err := tufext.SetExtensionJSON(&obj, extField, want)
+	_, err := jsonutils.SetExtensionJSON(&obj, extField, want)
 	require.NoError(t, err)
 
-	got, err := tufext.GetExtensionJSON[nested](obj, extField)
+	got, err := jsonutils.GetExtensionJSON[nested](obj, extField)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, want, *got)
@@ -248,7 +249,7 @@ func TestExtensionJSON_NestedValue(t *testing.T) {
 	var decoded tufmetadata.RootType
 	require.NoError(t, json.Unmarshal(encoded, &decoded))
 
-	got, err = tufext.GetExtensionJSON[nested](decoded, extField)
+	got, err = jsonutils.GetExtensionJSON[nested](decoded, extField)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, want, *got)
@@ -259,16 +260,16 @@ func TestExtensionJSON_Set_OverwriteReturnsOld(t *testing.T) {
 	second := extPayload{Foo: "second", Bar: 2}
 
 	obj := tufmetadata.RootType{}
-	old, err := tufext.SetExtensionJSON(&obj, extField, first)
+	old, err := jsonutils.SetExtensionJSON(&obj, extField, first)
 	require.NoError(t, err)
 	assert.Nil(t, old)
 
-	mid, err := tufext.GetExtensionJSON[extPayload](obj, extField)
+	mid, err := jsonutils.GetExtensionJSON[extPayload](obj, extField)
 	require.NoError(t, err)
 	require.NotNil(t, mid)
 	assert.Equal(t, first, *mid)
 
-	old, err = tufext.SetExtensionJSON(&obj, extField, second)
+	old, err = jsonutils.SetExtensionJSON(&obj, extField, second)
 	require.NoError(t, err)
 	require.NotNil(t, old)
 
@@ -276,7 +277,7 @@ func TestExtensionJSON_Set_OverwriteReturnsOld(t *testing.T) {
 	require.NoError(t, json.Unmarshal(old, &oldParsed))
 	assert.Equal(t, first, oldParsed)
 
-	got, err := tufext.GetExtensionJSON[extPayload](obj, extField)
+	got, err := jsonutils.GetExtensionJSON[extPayload](obj, extField)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, second, *got)
@@ -291,7 +292,7 @@ func TestExtensionJSON_Set_PreservesTypedFields(t *testing.T) {
 			tufmetadata.TARGETS: {KeyIDs: []string{"k1", "k2"}, Threshold: 2},
 		},
 	}
-	_, err := tufext.SetExtensionJSON(&obj, extField, extPayload{Foo: "x", Bar: 1})
+	_, err := jsonutils.SetExtensionJSON(&obj, extField, extPayload{Foo: "x", Bar: 1})
 	require.NoError(t, err)
 	assert.Equal(t, tufmetadata.ROOT, obj.Type)
 	assert.Equal(t, tufmetadata.SPECIFICATION_VERSION, obj.SpecVersion)
@@ -306,17 +307,17 @@ func TestExtensionJSON_MultipleExtensions(t *testing.T) {
 	wantA := extPayload{Foo: "a", Bar: 1}
 	wantB := extPayload{Foo: "b", Bar: 2}
 
-	_, err := tufext.SetExtensionJSON(&obj, "x-quarry-a", wantA)
+	_, err := jsonutils.SetExtensionJSON(&obj, "x-quarry-a", wantA)
 	require.NoError(t, err)
-	_, err = tufext.SetExtensionJSON(&obj, "x-quarry-b", wantB)
+	_, err = jsonutils.SetExtensionJSON(&obj, "x-quarry-b", wantB)
 	require.NoError(t, err)
 
-	gotA, err := tufext.GetExtensionJSON[extPayload](obj, "x-quarry-a")
+	gotA, err := jsonutils.GetExtensionJSON[extPayload](obj, "x-quarry-a")
 	require.NoError(t, err)
 	require.NotNil(t, gotA)
 	assert.Equal(t, wantA, *gotA)
 
-	gotB, err := tufext.GetExtensionJSON[extPayload](obj, "x-quarry-b")
+	gotB, err := jsonutils.GetExtensionJSON[extPayload](obj, "x-quarry-b")
 	require.NoError(t, err)
 	require.NotNil(t, gotB)
 	assert.Equal(t, wantB, *gotB)
@@ -324,15 +325,15 @@ func TestExtensionJSON_MultipleExtensions(t *testing.T) {
 
 func TestExtensionJSON_Get_WrongType(t *testing.T) {
 	obj := tufmetadata.RootType{}
-	_, err := tufext.SetExtensionJSON(&obj, extField, extPayload{Foo: "x", Bar: 1})
+	_, err := jsonutils.SetExtensionJSON(&obj, extField, extPayload{Foo: "x", Bar: 1})
 	require.NoError(t, err)
 
 	type incompatible struct {
 		Foo []string `json:"foo"`
 	}
-	_, err = tufext.GetExtensionJSON[incompatible](obj, extField)
+	_, err = jsonutils.GetExtensionJSON[incompatible](obj, extField)
 	require.Error(t, err)
-	require.NotErrorIs(t, err, tufext.ErrNotExtensible,
+	require.NotErrorIs(t, err, jsonutils.ErrNotExtensible,
 		"per-field parse failure must not be wrapped as ErrNotExtensible")
 	assert.ErrorContains(t, err, "parse extension")
 }
@@ -367,25 +368,25 @@ func (d *droppingFields) UnmarshalJSON(data []byte) error {
 func TestExtensionJSON_NotExtensible(t *testing.T) {
 	t.Run("Set_FixedFields", func(t *testing.T) {
 		obj := fixedFields{Name: "n"}
-		_, err := tufext.SetExtensionJSON(&obj, extField, extPayload{Foo: "x", Bar: 1})
+		_, err := jsonutils.SetExtensionJSON(&obj, extField, extPayload{Foo: "x", Bar: 1})
 		require.Error(t, err)
-		assert.ErrorIs(t, err, tufext.ErrNotExtensible)
+		assert.ErrorIs(t, err, jsonutils.ErrNotExtensible)
 	})
 	t.Run("Set_DroppingFields", func(t *testing.T) {
 		obj := droppingFields{Name: "n"}
-		_, err := tufext.SetExtensionJSON(&obj, extField, extPayload{Foo: "x", Bar: 1})
+		_, err := jsonutils.SetExtensionJSON(&obj, extField, extPayload{Foo: "x", Bar: 1})
 		require.Error(t, err)
-		assert.ErrorIs(t, err, tufext.ErrNotExtensible)
+		assert.ErrorIs(t, err, jsonutils.ErrNotExtensible)
 	})
 	t.Run("Set_NotAStruct", func(t *testing.T) {
 		var obj int
-		_, err := tufext.SetExtensionJSON(&obj, extField, extPayload{Foo: "x", Bar: 1})
+		_, err := jsonutils.SetExtensionJSON(&obj, extField, extPayload{Foo: "x", Bar: 1})
 		require.Error(t, err)
-		assert.ErrorIs(t, err, tufext.ErrNotExtensible)
+		assert.ErrorIs(t, err, jsonutils.ErrNotExtensible)
 	})
 	t.Run("Get_NotAStruct", func(t *testing.T) {
-		_, err := tufext.GetExtensionJSON[extPayload](42, extField)
+		_, err := jsonutils.GetExtensionJSON[extPayload](42, extField)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, tufext.ErrNotExtensible)
+		assert.ErrorIs(t, err, jsonutils.ErrNotExtensible)
 	})
 }

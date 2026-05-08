@@ -6,6 +6,8 @@ import (
 	"net/url"
 
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
+
+	"go.amutable.dev/quarry/internal/jsonutils"
 )
 
 // TargetFilesExt is a wrapper around [tufmetadata.TargetFiles] to allow for
@@ -25,7 +27,7 @@ const overrideURLField = "x-quarry-override-url"
 // WithOverrideURL adds and override URL for the given target file. See
 // [OverrideURL] for more information around what override URLs are.
 func (t targetFilesExt) WithOverrideURL(u *url.URL) targetFilesExt {
-	_, err := SetExtensionJSON(t.TargetFiles, overrideURLField, u.String())
+	_, err := jsonutils.SetExtensionJSON(t.TargetFiles, overrideURLField, u.String())
 	if err != nil {
 		panic(err) // programmer error
 	}
@@ -41,7 +43,7 @@ func (t targetFilesExt) WithOverrideURL(u *url.URL) targetFilesExt {
 // also attempt to use the provided URL (unless there is some privacy concern
 // or the machine is meant to operate offline).
 func (t targetFilesExt) OverrideURL() (*url.URL, error) {
-	urlStr, err := GetExtensionJSON[string](t.TargetFiles, overrideURLField)
+	urlStr, err := jsonutils.GetExtensionJSON[string](t.TargetFiles, overrideURLField)
 	if err != nil {
 		return nil, err
 	}
