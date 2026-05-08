@@ -47,7 +47,7 @@ func Main(args []string) error {
 
 func main() {
 	if err := Main(os.Args); err != nil {
-		fmt.Printf("%v\n", err)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 }
