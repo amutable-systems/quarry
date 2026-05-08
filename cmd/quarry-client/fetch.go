@@ -14,6 +14,7 @@ import (
 	"github.com/urfave/cli/v3"
 	"golang.org/x/sys/unix"
 
+	"go.amutable.dev/quarry/internal/httputils"
 	"go.amutable.dev/quarry/internal/third_party/fdutils"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 )
@@ -95,7 +96,7 @@ var fetchCommand = withRefTimeFlag(&cli.Command{
 			return fmt.Errorf("get url for target %s: %w", target, err)
 		}
 
-		rdr, err := verifiedHTTPGet(ctx, targetURL, targetFile.Length, targetFile.Hashes)
+		rdr, _, err := httputils.VerifiedHTTPGet(ctx, targetURL, targetFile.Length, targetFile.Hashes)
 		if err != nil {
 			return fmt.Errorf("get target %s (%s): %w", target, targetURL, err)
 		}

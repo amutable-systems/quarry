@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
-	"net/http"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -19,7 +18,6 @@ import (
 
 	"cyphar.com/go-pathrs"
 	"github.com/opencontainers/go-digest"
-	"github.com/opencontainers/umoci/pkg/hardening"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 	tufconfig "github.com/theupdateframework/go-tuf/v2/metadata/config"
 	tuftrustedmetadata "github.com/theupdateframework/go-tuf/v2/metadata/trustedmetadata"
@@ -28,6 +26,7 @@ import (
 
 	"go.amutable.dev/quarry/cmd/internal/pprint"
 	"go.amutable.dev/quarry/internal/expand"
+	"go.amutable.dev/quarry/internal/httputils"
 	"go.amutable.dev/quarry/internal/pathrsext"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufext"
@@ -157,44 +156,6 @@ func getUpdaters(ctx context.Context, repoNames ...string) (map[string]*tufupdat
 	return updaters, nil
 }
 
-func verifiedHTTPGet(ctx context.Context, url *url.URL, length int64, hashes tufmetadata.Hashes) (io.ReadCloser, error) {
-	digests, err := tufext.HashesToDigest(hashes)
-	if err != nil {
-		return nil, fmt.Errorf("convert TUF hashes to digests: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("create http request: %w", err)
-	}
-
-	client := http.DefaultClient
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch %s: %w", url, err)
-	}
-	if res.StatusCode >= 300 {
-		if res.Body != nil {
-			_ = res.Body.Close()
-		}
-		err := fmt.Errorf("fetch %s failed with status code %.3d", url, res.StatusCode)
-		if res.StatusCode == http.StatusNotFound {
-			// Emulate ENOENT for 404.
-			err = fmt.Errorf("%w: %w", err, fs.ErrNotExist)
-		}
-		return nil, err
-	}
-	rdr := res.Body
-	for _, digest := range digests {
-		rdr = &hardening.VerifiedReadCloser{
-			Reader:         rdr,
-			ExpectedDigest: digest,
-			ExpectedSize:   length,
-		}
-	}
-	return rdr, nil
-}
-
 func trustedMetadataTargetsFetcher(cacheDir *pathrs.Root, repo *Repository, metadata *tuftrustedmetadata.TrustedMetadata) tufext.TargetMetadataFetchFunc {
 	var mu sync.RWMutex // to serialise access to TrustedMetadata
 
@@ -208,7 +169,7 @@ func trustedMetadataTargetsFetcher(cacheDir *pathrs.Root, repo *Repository, meta
 		metaPath := fmt.Sprintf("%d.%s.json", metaRef.Version, roleName)
 		metaURL := repo.MetaRootURL.JoinPath(metaPath)
 
-		rdr, err := verifiedHTTPGet(ctx, metaURL, metaRef.Length, metaRef.Hashes)
+		rdr, _, err := httputils.VerifiedHTTPGet(ctx, metaURL, metaRef.Length, metaRef.Hashes)
 		if err != nil {
 			return nil, fmt.Errorf("get role %s (%s): %w", roleName, metaURL, err)
 		}
