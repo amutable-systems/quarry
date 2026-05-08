@@ -12,6 +12,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
+	"go.amutable.dev/quarry/cmd/internal/cliext"
 	"go.amutable.dev/quarry/cmd/internal/pprint"
 	"go.amutable.dev/quarry/internal/expand"
 	"go.amutable.dev/quarry/internal/generics"
@@ -23,7 +24,7 @@ import (
 
 // getClient constructs a [tufclient.Client] from the configuration state.
 func getClient(ctx context.Context, repoNames ...string) (*tufclient.Client, error) {
-	cfg := ctxConfig(ctx)
+	cfg := cliext.CtxConfig(ctx)
 	refTime := ctxRefTime(ctx) // zero if unset
 
 	// If the user asked for a specific set of repositories, strip out the rest

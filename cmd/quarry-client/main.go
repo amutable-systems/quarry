@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/urfave/cli/v3"
+
+	"go.amutable.dev/quarry/cmd/internal/cliext"
 )
 
-var app = withConfigFlag(&cli.Command{
+var app = cliext.WithConfigFlag(&cli.Command{
 	Name:  "quarry-client",
 	Usage: "TUF client acting as a sysupdate bridge",
 	Flags: []cli.Flag{
