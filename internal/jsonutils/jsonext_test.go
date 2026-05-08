@@ -42,8 +42,8 @@ func roundTripExtensionJSON[W any](t *testing.T, zero W) {
 	encoded, err := json.Marshal(obj)
 	require.NoError(t, err)
 
-	var decoded W
-	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	decoded, err := jsonutils.Parse[W](encoded)
+	require.NoError(t, err)
 
 	got, err = jsonutils.GetExtensionJSON[extPayload](decoded, extField)
 	require.NoError(t, err)
@@ -129,8 +129,8 @@ func (e extensibleByExtras) MarshalJSON() ([]byte, error) {
 }
 
 func (e *extensibleByExtras) UnmarshalJSON(data []byte) error {
-	var dict map[string]json.RawMessage
-	if err := json.Unmarshal(data, &dict); err != nil {
+	dict, err := jsonutils.Parse[map[string]json.RawMessage](data)
+	if err != nil {
 		return err
 	}
 	if nameBytes, ok := dict["name"]; ok {
@@ -161,8 +161,8 @@ func (e extensibleByEmbed) MarshalJSON() ([]byte, error) {
 }
 
 func (e *extensibleByEmbed) UnmarshalJSON(data []byte) error {
-	var dict map[string]any
-	if err := json.Unmarshal(data, &dict); err != nil {
+	dict, err := jsonutils.Parse[map[string]any](data)
+	if err != nil {
 		return err
 	}
 	if v, ok := dict["id"]; ok {
@@ -246,8 +246,8 @@ func TestExtensionJSON_NestedValue(t *testing.T) {
 	encoded, err := json.Marshal(obj)
 	require.NoError(t, err)
 
-	var decoded tufmetadata.RootType
-	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	decoded, err := jsonutils.Parse[tufmetadata.RootType](encoded)
+	require.NoError(t, err)
 
 	got, err = jsonutils.GetExtensionJSON[nested](decoded, extField)
 	require.NoError(t, err)
@@ -273,8 +273,8 @@ func TestExtensionJSON_Set_OverwriteReturnsOld(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, old)
 
-	var oldParsed extPayload
-	require.NoError(t, json.Unmarshal(old, &oldParsed))
+	oldParsed, err := jsonutils.Parse[extPayload](old)
+	require.NoError(t, err)
 	assert.Equal(t, first, oldParsed)
 
 	got, err := jsonutils.GetExtensionJSON[extPayload](obj, extField)
@@ -355,8 +355,8 @@ func (d droppingFields) MarshalJSON() ([]byte, error) {
 }
 
 func (d *droppingFields) UnmarshalJSON(data []byte) error {
-	var dict map[string]any
-	if err := json.Unmarshal(data, &dict); err != nil {
+	dict, err := jsonutils.Parse[map[string]any](data)
+	if err != nil {
 		return err
 	}
 	if v, ok := dict["name"].(string); ok {

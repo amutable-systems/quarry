@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
@@ -28,6 +27,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"go.amutable.dev/quarry/cmd/internal/cliext"
+	"go.amutable.dev/quarry/internal/jsonutils"
 	"go.amutable.dev/quarry/internal/keystore"
 	"go.amutable.dev/quarry/internal/linux"
 	"go.amutable.dev/quarry/internal/pathrsext"
@@ -368,8 +368,8 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			if err != nil {
 				return fmt.Errorf("could not read root.json: %w", err)
 			}
-			var root tufext.SignedRoot
-			if err := json.Unmarshal(rootData, &root); err != nil {
+			root, err := jsonutils.Parse[tufext.SignedRoot](rootData)
+			if err != nil {
 				return fmt.Errorf("invalid root.json: %w", err)
 			}
 			// Assume the root is validly signed.
@@ -404,13 +404,13 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 				return fmt.Errorf("--include-from=%q file is invalid: %w", includePath, err)
 			}
 			// TODO: Support unsigned targets.json files?
-			var targets *tufext.SignedTargets
-			if err := json.Unmarshal(data, &targets); err != nil {
+			targets, err := jsonutils.Parse[tufext.SignedTargets](data)
+			if err != nil {
 				return fmt.Errorf("--include-from=%q file is invalid json: %w", includePath, err)
 			}
 			// Make sure it is a targets.json (though we don't care about
 			// signatures).
-			if err := tufext.CheckMetadataType(tufmetadata.TARGETS, targets); err != nil {
+			if err := tufext.CheckMetadataType(tufmetadata.TARGETS, &targets); err != nil {
 				return fmt.Errorf("--include-from=%q file is invalid targets.json: %w", includePath, err)
 			}
 			// TODO: Support delegations...

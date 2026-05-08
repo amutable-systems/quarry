@@ -29,9 +29,7 @@ func reParseJSON[T any](data any) (T, error) {
 	if err != nil {
 		return *new(T), fmt.Errorf("re-marshal %v (%T): %w", data, data, err)
 	}
-	var parsed T
-	err = json.Unmarshal(encoded, &parsed)
-	return parsed, err
+	return Parse[T](encoded)
 }
 
 // GetExtensionJSON returns the JSON-parsed value of the extension with the
@@ -48,8 +46,8 @@ func GetExtensionJSON[T any](extStruct any, field string) (*T, error) {
 	if !ok {
 		return nil, nil //nolint:nilnil // nil indicates no extension found
 	}
-	var data T
-	if err := json.Unmarshal(extBytes, &data); err != nil {
+	data, err := Parse[T](extBytes)
+	if err != nil {
 		return nil, fmt.Errorf("parse extension %v as %T: %w", field, data, err)
 	}
 	return &data, nil
