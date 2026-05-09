@@ -27,6 +27,7 @@ import (
 
 	"go.amutable.dev/quarry/internal/generics"
 	"go.amutable.dev/quarry/internal/httputils"
+	"go.amutable.dev/quarry/internal/jsonutils"
 	"go.amutable.dev/quarry/internal/pathrsext"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufclient/config"
@@ -79,8 +80,10 @@ func RepoClient(ctx context.Context, cacheDir *pathrs.Root, repo *config.Reposit
 		// permanently. For bundled root.json, this will cause us to never copy
 		// the root.json data to the cache, but that's okay -- the bundled data
 		// is static anyway.
-		if root, err := tufmetadata.Root().FromBytes(rootData); err != nil {
-			return nil, fmt.Errorf("(%w) root_trust root.json is invalid: %w", ErrSkippableRepo, err)
+		if root, err := jsonutils.Parse[*tufext.SignedRoot](rootData); err != nil {
+			return nil, fmt.Errorf("(%w) root_trust root.json is invalid JSON: %w", ErrSkippableRepo, err)
+		} else if err := tufext.CheckMetadataType(tufmetadata.ROOT, root); err != nil {
+			return nil, fmt.Errorf("(%w) root_trust root.json is invalid tuf JSON: %w", ErrSkippableRepo, err)
 		} else if err := root.VerifyDelegate(tufmetadata.ROOT, root); err != nil {
 			// root.json must be self-signed.
 			return nil, fmt.Errorf("(%w) root_trust root.json is not self-signed: %w", ErrSkippableRepo, err)
