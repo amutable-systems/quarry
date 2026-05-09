@@ -24,6 +24,7 @@ import (
 )
 
 // getClient constructs a [tufclient.Client] from the configuration state.
+// TODO: Unify this with quarry-sysupdate helper...
 func getClient(ctx context.Context, repoNames ...string) (*tufclient.Client, error) {
 	cfg := cliext.CtxConfig(ctx)
 

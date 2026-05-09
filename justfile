@@ -10,7 +10,10 @@ buildtags := env("BUILDTAGS", "http insecure")
 
 default: build_all
 
-build_all: (build "hardhat" buildtags) (build "quarry-client" buildtags)
+build_all: \
+		(build "hardhat" buildtags) \
+		(build "quarry-client" buildtags) \
+		(build "quarry-sysupdate" buildtags)
 
 install: install_hardhat install_client install_client_config
 
@@ -22,7 +25,7 @@ install_client:
 	install -dm0755 {{destdir}}{{unitdir}}
 
 install_sysupdate:
-	install -Dm0755 ./hack/quarry-sysupdate {{destdir}}{{bindir}}/quarry-sysupdate
+	install -Dm0755 ./quarry-sysupdate {{destdir}}{{bindir}}/quarry-sysupdate
 	install -Dm0644 -t {{destdir}}{{unitdir}} ./contrib/systemd/quarry-sysupdate*
 
 install_client_http_service:

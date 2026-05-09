@@ -47,6 +47,8 @@ linters:
         # outside of the expected directory. They can be used, with great care.
         - pattern: ^os\.(Open|Create|Truncate|(Write|Read|Open)File|(Remove|Mkdir)\w*|(Syml|L)ink|Ch(own|mod))$
           pkg: ^os$
+        - pattern: ^exec.LookPath$
+          pkg: ^os/exec$
         # unix.*at syscalls are similarly dangeorus.
         - pattern: ^unix\.\w*at$
           pkg: ^golang.org/x/sys/unix$
