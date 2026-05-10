@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
+
+	"go.amutable.dev/quarry/internal/keystore"
 )
 
 // CheckMetadataType is a post-parse check that a parsed [tufmetadata.Metadata]
@@ -42,6 +44,18 @@ func CheckMetadataType[T tufmetadata.Roles](roleName string, data *tufmetadata.M
 	}
 	if roleExpectedType != jsonType {
 		return fmt.Errorf("metadata role %s should have _type value %s but got %q", roleName, roleExpectedType, jsonType)
+	}
+	// Check that the signatures are unique. This should not be necessary (our
+	// code and go-tuf correctly only counts duplicate signatures once) but
+	// (*tufmetadata.Metadata[T]).FromBytes rejects such objects and so we
+	// should too, to avoid needlessly delaying errors from go-tuf.
+	sigKeyIDs := make(map[keystore.KeyID]struct{}, len(data.Signatures))
+	for _, sig := range data.Signatures {
+		keyID := keystore.KeyID(sig.KeyID)
+		if _, dup := sigKeyIDs[keyID]; dup {
+			return fmt.Errorf("metadata role %s has multiple signatures for key %s", roleName, keyID)
+		}
+		sigKeyIDs[keyID] = struct{}{}
 	}
 	return nil
 }
