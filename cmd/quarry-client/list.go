@@ -14,7 +14,7 @@ import (
 	"go.amutable.dev/quarry/internal/uapi16"
 )
 
-var listCommand = withRefTimeFlag(&cli.Command{
+var listCommand = &cli.Command{
 	Name:  "list",
 	Usage: "get a list of available update files",
 	Flags: []cli.Flag{},
@@ -93,4 +93,4 @@ var listCommand = withRefTimeFlag(&cli.Command{
 		}
 		return nil
 	},
-})
+}

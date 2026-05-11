@@ -14,6 +14,7 @@ import (
 
 	"go.amutable.dev/quarry/cmd/internal/cliext"
 	"go.amutable.dev/quarry/cmd/internal/pprint"
+	"go.amutable.dev/quarry/internal/ctxext"
 	"go.amutable.dev/quarry/internal/expand"
 	"go.amutable.dev/quarry/internal/generics"
 	"go.amutable.dev/quarry/internal/tufclient"
@@ -25,7 +26,6 @@ import (
 // getClient constructs a [tufclient.Client] from the configuration state.
 func getClient(ctx context.Context, repoNames ...string) (*tufclient.Client, error) {
 	cfg := cliext.CtxConfig(ctx)
-	refTime := ctxRefTime(ctx) // zero if unset
 
 	// If the user asked for a specific set of repositories, strip out the rest
 	// from the in-memory config.
@@ -45,7 +45,7 @@ func getClient(ctx context.Context, repoNames ...string) (*tufclient.Client, err
 	if err != nil {
 		return nil, err
 	}
-	if !refTime.IsZero() {
+	if refTime, ok := ctxext.RefTime(ctx); ok {
 		client.SetRefTime(ctx, refTime)
 	}
 	return client, nil

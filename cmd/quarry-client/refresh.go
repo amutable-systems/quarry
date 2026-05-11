@@ -13,7 +13,7 @@ import (
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 )
 
-var refreshCommand = withRefTimeFlag(&cli.Command{
+var refreshCommand = &cli.Command{
 	Name:  "refresh",
 	Usage: "check for updates for the given repos",
 	Arguments: []cli.Argument{
@@ -47,4 +47,4 @@ var refreshCommand = withRefTimeFlag(&cli.Command{
 		}
 		return errors.Join(errs...)
 	},
-})
+}

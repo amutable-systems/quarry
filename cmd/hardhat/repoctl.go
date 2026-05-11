@@ -13,6 +13,7 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"go.amutable.dev/quarry/cmd/internal/pprint"
+	"go.amutable.dev/quarry/internal/ctxext"
 	"go.amutable.dev/quarry/internal/keystore"
 	"go.amutable.dev/quarry/internal/tufext"
 	"go.amutable.dev/quarry/internal/tufrepo"
@@ -137,20 +138,6 @@ var repoctlRefreshCommand = &cli.Command{
 			Usage:   "set of roles to refresh",
 			Value:   []string{"timestamp"},
 		},
-		// TODO: Move --ref-time and --expire-after to utils?
-		&cli.TimestampFlag{
-			Name:  "ref-time",
-			Usage: "configure the reference time (defaults to now)",
-			Value: time.Now().UTC(),
-			Config: cli.TimestampConfig{
-				Layouts: []string{
-					time.RFC3339,
-					time.RFC3339Nano,
-					time.DateOnly,
-					// TODO: It would be nice to be able to pass a Unix epoch.
-				},
-			},
-		},
 		// TODO: expire-after should probably be a map because we can specify
 		// multiple roles.
 		&cli.DurationFlag{
@@ -187,7 +174,7 @@ var repoctlRefreshCommand = &cli.Command{
 		if err != nil {
 			return fmt.Errorf("start transaction: %w", err)
 		}
-		tx.RefTime = cmd.Timestamp("ref-time")
+		tx.RefTime, _ = ctxext.RefTime(ctx)
 
 		var refreshWindow *time.Duration
 		if !cmd.Bool("force-refresh") {
@@ -244,20 +231,6 @@ var repoctlSnapshotCommand = &cli.Command{
 	Name:  "snapshot",
 	Usage: "update the repo's snapshot.json",
 	Flags: []cli.Flag{
-		// TODO: Move --ref-time and --expire-after to utils?
-		&cli.TimestampFlag{
-			Name:  "ref-time",
-			Usage: "configure the reference time (defaults to now)",
-			Value: time.Now().UTC(),
-			Config: cli.TimestampConfig{
-				Layouts: []string{
-					time.RFC3339,
-					time.RFC3339Nano,
-					time.DateOnly,
-					// TODO: It would be nice to be able to pass a Unix epoch.
-				},
-			},
-		},
 		&cli.DurationFlag{
 			Name:  "expire-after",
 			Value: tufrepo.DefaultTimestampExpiry,
@@ -280,7 +253,7 @@ var repoctlSnapshotCommand = &cli.Command{
 		if err != nil {
 			return fmt.Errorf("start transaction: %w", err)
 		}
-		tx.RefTime = cmd.Timestamp("ref-time")
+		tx.RefTime, _ = ctxext.RefTime(ctx)
 
 		for _, targets := range cmd.StringArgs("targets") {
 			roleName, path, ok := strings.Cut(targets, "=")

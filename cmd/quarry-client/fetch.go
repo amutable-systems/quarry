@@ -18,7 +18,7 @@ import (
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 )
 
-var fetchCommand = withRefTimeFlag(&cli.Command{
+var fetchCommand = &cli.Command{
 	Name:  "fetch",
 	Usage: "fetch a specific file from the repos",
 	Flags: []cli.Flag{
@@ -103,4 +103,4 @@ var fetchCommand = withRefTimeFlag(&cli.Command{
 		fmt.Fprintf(os.Stderr, "Wrote %d bytes to %q.\n", info.Length, outputPath)
 		return nil
 	},
-})
+}

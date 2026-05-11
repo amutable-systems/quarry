@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"cyphar.com/go-pathrs"
 	"github.com/opencontainers/go-digest"
@@ -275,19 +274,7 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			Aliases: []string{"H"},
 			Usage:   "indicates that the given paths are all hashsum files (the listed files must still exist to get their size)",
 		},
-		// TODO: Move --ref-time and --expire-after to utils?
-		&cli.TimestampFlag{
-			Name:  "ref-time",
-			Usage: "configure the reference time used for the targets file",
-			Config: cli.TimestampConfig{
-				Layouts: []string{
-					time.RFC3339,
-					time.RFC3339Nano,
-					time.DateOnly,
-					// TODO: It would be nice to be able to pass a Unix epoch.
-				},
-			},
-		},
+		// TODO: Move --expire-after to utils?
 		&cli.DurationFlag{
 			Name:  "expire-after",
 			Usage: "configure the expiry of the targets file (duration relative to --ref-time)",
@@ -391,8 +378,8 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 
 		builder := tufext.NewTargetsBuilder()
 
-		if cmd.IsSet("ref-time") {
-			builder.RefTime = cmd.Timestamp("ref-time")
+		if refTime, ok := ctxext.RefTime(ctx); ok {
+			builder.RefTime = refTime
 		}
 		if cmd.IsSet("expire-after") {
 			builder.ExpireAfter = cmd.Duration("expire-after")

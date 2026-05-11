@@ -11,12 +11,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/secure-systems-lab/go-securesystemslib/cjson"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 	"github.com/urfave/cli/v3"
 
+	"go.amutable.dev/quarry/internal/ctxext"
 	"go.amutable.dev/quarry/internal/keystore"
 	"go.amutable.dev/quarry/internal/tufext"
 	"go.amutable.dev/quarry/internal/tufrepo"
@@ -38,20 +38,7 @@ var generateRootFlags = []cli.Flag{
 		Name:  "threshold",
 		Usage: "specify the threshold of keys for each keys used for each format",
 	},
-	// TODO: Move --ref-time and --expire-after to utils?
-	&cli.TimestampFlag{
-		Name:  "ref-time",
-		Usage: "configure the reference time (defaults to now)",
-		Value: time.Now().UTC(),
-		Config: cli.TimestampConfig{
-			Layouts: []string{
-				time.RFC3339,
-				time.RFC3339Nano,
-				time.DateOnly,
-				// TODO: It would be nice to be able to pass a Unix epoch.
-			},
-		},
-	},
+	// TODO: Move --expire-after to utils?
 	&cli.DurationFlag{
 		Name:  "expire-after",
 		Value: tufrepo.DefaultRootExpiry,
@@ -135,8 +122,8 @@ func generateRoot(ctx context.Context, cmd *cli.Command) (_ *tufext.SignedRoot, 
 	// Generate and sign the initial root.
 	builder := tufext.NewRootBuilder()
 	builder.GenerateKeyDriver = cmd.String("driver")
-	if cmd.IsSet("ref-time") {
-		builder.RefTime = cmd.Timestamp("ref-time")
+	if refTime, ok := ctxext.RefTime(ctx); ok {
+		builder.RefTime = refTime
 	}
 	if cmd.IsSet("expire-after") {
 		builder.ExpireAfter = cmd.Duration("expire-after")
