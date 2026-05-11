@@ -26,7 +26,7 @@ import (
 	"github.com/urfave/cli/v3"
 	"golang.org/x/sys/unix"
 
-	"go.amutable.dev/quarry/cmd/internal/cliext"
+	"go.amutable.dev/quarry/internal/ctxext"
 	"go.amutable.dev/quarry/internal/jsonutils"
 	"go.amutable.dev/quarry/internal/keystore"
 	"go.amutable.dev/quarry/internal/linux"
@@ -104,13 +104,13 @@ func hashToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalP
 const dataRootURLCtxKey ctxKey = "--data-root-url"
 
 func ctxDataRoolURL(ctx context.Context) *url.URL {
-	return cliext.CtxValue[*url.URL](ctx, dataRootURLCtxKey)
+	return ctxext.Value[*url.URL](ctx, dataRootURLCtxKey)
 }
 
 const extOverrideURLCtxKey ctxKey = "--ext-override-url"
 
 func ctxExtOverrideURL(ctx context.Context) bool {
-	return cliext.CtxValue[bool](ctx, extOverrideURLCtxKey)
+	return ctxext.Value[bool](ctx, extOverrideURLCtxKey)
 }
 
 // sumFileRe matches the "standard" line format for "hashsum" files.

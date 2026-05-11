@@ -9,6 +9,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"go.amutable.dev/quarry/internal/ctxext"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufclient/config"
 )
@@ -64,5 +65,5 @@ func WithConfigFlag(cmd *cli.Command) *cli.Command {
 // CtxConfig returns the parsed --config flag value for [cli.Command]s
 // configured using [WithConfigFlag].
 func CtxConfig(ctx context.Context) *config.Config {
-	return CtxValue[*config.Config](ctx, configCtxKey)
+	return ctxext.Value[*config.Config](ctx, configCtxKey)
 }

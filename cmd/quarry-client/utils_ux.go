@@ -9,6 +9,7 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"go.amutable.dev/quarry/cmd/internal/cliext"
+	"go.amutable.dev/quarry/internal/ctxext"
 )
 
 type ctxKey string
@@ -32,5 +33,5 @@ func withRefTimeFlag(cmd *cli.Command) *cli.Command {
 }
 
 func ctxRefTime(ctx context.Context) time.Time {
-	return cliext.CtxValue[time.Time](ctx, refTimeCtxKey)
+	return ctxext.Value[time.Time](ctx, refTimeCtxKey)
 }
