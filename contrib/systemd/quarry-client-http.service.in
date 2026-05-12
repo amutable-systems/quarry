@@ -14,7 +14,9 @@ RestartSec=5s
 User=quarry
 Group=quarry
 
-ProtectSystem=strict
+ProtectSystem=full
+StateDirectory=/var/lib/quarry-client
+
 ProtectHostname=yes
 ProtectHome=yes
 PrivateTmp=yes

@@ -1,4 +1,4 @@
 # Copyright (C) 2026 Amutable GmbH
 
 #Type Path                                     Mode  User    Group   Age  Argument
-v     /run/quarry-client                       0750  quarry  quarry  -    -
+v     /var/lib/quarry-client                   0750  quarry  quarry  -    -

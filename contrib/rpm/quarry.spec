@@ -100,12 +100,12 @@ install -Dm0644 ./contrib/quarry-client.toml %{buildroot}%{_sharedstatedir}/%{na
 just install_client_http_service
 %endif
 
-#install -dm0755 %{buildroot}%{_rundir}/%{name}
-#install -dm0700 %{buildroot}%{_rundir}/%{name}/keys
+#install -dm0755 %{buildroot}%{_sharedstatedir}/%{name}
+#install -dm0700 %{buildroot}%{_sharedstatedir}/%{name}/keys
 install -Dm0644 ./contrib/systemd/hardhat.sysusers %{buildroot}%{_sysusersdir}/%{name}-hardhat.conf
 install -Dm0644 ./contrib/systemd/hardhat.tmpfiles %{buildroot}%{_tmpfilesdir}/%{name}-hardhat.conf
 
-#install -dm0755 %{buildroot}%{_rundir}/%{name}-client/cache
+install -dm0755 %{buildroot}%{_sharedstatedir}/%{name}-client/latest-metadata
 install -Dm0644 ./contrib/systemd/quarry-client.tmpfiles %{buildroot}%{_tmpfilesdir}/%{name}-client.conf
 install -Dm0644 ./contrib/systemd/quarry-client-http.sysusers %{buildroot}%{_sysusersdir}/%{name}-client-http.conf
 # Directory for bundled trust roots.
@@ -152,7 +152,7 @@ just install_sysupdate
 %config(noreplace) %{_sysconfdir}/%{name}-client.toml
 %config %{_sharedstatedir}/%{name}-client/config.toml
 %if !0%{with http}
-#%attr(-,quarry,quarry) %dir %{_rundir}/%{name}-client
+%attr(-,quarry,quarry) %dir %{_sharedstatedir}/%{name}-client
 %{_tmpfilesdir}/%{name}-client.conf
 %{_sysusersdir}/%{name}-client-http.conf
 %endif
@@ -160,7 +160,7 @@ just install_sysupdate
 %if %{with http}
 %files client-http
 %{_unitdir}/%{name}-client-http.*
-#%attr(-,quarry,quarry) %dir %{_rundir}/%{name}-client
+%attr(-,quarry,quarry) %dir %{_sharedstatedir}/%{name}-client
 %{_tmpfilesdir}/%{name}-client.conf
 %{_sysusersdir}/%{name}-client-http.conf
 %endif

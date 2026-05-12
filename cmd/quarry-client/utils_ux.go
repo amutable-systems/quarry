@@ -35,7 +35,7 @@ func withConfigFlag(cmd *cli.Command) *cli.Command {
 			Name:      "cache-dir",
 			Usage:     "local cache directory for TUF metadata",
 			TakesFile: true,
-			Value:     "/var/lib/quarry-client/cache",
+			Value:     "/var/lib/quarry-client/latest-metadata",
 			Sources:   cli.EnvVars("QUARRY_CLIENT_CACHEDIR"),
 		})
 

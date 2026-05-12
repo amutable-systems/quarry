@@ -167,7 +167,7 @@ cat <<EOF
 # Copyright (C) 2026 Amutable GmbH
 
 config_version = 1
-cache_dir = "/var/run/quarry-client/cache"
+cache_dir = "/var/lib/quarry-client/latest-metadata"
 
 # Official AmutableOS update repository.
 [repo."updates.example.com/alpha"]

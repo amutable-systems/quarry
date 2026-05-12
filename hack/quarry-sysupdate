@@ -89,7 +89,7 @@ for target in "${special_files[@]}"; do
 	# updated between the list and fetch commands).
 	# TODO: It should be possible for quarry-client to have a --no-refresh
 	# mode, but unfortunately go-tuf doesn't provide proper support for it...
-	chown -R quarry:quarry "/run/quarry-client/cache/$repo"
+	chown -R quarry:quarry "/var/lib/quarry-client/latest-metadata/$repo"
 done
 
 # TODO: Figure out how to clean up transfer files no longer included in the
