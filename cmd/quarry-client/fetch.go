@@ -53,7 +53,7 @@ var fetchCommand = withRefTimeFlag(&cli.Command{
 			if strings.HasSuffix(outputPath, "/") {
 				outputPath = filepath.Join(outputPath, target) //nolint:forbidigo // user-controlled host path
 			}
-			dirPath := filepath.Dir(outputPath)
+			dirPath := filepath.Dir(outputPath)                 //nolint:forbidigo // user-controlled host path
 			if err := os.MkdirAll(dirPath, 0o755); err != nil { //nolint:forbidigo // user-controlled host path
 				return fmt.Errorf("make parent directories for %s: %w", outputPath, err)
 			}

@@ -27,7 +27,7 @@ import (
 // TODO: This should be provided by libpathrs directly, see
 // <https://github.com/cyphar/libpathrs/issues/355>.
 func AttachIntoRoot(root *pathrs.Root, unsafePath string, oldFile *os.File) (Err error) {
-	unsafeDir, unsafeFilename := filepath.Split(unsafePath)
+	unsafeDir, unsafeFilename := filepath.Split(unsafePath) //nolint:forbidigo // lexical path that will be passed to libpathrs
 	if unsafeFilename == "" {
 		return fmt.Errorf("target path %q is invalid as a linkname: trailing slash or empty", unsafePath)
 	}

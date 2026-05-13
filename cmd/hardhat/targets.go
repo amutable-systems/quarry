@@ -142,10 +142,10 @@ func addPrehashedToTargets(ctx context.Context, builder *tufext.TargetsBuilder, 
 	}
 	// logicalPath references the sumfile, we care about the parent directory
 	// for computing the logical subpath of paths referenced in the sumfile.
-	logicalPath = filepath.Dir(logicalPath)
+	logicalPath = filepath.Dir(logicalPath) //nolint:forbidigo // lexical paths
 
 	// We need to open the parent directory of the *actual* sumfile.
-	root, err := pathrs.OpenRoot(filepath.Dir(sumFile.Name()))
+	root, err := pathrs.OpenRoot(filepath.Dir(sumFile.Name())) //nolint:forbidigo // lexical paths
 	if err != nil {
 		return fmt.Errorf("failed to open parent directory of sumfile %s: %w", sumFile.Name(), err)
 	}
