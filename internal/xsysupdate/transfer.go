@@ -38,6 +38,10 @@ const (
 	//
 	// On AmutableOS, only /etc fits the bill.
 	transferInstallDir = "/etc" // .../sysupdate{.*,}.d/
+	// extensionInstallDir is where sysext and confexts are linked by default
+	// using CurrentSymlink.
+	// FIXME: This is only needed for the systemd bug workaround in Init.
+	extensionInstallDir = transferInstallDir + "/extensions"
 
 	liveLink = "live"
 	lastLink = "last"
@@ -156,6 +160,13 @@ func (ext *TransferFileExtension) Init(ctx context.Context) (_ context.Context, 
 	}
 	ext.storeDir = ctxExtStoreDir(ctx, ext)
 	// storeDir will be closed by Abort on error.
+
+	// FIXME: sysupdate does not auto-create the parent directory of
+	// CurrentSymlink=, which causes update failures.See
+	// <https://github.com/systemd/systemd/pull/42093>.
+	if err := os.MkdirAll(extensionInstallDir, 0o755); err != nil { //nolint:forbidigo // fixed host-controlled path
+		return nil, err
+	}
 
 	// Get the current "live" directory subpath for recovery purposes in Abort.
 	// If there is no such symlink, ignore the error as that is the initial
