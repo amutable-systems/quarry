@@ -273,7 +273,7 @@ func getTargetURL(repo *Repository, target *tufmetadata.TargetFiles) (*url.URL, 
 func pprintHashes(prefix string, hashes tufmetadata.Hashes) {
 	fmt.Printf("%sHashes:\n", prefix)
 	for algoName, hashBytes := range hashes {
-		fmt.Printf("%s - %s:%x\n", prefix, algoName, hashBytes)
+		fmt.Printf("%s - %s:%s\n", prefix, algoName, hashBytes)
 	}
 }
 
@@ -302,7 +302,7 @@ func expandTargetFile(fmtStr string, repo *Repository, target *tufmetadata.Targe
 		WithSource('R', func(_ *[]any) (string, error) { return repo.Name, nil }).
 		WithSource('n', func(_ *[]any) (string, error) { return target.Path, nil }).
 		WithSource('s', func(_ *[]any) (string, error) { return strconv.FormatInt(target.Length, 10), nil }).
-		WithSource('h', func(_ *[]any) (string, error) { return fmt.Sprintf("%x", target.Hashes["sha256"]), nil }).
+		WithSource('h', func(_ *[]any) (string, error) { return target.Hashes["sha256"].String(), nil }).
 		WithSource('u', func(_ *[]any) (string, error) {
 			url, err := getTargetURL(repo, target)
 			if err != nil {
