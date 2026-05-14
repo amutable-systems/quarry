@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -78,4 +79,16 @@ func sysupdate(ctx context.Context, component string) error {
 	}
 	args = append(args, "update")
 	return systemdCmd(ctx, "sysupdate", args...)
+}
+
+func sysupdateRefresh(ctx context.Context) error {
+	errs := []error{
+		// systemd-confext refresh
+		systemdCmd(ctx, "confext", "refresh"),
+		// systemd-sysext refresh
+		systemdCmd(ctx, "sysext", "refresh"),
+		// TODO: detect if we need to do systemd-sysupdate reboot...?
+		// TODO: bootctl link
+	}
+	return errors.Join(errs...)
 }

@@ -15,14 +15,13 @@ ConditionVirtualization=!container
 Type=simple
 NotifyAccess=main
 ExecStart=/usr/bin/quarry-sysupdate update --quarry-user=quarry --quarry-proxy=http://localhost:555/
-CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_FSETID CAP_MKNOD CAP_SETFCAP CAP_SYS_ADMIN CAP_SETPCAP CAP_DAC_OVERRIDE CAP_SETUID CAP_SETGID CAP_LINUX_IMMUTABLE
 NoNewPrivileges=yes
 MemoryDenyWriteExecute=yes
 ProtectHostname=yes
 RestrictRealtime=yes
-RestrictNamespaces=net
+RestrictNamespaces=net mnt
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-SystemCallFilter=@system-service @mount @setuid
+SystemCallFilter=@system-service @mount @setuid @process
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
 LockPersonality=yes

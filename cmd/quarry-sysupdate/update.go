@@ -85,6 +85,13 @@ var updateCommand = withExtensionDirFlag(withQuarryUserFlag(withQuarryProxyFlag(
 		if err := exts.Close(); err != nil {
 			return fmt.Errorf("post-update extension cleanup: %w", err)
 		}
+
+		// Do online-reload of sysexts and confexts.
+		slog.Info("Trigger online-reload of new components.")
+		if err := sysupdateRefresh(ctx); err != nil {
+			return fmt.Errorf("online-reload components: %w", err)
+		}
+
 		return nil
 	},
 })))
