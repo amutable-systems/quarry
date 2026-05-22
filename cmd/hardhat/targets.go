@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
@@ -18,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"cyphar.com/go-pathrs"
 	"github.com/opencontainers/go-digest"
@@ -27,7 +25,8 @@ import (
 	"github.com/urfave/cli/v3"
 	"golang.org/x/sys/unix"
 
-	"go.amutable.dev/quarry/cmd/internal/cliext"
+	"go.amutable.dev/quarry/internal/ctxext"
+	"go.amutable.dev/quarry/internal/jsonutils"
 	"go.amutable.dev/quarry/internal/keystore"
 	"go.amutable.dev/quarry/internal/linux"
 	"go.amutable.dev/quarry/internal/pathrsext"
@@ -104,13 +103,13 @@ func hashToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalP
 const dataRootURLCtxKey ctxKey = "--data-root-url"
 
 func ctxDataRoolURL(ctx context.Context) *url.URL {
-	return cliext.CtxValue[*url.URL](ctx, dataRootURLCtxKey)
+	return ctxext.Value[*url.URL](ctx, dataRootURLCtxKey)
 }
 
 const extOverrideURLCtxKey ctxKey = "--ext-override-url"
 
 func ctxExtOverrideURL(ctx context.Context) bool {
-	return cliext.CtxValue[bool](ctx, extOverrideURLCtxKey)
+	return ctxext.Value[bool](ctx, extOverrideURLCtxKey)
 }
 
 // sumFileRe matches the "standard" line format for "hashsum" files.
@@ -275,19 +274,7 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			Aliases: []string{"H"},
 			Usage:   "indicates that the given paths are all hashsum files (the listed files must still exist to get their size)",
 		},
-		// TODO: Move --ref-time and --expire-after to utils?
-		&cli.TimestampFlag{
-			Name:  "ref-time",
-			Usage: "configure the reference time used for the targets file",
-			Config: cli.TimestampConfig{
-				Layouts: []string{
-					time.RFC3339,
-					time.RFC3339Nano,
-					time.DateOnly,
-					// TODO: It would be nice to be able to pass a Unix epoch.
-				},
-			},
-		},
+		// TODO: Move --expire-after to utils?
 		&cli.DurationFlag{
 			Name:  "expire-after",
 			Usage: "configure the expiry of the targets file (duration relative to --ref-time)",
@@ -368,8 +355,8 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			if err != nil {
 				return fmt.Errorf("could not read root.json: %w", err)
 			}
-			var root tufext.SignedRoot
-			if err := json.Unmarshal(rootData, &root); err != nil {
+			root, err := jsonutils.Parse[tufext.SignedRoot](rootData)
+			if err != nil {
 				return fmt.Errorf("invalid root.json: %w", err)
 			}
 			// Assume the root is validly signed.
@@ -391,8 +378,8 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 
 		builder := tufext.NewTargetsBuilder()
 
-		if cmd.IsSet("ref-time") {
-			builder.RefTime = cmd.Timestamp("ref-time")
+		if refTime, ok := ctxext.RefTime(ctx); ok {
+			builder.RefTime = refTime
 		}
 		if cmd.IsSet("expire-after") {
 			builder.ExpireAfter = cmd.Duration("expire-after")
@@ -404,13 +391,13 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 				return fmt.Errorf("--include-from=%q file is invalid: %w", includePath, err)
 			}
 			// TODO: Support unsigned targets.json files?
-			var targets *tufext.SignedTargets
-			if err := json.Unmarshal(data, &targets); err != nil {
+			targets, err := jsonutils.Parse[tufext.SignedTargets](data)
+			if err != nil {
 				return fmt.Errorf("--include-from=%q file is invalid json: %w", includePath, err)
 			}
 			// Make sure it is a targets.json (though we don't care about
 			// signatures).
-			if err := tufext.CheckMetadataType(tufmetadata.TARGETS, targets); err != nil {
+			if err := tufext.CheckMetadataType(tufmetadata.TARGETS, &targets); err != nil {
 				return fmt.Errorf("--include-from=%q file is invalid targets.json: %w", includePath, err)
 			}
 			// TODO: Support delegations...

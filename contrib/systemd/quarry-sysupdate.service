@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Amutable GmbH
 
-# Intended to be a drop-in replacement for systemd-sysupdate.timer.
+# Intended to be a drop-in replacement for systemd-sysupdate.service.
 
 [Unit]
 Description=Quarry-Based Automatic System Update
@@ -14,15 +14,14 @@ ConditionVirtualization=!container
 [Service]
 Type=simple
 NotifyAccess=main
-ExecStart=/usr/bin/quarry-sysupdate
-CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_FSETID CAP_MKNOD CAP_SETFCAP CAP_SYS_ADMIN CAP_SETPCAP CAP_DAC_OVERRIDE CAP_LINUX_IMMUTABLE
+ExecStart=/usr/bin/quarry-sysupdate update --quarry-user=quarry --quarry-proxy=http://localhost:555/
 NoNewPrivileges=yes
 MemoryDenyWriteExecute=yes
 ProtectHostname=yes
 RestrictRealtime=yes
-RestrictNamespaces=net
+RestrictNamespaces=net mnt
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-SystemCallFilter=@system-service @mount
+SystemCallFilter=@system-service @mount @setuid @process
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
 LockPersonality=yes

@@ -3,9 +3,14 @@
 package tufext
 
 import (
+	"fmt"
+	"iter"
 	"net/url"
 
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
+
+	"go.amutable.dev/quarry/internal/generics"
+	"go.amutable.dev/quarry/internal/jsonutils"
 )
 
 // TargetFilesExt is a wrapper around [tufmetadata.TargetFiles] to allow for
@@ -25,7 +30,7 @@ const overrideURLField = "x-quarry-override-url"
 // WithOverrideURL adds and override URL for the given target file. See
 // [OverrideURL] for more information around what override URLs are.
 func (t targetFilesExt) WithOverrideURL(u *url.URL) targetFilesExt {
-	_, err := SetExtensionJSON(t.TargetFiles, overrideURLField, u.String())
+	_, err := jsonutils.SetExtensionJSON(t.TargetFiles, overrideURLField, u.String())
 	if err != nil {
 		panic(err) // programmer error
 	}
@@ -41,7 +46,8 @@ func (t targetFilesExt) WithOverrideURL(u *url.URL) targetFilesExt {
 // also attempt to use the provided URL (unless there is some privacy concern
 // or the machine is meant to operate offline).
 func (t targetFilesExt) OverrideURL() (*url.URL, error) {
-	urlStr, err := GetExtensionJSON[string](t.TargetFiles, overrideURLField)
+	// TODO: Cache this....
+	urlStr, err := jsonutils.GetExtensionJSON[string](t.TargetFiles, overrideURLField)
 	if err != nil {
 		return nil, err
 	}
@@ -49,4 +55,32 @@ func (t targetFilesExt) OverrideURL() (*url.URL, error) {
 		return nil, nil //nolint:nilnil // nil indicates no override found
 	}
 	return url.Parse(*urlStr)
+}
+
+// FetchURL returns the set of URLs that can be used to fetch this resource. If
+// more than one URL is given, the target file being unavailable at one URL
+// does not mean it is not available at a later URL.
+func (t targetFilesExt) FetchURLs(baseURLs ...*url.URL) iter.Seq2[*url.URL, error] {
+	return generics.ErrorIter(func(yield func(*url.URL) bool) error {
+		if len(baseURLs) < 1 {
+			// Programmer error.
+			return fmt.Errorf("target %s FetchURLs called with no baseURLs", t.Path)
+		}
+
+		// Prefer override URLs over alternatives.
+		if overrideURL, err := t.OverrideURL(); err != nil {
+			return fmt.Errorf("invalid override url: %w", err)
+		} else if overrideURL != nil {
+			if !yield(overrideURL) {
+				return nil
+			}
+		}
+		// Finally, yield the default URLs.
+		for _, url := range baseURLs {
+			if !yield(url.JoinPath(t.Path)) {
+				return nil
+			}
+		}
+		return nil
+	})
 }

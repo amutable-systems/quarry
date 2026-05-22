@@ -1,6 +1,6 @@
 // Copyright (C) 2026 Amutable GmbH
 
-package main
+package config
 
 import (
 	"os"
@@ -54,7 +54,7 @@ func TestParseConfig_RootTrust_Valid(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			conf, err := parseConfig(strings.NewReader(repoBlock(tc.rootTrust)))
+			conf, err := Parse(strings.NewReader(repoBlock(tc.rootTrust)))
 			require.NoError(t, err)
 			require.Contains(t, conf.Repos, "example")
 			require.NotNil(t, conf.Repos["example"].RootTrust)
@@ -131,7 +131,7 @@ func TestParseConfig_RootTrust_Invalid(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseConfig(strings.NewReader(repoBlock(tc.rootTrust)))
+			_, err := Parse(strings.NewReader(repoBlock(tc.rootTrust)))
 			require.Error(t, err)
 			assert.ErrorContains(t, err, tc.wantErr)
 		})
@@ -139,15 +139,15 @@ func TestParseConfig_RootTrust_Invalid(t *testing.T) {
 }
 
 func TestParseConfig_OnlyVersion(t *testing.T) {
-	conf, err := parseConfig(strings.NewReader(`config_version = 1`))
+	conf, err := Parse(strings.NewReader(`config_version = 1`))
 	require.NoError(t, err)
 	assert.Empty(t, conf.Repos)
 }
 
 func TestParseConfig_VersionMissing(t *testing.T) {
-	_, err := parseConfig(strings.NewReader(""))
+	_, err := Parse(strings.NewReader(""))
 	require.Error(t, err)
-	assert.ErrorIs(t, err, errUnsupportedVersion)
+	assert.ErrorIs(t, err, ErrUnsupportedVersion)
 }
 
 func TestParseConfig_VersionUnsupported(t *testing.T) {
@@ -160,15 +160,15 @@ func TestParseConfig_VersionUnsupported(t *testing.T) {
 		{"Negative", "-1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseConfig(strings.NewReader(`config_version = ` + tc.version))
+			_, err := Parse(strings.NewReader(`config_version = ` + tc.version))
 			require.Error(t, err)
-			assert.ErrorIs(t, err, errUnsupportedVersion)
+			assert.ErrorIs(t, err, ErrUnsupportedVersion)
 		})
 	}
 }
 
 func TestParseConfig_RepoMissingRootTrust(t *testing.T) {
-	_, err := parseConfig(strings.NewReader(`
+	_, err := Parse(strings.NewReader(`
 config_version = 1
 [repo.example]
 meta_root_url = "https://example.com"
@@ -178,7 +178,7 @@ meta_root_url = "https://example.com"
 }
 
 func TestParseConfig_RepoNameFromKey(t *testing.T) {
-	conf, err := parseConfig(strings.NewReader(`
+	conf, err := Parse(strings.NewReader(`
 config_version = 1
 [repo."updates.example.com/alpha"]
 root_trust = "insecure-tofu"
@@ -190,7 +190,7 @@ meta_root_url = "https://example.com"
 }
 
 func TestParseConfig_DefaultMetaRootURL(t *testing.T) {
-	conf, err := parseConfig(strings.NewReader(`
+	conf, err := Parse(strings.NewReader(`
 config_version = 1
 [repo."updates.example.com/alpha"]
 root_trust = "insecure-tofu"
@@ -204,7 +204,7 @@ root_trust = "insecure-tofu"
 }
 
 func TestParseConfig_DefaultDataRootURL(t *testing.T) {
-	conf, err := parseConfig(strings.NewReader(`
+	conf, err := Parse(strings.NewReader(`
 config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
@@ -218,7 +218,7 @@ meta_root_url = "https://meta.example.com/sub"
 }
 
 func TestParseConfig_CustomURLs(t *testing.T) {
-	conf, err := parseConfig(strings.NewReader(`
+	conf, err := Parse(strings.NewReader(`
 config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
@@ -232,7 +232,7 @@ data_root_url = "https://data.example.com/blobs"
 }
 
 func TestParseConfig_MultipleRepos(t *testing.T) {
-	conf, err := parseConfig(strings.NewReader(`
+	conf, err := Parse(strings.NewReader(`
 config_version = 1
 [repo.alpha]
 root_trust = "insecure-tofu"
@@ -258,7 +258,7 @@ data_root_url = "https://beta.example.com/data"
 }
 
 func TestParseConfig_UnknownTopLevelKey(t *testing.T) {
-	_, err := parseConfig(strings.NewReader(`
+	_, err := Parse(strings.NewReader(`
 config_version = 1
 some_unknown_key = "value"
 
@@ -271,7 +271,7 @@ meta_root_url = "https://example.com"
 }
 
 func TestParseConfig_UnknownRepoKey(t *testing.T) {
-	_, err := parseConfig(strings.NewReader(`
+	_, err := Parse(strings.NewReader(`
 config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
@@ -283,7 +283,7 @@ not_a_real_field = "oops"
 }
 
 func TestParseConfig_InvalidTOML(t *testing.T) {
-	_, err := parseConfig(strings.NewReader("this is not = valid = toml ="))
+	_, err := Parse(strings.NewReader("this is not = valid = toml ="))
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "invalid config")
 }
@@ -291,7 +291,7 @@ func TestParseConfig_InvalidTOML(t *testing.T) {
 func TestParseConfig_BadURL(t *testing.T) {
 	// [toml.ParseError] has no Unwrap so [errors.As] cannot reach the
 	// underlying [url.EscapeError]; match a structural substring instead.
-	_, err := parseConfig(strings.NewReader(`
+	_, err := Parse(strings.NewReader(`
 config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
@@ -302,11 +302,11 @@ meta_root_url = "https://example.com/%zz"
 }
 
 func TestParseConfig_ExampleFile(t *testing.T) {
-	f, err := os.Open("../../contrib/quarry-client.toml") //nolint:forbidigo // test code
+	f, err := os.Open("../../../contrib/quarry-client.toml") //nolint:forbidigo // test code
 	require.NoError(t, err)
 	defer f.Close() //nolint:errcheck // test code
 
-	conf, err := parseConfig(f)
+	conf, err := Parse(f)
 	require.NoError(t, err)
 
 	const repoName = "updates.example.com/alpha"
@@ -353,7 +353,7 @@ func TestParseConfig_Expand_RepoName(t *testing.T) {
 		{"MachineIDEscaped", "%em", `^` + uuidPat + `$`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			conf, err := parseConfig(strings.NewReader(`
+			conf, err := Parse(strings.NewReader(`
 config_version = 1
 [repo."` + tc.key + `"]
 root_trust = "insecure-tofu"
@@ -372,7 +372,7 @@ meta_root_url = "https://example.com"
 }
 
 func TestParseConfig_Expand_RepoName_MachineIDConsistent(t *testing.T) {
-	conf, err := parseConfig(strings.NewReader(`
+	conf, err := Parse(strings.NewReader(`
 config_version = 1
 [repo."a/%m"]
 root_trust = "insecure-tofu"
@@ -428,7 +428,7 @@ func TestParseConfig_Expand_URL(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			conf, err := parseConfig(strings.NewReader(`
+			conf, err := Parse(strings.NewReader(`
 config_version = 1
 [repo."example.com/foo"]
 root_trust = "insecure-tofu"
@@ -447,7 +447,7 @@ meta_root_url = "` + tc.template + `"
 }
 
 func TestParseConfig_Expand_URL_PercentEncoded(t *testing.T) {
-	conf, err := parseConfig(strings.NewReader(`
+	conf, err := Parse(strings.NewReader(`
 config_version = 1
 [repo.example]
 root_trust = "insecure-tofu"
@@ -463,7 +463,7 @@ meta_root_url = "https://example.com/100%25-uptime/%2A/%aF"
 }
 
 func TestParseConfig_Expand_URL_PerRepoR(t *testing.T) {
-	conf, err := parseConfig(strings.NewReader(`
+	conf, err := Parse(strings.NewReader(`
 config_version = 1
 [repo.alpha]
 root_trust = "insecure-tofu"
@@ -508,7 +508,7 @@ func TestParseConfig_Expand_Bundled(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			conf, err := parseConfig(strings.NewReader(`
+			conf, err := Parse(strings.NewReader(`
 config_version = 1
 [repo."example.com/foo"]
 root_trust = { type = "bundled", path = "` + tc.path + `" }
@@ -567,7 +567,7 @@ func TestParseConfig_Expand_CacheDir(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			conf, err := parseConfig(strings.NewReader(`
+			conf, err := Parse(strings.NewReader(`
 config_version = 1
 cache_dir = "` + tc.cacheDir + `"
 `))
@@ -707,7 +707,7 @@ cache_dir = "%m"`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseConfig(strings.NewReader(tc.config))
+			_, err := Parse(strings.NewReader(tc.config))
 			require.Error(t, err)
 			assert.ErrorContains(t, err, tc.wantErr)
 		})

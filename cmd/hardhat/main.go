@@ -11,6 +11,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"go.amutable.dev/quarry/cmd/internal/cliext"
 	"go.amutable.dev/quarry/internal/keystore"
 )
 
@@ -76,7 +77,7 @@ var keystoreDriversCommand = &cli.Command{
 	},
 }
 
-var app = &cli.Command{
+var app = cliext.WithRefTimeFlag(&cli.Command{
 	Name:  "hardhat",
 	Usage: "very preliminary quarry operator",
 	// TODO: We might want to have a flag to specify a custom context with
@@ -88,7 +89,7 @@ var app = &cli.Command{
 		keystoreDriversCommand,
 		repoctlCommand,
 	},
-}
+})
 
 func Main(args []string) error {
 	return app.Run(context.Background(), args)
@@ -96,7 +97,7 @@ func Main(args []string) error {
 
 func main() {
 	if err := Main(os.Args); err != nil {
-		fmt.Printf("%v\n", err)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 }

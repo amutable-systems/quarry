@@ -10,6 +10,7 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"go.amutable.dev/quarry/cmd/internal/cliext"
+	"go.amutable.dev/quarry/internal/ctxext"
 	"go.amutable.dev/quarry/internal/keystore"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufrepo"
@@ -53,7 +54,7 @@ func withKeystoreFlag(cmd *cli.Command) *cli.Command {
 }
 
 func ctxKeystore(ctx context.Context) *keystore.Store {
-	return cliext.CtxValue[*keystore.Store](ctx, keystoreCtxKey)
+	return ctxext.Value[*keystore.Store](ctx, keystoreCtxKey)
 }
 
 const repoCtxKey ctxKey = "--repo-metadir"
@@ -99,5 +100,5 @@ func withRepoFlag(cmd *cli.Command) *cli.Command {
 }
 
 func ctxRepo(ctx context.Context) *tufrepo.Repository {
-	return cliext.CtxValue[*tufrepo.Repository](ctx, repoCtxKey)
+	return ctxext.Value[*tufrepo.Repository](ctx, repoCtxKey)
 }

@@ -18,7 +18,7 @@ import (
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 )
 
-var fetchCommand = withRefTimeFlag(&cli.Command{
+var fetchCommand = &cli.Command{
 	Name:  "fetch",
 	Usage: "fetch a specific file from the repos",
 	Flags: []cli.Flag{
@@ -40,8 +40,6 @@ var fetchCommand = withRefTimeFlag(&cli.Command{
 		},
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) (Err error) {
-		config := ctxConfig(ctx)
-
 		target := cmd.StringArg("target")
 		if target == "" {
 			return fmt.Errorf("target is a required argument")
@@ -72,42 +70,25 @@ var fetchCommand = withRefTimeFlag(&cli.Command{
 		}
 
 		repoName := cmd.String("repo")
-		updaters, err := getUpdaters(ctx, repoName)
+		client, err := getClient(ctx, repoName)
 		if err != nil {
-			return fmt.Errorf("get tuf-client updater for repo %s: %w", repoName, err)
+			return fmt.Errorf("get tuf client for repo %s: %w", repoName, err)
 		}
-		if len(updaters) != 1 {
-			return fmt.Errorf("incorrect number of updaters returned? %#v", updaters)
-		}
-		updater := updaters[repoName]
-		repo := config.Repos[repoName]
+		defer funchelpers.VerifyClose(&Err, client)
 
-		targetFile, err := updater.GetTargetInfo(target)
+		rdr, info, err := client.FetchTargetFile(ctx, target)
 		if err != nil {
-			return fmt.Errorf("get target info for %s: %w", target, err)
-		}
-
-		// Rather than using the go-tuf DownloadTarget (which requires the data
-		// be stored in-memory) we fetch it directly.
-
-		targetURL, err := getTargetURL(repo, targetFile)
-		if err != nil {
-			return fmt.Errorf("get url for target %s: %w", target, err)
-		}
-
-		rdr, err := verifiedHTTPGet(ctx, targetURL, targetFile.Length, targetFile.Hashes)
-		if err != nil {
-			return fmt.Errorf("get target %s (%s): %w", target, targetURL, err)
+			return fmt.Errorf("fetch target %s: %w", target, err)
 		}
 		defer funchelpers.VerifyClose(&Err, rdr)
 
-		bar := progressbar.DefaultBytes(targetFile.Length, targetFile.Path)
+		bar := progressbar.DefaultBytes(info.Length, info.Path)
 
 		if _, err := io.Copy(io.MultiWriter(output, bar), rdr); err != nil {
-			return fmt.Errorf("stream target %s (%s) to output: %w", target, targetURL, err)
+			return fmt.Errorf("stream target %s to output: %w", target, err)
 		}
 		if err := rdr.Close(); err != nil {
-			return fmt.Errorf("close check %s (%s) failed: %w", target, targetURL, err)
+			return fmt.Errorf("close check %s failed: %w", target, err)
 		}
 
 		if outputPath != "-" {
@@ -119,7 +100,7 @@ var fetchCommand = withRefTimeFlag(&cli.Command{
 			}
 		}
 
-		fmt.Fprintf(os.Stderr, "Wrote %d bytes to %q.\n", targetFile.Length, outputPath)
+		fmt.Fprintf(os.Stderr, "Wrote %d bytes to %q.\n", info.Length, outputPath)
 		return nil
 	},
-})
+}
