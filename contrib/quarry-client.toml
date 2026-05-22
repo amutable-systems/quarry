@@ -4,18 +4,18 @@ config_version = 1
 cache_dir = "/var/lib/quarry-client/latest-metadata"
 #include = ["/etc/quarry-client.conf.d/*.conf"] # TODO: Implement drop-ins.
 
-# Official AmutableOS update repository.
-[repo."updates.example.com/alpha"]
+# Official AmutableOS update repository (nightly stream).
+[repo."updates.example.com/base-os/nightly"]
 # Use the bundled root.json in the base OS image as the root of trust.
 #  %eR expands to the repository name, passed through "systemd-escape --path".
-root_trust = { type = "bundled", path = "/usr/share/amutable-os/quarry/trusted/%eR-root.json" }
-meta_root_url = "https://updates.example.com/alpha"
+root_trust = { type = "bundled", path = "/usr/share/amutable/quarry/trusted/%eR-root.json" }
+meta_root_url = "https://updates.example.com/update"
 data_root_url = "https://updates.example.com/update"
 
 # Per-machine repository.
 #  %m expands to the per-machine repo (blinded by the Amutable app-specific
 #     UUID a-la "systemd-i128 machine-id -a ...").
-[repo."userdata.example.com/tenant/machine/%m"]
+[repo."userdata.example.com/tenant/machine-id/%m"]
 root_trust = "insecure-tofu" # TODO: Make this use the TPM-encrypted trust model.
 meta_root_url = "https://userdata.example.com/tenant/machine-id/%m"
-data_root_url = "https://web-dashboard-183175217918.europe-west1.run.app/repos/machine-id/%m"
+#data_root_url = "https://userdata.example.com/tenant/machine-id/%m/targets"
