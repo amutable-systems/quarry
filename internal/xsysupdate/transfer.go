@@ -32,6 +32,12 @@ const (
 	// point to the local quarry-http-client server).
 	TransferFilePrefix = ExtensionTargetPrefix + "sysupdate."
 
+	liveLink = "live"
+	lastLink = "last"
+)
+
+// These are variables so that we can modify them in tests.
+var (
 	// transferInstallDir is the directory where the transfer file *symlinks*
 	// will be installed. This needs to be one of systemd-sysupdate's search
 	// directories, be writable, and be persistent across reboot.
@@ -42,9 +48,6 @@ const (
 	// using CurrentSymlink.
 	// FIXME: This is only needed for the systemd bug workaround in Init.
 	extensionInstallDir = transferInstallDir + "/extensions"
-
-	liveLink = "live"
-	lastLink = "last"
 )
 
 // transferInstallPatterns are a set of globs that will match the symlink names
