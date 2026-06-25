@@ -1,0 +1,12 @@
+# Copyright (C) 2026 Amutable GmbH
+
+/.git
+
+# Docker-related stuff shouldn't be in the context.
+/Dockerfile
+/.dockerignore
+
+# Binaries.
+/hardhat
+/quarry-client
+/quarry-sysupdate

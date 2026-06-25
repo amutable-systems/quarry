@@ -9,12 +9,20 @@ unitdir := prefix / "lib/systemd/system"
 client_http_port := env("CLIENT_HTTP_PORT", "555")
 buildtags := env("BUILDTAGS", "http insecure")
 
+container_engine := env("CONTAINER_ENGINE", "docker")
+
 default: build-all
 
 build-all: \
 		(build "hardhat" buildtags) \
 		(build "quarry-client" buildtags) \
 		(build "quarry-sysupdate" buildtags)
+
+build-all-in-container:
+	{{container_engine}} buildx build -f Dockerfile --target export \
+		--build-arg BUILDTAGS="{{buildtags}}" \
+		-o type=local,dest="{{outdir}}" \
+		.
 
 install: install-hardhat install-client install-client-config
 
