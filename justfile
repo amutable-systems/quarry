@@ -1,5 +1,6 @@
 # Copyright (C) 2026 Amutable GmbH
 
+outdir := env("OUTDIR", ".")
 destdir := env("DESTDIR", "")
 prefix := "/usr"
 sysconfdir := env("SYSCONFDIR", "/etc")
@@ -18,14 +19,14 @@ build_all: \
 install: install_hardhat install_client install_client_config
 
 install_hardhat:
-	install -Dm0755 ./hardhat {{destdir}}{{bindir}}/quarry-hardhat
+	install -Dm0755 {{outdir}}/hardhat {{destdir}}{{bindir}}/quarry-hardhat
 
 install_client:
-	install -Dm0755 ./quarry-client {{destdir}}{{bindir}}/quarry-client
+	install -Dm0755 {{outdir}}/quarry-client {{destdir}}{{bindir}}/quarry-client
 	install -dm0755 {{destdir}}{{unitdir}}
 
 install_sysupdate:
-	install -Dm0755 ./quarry-sysupdate {{destdir}}{{bindir}}/quarry-sysupdate
+	install -Dm0755 {{outdir}}/quarry-sysupdate {{destdir}}{{bindir}}/quarry-sysupdate
 	install -Dm0644 -t {{destdir}}{{unitdir}} ./contrib/systemd/quarry-sysupdate*
 
 install_client_http_service:
@@ -37,4 +38,4 @@ install_client_config:
 
 [private]
 build cmd tags="":
-	go build -o "{{cmd}}" -tags "{{tags}}" "./cmd/{{cmd}}"
+	go build -o "{{outdir}}/{{cmd}}" -tags "{{tags}}" "./cmd/{{cmd}}"
