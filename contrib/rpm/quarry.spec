@@ -83,7 +83,7 @@ schemes than are currently supported by upstream systemd.
 
 %build
 export BUILDTAGS="%{buildtags}"
-just build_all
+just build-all
 
 %install
 export DESTDIR=%{buildroot}
@@ -97,7 +97,7 @@ just install
 install -Dm0644 ./contrib/quarry-client.toml %{buildroot}%{_sharedstatedir}/%{name}-client/config.toml
 
 %if %{with http}
-just install_client_http_service
+just install-client-http-service
 %endif
 
 #install -dm0755 %{buildroot}%{_sharedstatedir}/%{name}
@@ -111,7 +111,7 @@ install -Dm0644 ./contrib/systemd/quarry-client-http.sysusers %{buildroot}%{_sys
 # Directory for bundled trust roots.
 install -dm0755 %{buildroot}%{_datarootdir}/amutable/%{name}/bundled
 
-just install_sysupdate
+just install-sysupdate
 
 %if %{with http}
 %post client
