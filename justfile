@@ -9,31 +9,31 @@ unitdir := prefix / "lib/systemd/system"
 client_http_port := env("CLIENT_HTTP_PORT", "555")
 buildtags := env("BUILDTAGS", "http insecure")
 
-default: build_all
+default: build-all
 
-build_all: \
+build-all: \
 		(build "hardhat" buildtags) \
 		(build "quarry-client" buildtags) \
 		(build "quarry-sysupdate" buildtags)
 
-install: install_hardhat install_client install_client_config
+install: install-hardhat install-client install-client-config
 
-install_hardhat:
+install-hardhat:
 	install -Dm0755 {{outdir}}/hardhat {{destdir}}{{bindir}}/quarry-hardhat
 
-install_client:
+install-client:
 	install -Dm0755 {{outdir}}/quarry-client {{destdir}}{{bindir}}/quarry-client
 	install -dm0755 {{destdir}}{{unitdir}}
 
-install_sysupdate:
+install-sysupdate:
 	install -Dm0755 {{outdir}}/quarry-sysupdate {{destdir}}{{bindir}}/quarry-sysupdate
 	install -Dm0644 -t {{destdir}}{{unitdir}} ./contrib/systemd/quarry-sysupdate*
 
-install_client_http_service:
+install-client-http-service:
 	sed 's|@bindir@|{{bindir}}|g;s|@client_http_port@|{{client_http_port}}|g' contrib/systemd/quarry-client-http.service.in >{{destdir}}{{unitdir}}/quarry-client-http.service
 	sed 's|@bindir@|{{bindir}}|g;s|@client_http_port@|{{client_http_port}}|g' contrib/systemd/quarry-client-http.socket.in >{{destdir}}{{unitdir}}/quarry-client-http.socket
 
-install_client_config:
+install-client-config:
 	install -Dm0644 ./contrib/quarry-client.toml {{destdir}}{{sysconfdir}}/quarry-client.toml
 
 [private]
