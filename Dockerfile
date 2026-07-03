@@ -38,6 +38,8 @@ ARG LIBPATHRS_SHA256=f8f4a9419eb839cd5decbd120b65f0495bf6eac07155477fe39a8c2a23d
 ADD --checksum=sha256:${LIBPATHRS_SHA256} \
     https://github.com/cyphar/libpathrs/releases/download/v${LIBPATHRS_VERSION}/libpathrs-${LIBPATHRS_VERSION}.tar.xz \
     /usr/src/libpathrs.tar.xz
+# TODO: Switch to ADD --unpack rather than a separate extraction stage, once
+# Podman supports it. <https://github.com/podman-container-tools/buildah/issues/6655>
 RUN tar -xJf /usr/src/libpathrs.tar.xz -C /usr/src
 
 # Build and install libpathrs (with no libpathrs.so).
