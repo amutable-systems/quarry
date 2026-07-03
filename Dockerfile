@@ -35,10 +35,10 @@ RUN apt-get update -y && \
 # Should be kept in sync with go.mod.
 ARG LIBPATHRS_VERSION=0.2.5
 ARG LIBPATHRS_SHA256=f8f4a9419eb839cd5decbd120b65f0495bf6eac07155477fe39a8c2a23da589d
-ADD --unpack \
-	--checksum=sha256:${LIBPATHRS_SHA256} \
+ADD --checksum=sha256:${LIBPATHRS_SHA256} \
     https://github.com/cyphar/libpathrs/releases/download/v${LIBPATHRS_VERSION}/libpathrs-${LIBPATHRS_VERSION}.tar.xz \
-    /usr/src
+    /usr/src/libpathrs.tar.xz
+RUN tar -xJf /usr/src/libpathrs.tar.xz -C /usr/src
 
 # Build and install libpathrs (with no libpathrs.so).
 WORKDIR /usr/src/libpathrs-${LIBPATHRS_VERSION}
