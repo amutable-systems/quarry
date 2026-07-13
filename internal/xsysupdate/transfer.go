@@ -278,8 +278,7 @@ func (ext *TransferFileExtension) ApplyTarget(ctx context.Context, info *tufclie
 // BeforeUpdate adds /etc symlinks for all of the transfer files installed
 // during this update, and removes any old quarry-managed transfer files.
 func (ext *TransferFileExtension) BeforeUpdate(_ context.Context) (Err error) {
-	// TODO(libpathrs): Will break with libpathrs v0.2.5.
-	if err := ext.storeDir.Symlink(liveLink, ext.newDirSubpath); err != nil {
+	if err := ext.storeDir.Symlink(ext.newDirSubpath, liveLink); err != nil {
 		return fmt.Errorf("add %s link to %s: %w", liveLink, ext.newDirSubpath, err)
 	}
 
