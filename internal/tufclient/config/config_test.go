@@ -309,15 +309,15 @@ func TestParseConfig_ExampleFile(t *testing.T) {
 	conf, err := Parse(f)
 	require.NoError(t, err)
 
-	const repoName = "updates.example.com/alpha"
+	const repoName = "updates.example.com/base-os/nightly"
 	require.Contains(t, conf.Repos, repoName)
 	repo := conf.Repos[repoName]
 
 	assert.Equal(t, repoName, repo.Name)
 	assert.Equal(t,
-		bundledRootTrust{Path: "/usr/share/amutable-os/quarry/trusted/updates.example.com-alpha-root.json"},
+		bundledRootTrust{Path: `/usr/share/amutable/quarry/trusted/updates.example.com-base\x2dos-nightly-root.json`},
 		repo.RootTrust.RootTrustSource)
-	assert.Equal(t, "https://updates.example.com/alpha", repo.MetaRootURL.String())
+	assert.Equal(t, "https://updates.example.com/update", repo.MetaRootURL.String())
 	assert.Equal(t, "https://updates.example.com/update", repo.DataRootURL.String())
 }
 
