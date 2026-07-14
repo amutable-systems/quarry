@@ -90,18 +90,23 @@ func (ks *Store) sync() (Err error) {
 	return err
 }
 
-// DefaultDriver is the default recommended driver that callers should use when
-// using [Store.GenerateKey].
+// DefaultDriver is the fallback driver used by [Store.GenerateKey] when no
+// [WithDriver] option is provided.
 //
 // TODO: This should be dynamic!
 const DefaultDriver = "insecure"
 
 // generateKey is the shared body of [Store.GenerateKey] and
-// [Store.RotateKey].
-func (ks *Store) generateKey(ctx context.Context, res *Resolver, driverName string) (KeyID, *GenericKey, error) {
-	driver, ok := GetDriver(driverName)
+// [Store.RotateKey]. The fallbackDriver is used if no [WithDriver] option
+// was given.
+func (ks *Store) generateKey(ctx context.Context, res *Resolver, fallbackDriver string) (KeyID, *GenericKey, error) {
+	name := res.DriverName()
+	if name == "" {
+		name = fallbackDriver
+	}
+	driver, ok := GetDriver(name)
 	if !ok {
-		return BadKeyID, nil, fmt.Errorf("cannot generate key: unknown driver %s", driverName)
+		return BadKeyID, nil, fmt.Errorf("cannot generate key: unknown driver %s", name)
 	}
 
 	key, err := driver.GenerateKey(ctx, res)
@@ -119,22 +124,20 @@ func (ks *Store) generateKey(ctx context.Context, res *Resolver, driverName stri
 	return keyID, key, nil
 }
 
-// GenerateKey generates a new key with the named driver. This is mostly a
+// GenerateKey generates a new key. The driver is selected with
+// [WithDriver], falling back to [DefaultDriver]. This is mostly a
 // shorthand for [Driver.GenerateKey] and [Store.AddKey].
-//
-// TODO: The driver name here should be a GenerateOption (with a default value
-// based on the priority configured by each driver)...
-func (ks *Store) GenerateKey(ctx context.Context, driverName string, opts ...GenerateOption) (KeyID, *GenericKey, error) {
+func (ks *Store) GenerateKey(ctx context.Context, opts ...GenerateOption) (KeyID, *GenericKey, error) {
 	res, err := NewGenerateResolver(opts)
 	if err != nil {
 		return BadKeyID, nil, err
 	}
-	return ks.generateKey(ctx, res, driverName)
+	return ks.generateKey(ctx, res, DefaultDriver)
 }
 
 // RotateKey generates a new key suitable as a replacement for the provided
-// [KeyID]. The new key uses the same driver as the old key with
-// driver-default parameters.
+// [KeyID]. By default the new key uses the same driver as the old key
+// (pass [WithDriver] to override) with driver-default parameters.
 //
 // Since the underlying mechanism is to generate a fresh key, every
 // [RotateOption] must also implement [GenerateOption].
@@ -155,7 +158,10 @@ func (ks *Store) RotateKey(ctx context.Context, oldKeyID KeyID, opts ...RotateOp
 		user = append(user, opt)
 	}
 
-	res := newResolver(user)
+	res, err := newResolver(user)
+	if err != nil {
+		return BadKeyID, nil, err
+	}
 	return ks.generateKey(ctx, res, oldKey.Driver)
 }
 

@@ -297,7 +297,7 @@ func TestRootBuilder_Sign_BadGenerateKeyDriver(t *testing.T) {
 	ctx, store := openTestStore(t)
 
 	builder := tufext.NewRootBuilder()
-	builder.GenerateKeyDriver = "nonexistent"
+	builder.GenerateKeyOpts = []keystore.GenerateOption{keystore.WithDriver("nonexistent")}
 
 	meta, newKeyIDs, err := builder.Sign(ctx, store)
 	require.Error(t, err)

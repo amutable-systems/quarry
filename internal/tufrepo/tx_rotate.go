@@ -100,7 +100,10 @@ func (tx *Transaction) rotateRoleKeys(ctx context.Context, roleName string, stor
 		if errors.Is(err, keystore.ErrNoSuchKey) {
 			// The key is not locally managed, we need to generate a new one...
 			// TODO: If this is a root key we should probably error out here...
-			newKeyID, newKey, err = store.GenerateKey(ctx, keystore.DefaultDriver, generateOpts...)
+			// Store.GenerateKey falls back to keystore.DefaultDriver when no
+			// keystore.WithDriver option is supplied, matching the previous
+			// explicit behavior.
+			newKeyID, newKey, err = store.GenerateKey(ctx, generateOpts...)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("could not generate a new key to replace key %s: %w", oldKeyID, err)

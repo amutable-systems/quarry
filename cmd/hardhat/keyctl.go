@@ -45,7 +45,7 @@ var keyctlGenerateCommand = &cli.Command{
 		store := ctxKeystore(ctx)
 		driver := cmd.String("driver")
 
-		keyID, _, err := store.GenerateKey(ctx, driver)
+		keyID, _, err := store.GenerateKey(ctx, keystore.WithDriver(driver))
 		if err != nil {
 			return fmt.Errorf("failed to generate key: %w", err)
 		}

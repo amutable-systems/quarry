@@ -41,3 +41,13 @@ type ExportOption interface {
 	Option
 	IsExportOption()
 }
+
+// GenericOption is satisfied by options that apply to all of the
+// key-provisioning operations ([Store.GenerateKey], [Store.RotateKey], and
+// [Driver.ImportKey]). Export operations consume an existing key rather
+// than producing one, so they have no use for these options.
+type GenericOption interface {
+	GenerateOption
+	RotateOption
+	ImportOption
+}

@@ -353,7 +353,7 @@ func TestStore_GenerateKey(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close() //nolint:errcheck // test code
 
-	keyID, key, err := store.GenerateKey(ctx, testDriverName)
+	keyID, key, err := store.GenerateKey(ctx, keystore.WithDriver(testDriverName))
 	require.NoError(t, err)
 	assert.True(t, keyID.IsValid())
 	require.NotNil(t, key)
@@ -394,7 +394,7 @@ func TestStore_GenerateKey_UnknownDriver(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close() //nolint:errcheck // test code
 
-	keyID, key, err := store.GenerateKey(ctx, "nonexistent-driver")
+	keyID, key, err := store.GenerateKey(ctx, keystore.WithDriver("nonexistent-driver"))
 	assert.Error(t, err) //nolint:testifylint // assert is fine for error path checks
 	assert.Equal(t, keystore.BadKeyID, keyID)
 	assert.Nil(t, key)
@@ -412,7 +412,7 @@ func TestStore_GenerateKey_Multiple(t *testing.T) {
 	// Generate several keys via GenerateKey.
 	var keyIDs []keystore.KeyID //nolint:prealloc // test code
 	for range 3 {
-		keyID, _, err := store.GenerateKey(ctx, testDriverName)
+		keyID, _, err := store.GenerateKey(ctx, keystore.WithDriver(testDriverName))
 		require.NoError(t, err)
 		keyIDs = append(keyIDs, keyID)
 	}
@@ -437,7 +437,7 @@ func TestStore_RotateKey(t *testing.T) {
 	defer store.Close() //nolint:errcheck // test code
 
 	// Generate an initial key to rotate.
-	oldKeyID, oldKey, err := store.GenerateKey(ctx, testDriverName)
+	oldKeyID, oldKey, err := store.GenerateKey(ctx, keystore.WithDriver(testDriverName))
 	require.NoError(t, err)
 
 	// Rotate the key.

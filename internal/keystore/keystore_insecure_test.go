@@ -205,7 +205,10 @@ func TestInsecure_GenerateKey_UnsupportedOption(t *testing.T) {
 	ctx := context.Background()
 	store := newInsecureStore(t)
 
-	_, _, err := store.GenerateKey(ctx, "insecure", unsupportedTestOpt{})
+	_, _, err := store.GenerateKey(ctx,
+		keystore.WithDriver("insecure"),
+		unsupportedTestOpt{},
+	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported option")
 	assert.Contains(t, err.Error(), "unsupportedTestOpt()")

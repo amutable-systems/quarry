@@ -33,7 +33,7 @@ func openTestStore(t *testing.T) (context.Context, *keystore.Store) {
 // stringified [keystore.KeyID].
 func generateInStore(ctx context.Context, t *testing.T, store *keystore.Store) (*keystore.GenericKey, string) {
 	t.Helper()
-	_, key, err := store.GenerateKey(ctx, "insecure")
+	_, key, err := store.GenerateKey(ctx, keystore.WithDriver("insecure"))
 	require.NoError(t, err)
 	id, err := key.ID()
 	require.NoError(t, err)

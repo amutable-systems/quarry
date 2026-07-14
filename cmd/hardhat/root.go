@@ -110,7 +110,7 @@ func generateRoot(ctx context.Context, cmd *cli.Command) (_ *tufext.SignedRoot, 
 	for roleName, toGenerate := range toGenerateKeys {
 		driver := cmd.String("driver")
 		for n := range toGenerate {
-			keyID, _, err := store.GenerateKey(ctx, driver)
+			keyID, _, err := store.GenerateKey(ctx, keystore.WithDriver(driver))
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to generate key %d (of %d) for role %s: %w", n+1, toGenerate, roleName, err)
 			}
@@ -121,7 +121,7 @@ func generateRoot(ctx context.Context, cmd *cli.Command) (_ *tufext.SignedRoot, 
 
 	// Generate and sign the initial root.
 	builder := tufext.NewRootBuilder()
-	builder.GenerateKeyDriver = cmd.String("driver")
+	builder.GenerateKeyOpts = append(builder.GenerateKeyOpts, keystore.WithDriver(cmd.String("driver")))
 	if refTime, ok := ctxext.RefTime(ctx); ok {
 		builder.RefTime = refTime
 	}

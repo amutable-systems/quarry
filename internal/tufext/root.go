@@ -28,18 +28,18 @@ type RootBuilder struct {
 	RefTime     time.Time
 	ExpireAfter time.Duration
 
-	// Options for configurating the on-demand generation of keys in Sign.
-	GenerateKeyDriver string
-	GenerateKeyOpts   []keystore.GenerateOption
+	// GenerateKeyOpts configures the on-demand generation of keys in Sign.
+	// Pass [keystore.WithDriver] to pin a specific driver; otherwise the
+	// [keystore.Store] picks its default.
+	GenerateKeyOpts []keystore.GenerateOption
 }
 
 // NewRootBuilder constructs a new [RootBuilder] with default values.
 func NewRootBuilder() *RootBuilder {
 	return &RootBuilder{
-		inner:             DefaultRoot().Signed,
-		RefTime:           time.Now().UTC(),
-		ExpireAfter:       2 * 365 * 24 * time.Hour, // TODO: Merge this with Transaction.expiry?
-		GenerateKeyDriver: keystore.DefaultDriver,
+		inner:       DefaultRoot().Signed,
+		RefTime:     time.Now().UTC(),
+		ExpireAfter: 2 * 365 * 24 * time.Hour, // TODO: Merge this with Transaction.expiry?
 	}
 }
 
@@ -130,7 +130,7 @@ func (builder *RootBuilder) Sign(ctx context.Context, store *keystore.Store, ext
 		if role := builder.inner.Roles[roleName]; role != nil {
 			continue // role is already defined
 		}
-		newKeyID, newKey, err := store.GenerateKey(ctx, builder.GenerateKeyDriver, builder.GenerateKeyOpts...)
+		newKeyID, newKey, err := store.GenerateKey(ctx, builder.GenerateKeyOpts...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("cannot generate default key for role %s: %w", roleName, err)
 		}

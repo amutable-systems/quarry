@@ -211,7 +211,7 @@ func countKeystoreEntries(dir string) (int, error) {
 // stores it in the given [keystore.Store].
 func generateInsecureKey(ctx context.Context, t *testing.T, store *keystore.Store) *keystore.GenericKey {
 	t.Helper()
-	_, key, err := store.GenerateKey(ctx, "insecure")
+	_, key, err := store.GenerateKey(ctx, keystore.WithDriver("insecure"))
 	require.NoError(t, err)
 	return key
 }

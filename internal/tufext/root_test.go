@@ -43,7 +43,7 @@ func TestNewRootBuilder(t *testing.T) {
 	assert.True(t, !builder.RefTime.Before(before) && !builder.RefTime.After(after),
 		"RefTime %v should be between %v and %v", builder.RefTime, before, after)
 	assert.Equal(t, tufrepo.DefaultRootExpiry, builder.ExpireAfter)
-	assert.Equal(t, keystore.DefaultDriver, builder.GenerateKeyDriver)
+	assert.Empty(t, builder.GenerateKeyOpts, "GenerateKeyOpts defaults to empty; Sign falls back to keystore.DefaultDriver")
 }
 
 func TestRootBuilder_AddRole(t *testing.T) {

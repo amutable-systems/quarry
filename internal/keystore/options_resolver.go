@@ -7,6 +7,16 @@ import (
 	"strings"
 )
 
+// genericState is the cross-driver state applied when the resolver is
+// constructed. It is intentionally unexported -- driver selection is owned
+// by this package, and drivers only get read access through
+// [Resolver.DriverName].
+type genericState struct {
+	// driver is the requested driver name (empty if no [WithDriver] option
+	// was given).
+	driver string
+}
+
 // optionEntry is a single option tracked by a [Resolver].
 type optionEntry struct {
 	opt Option
@@ -17,9 +27,13 @@ type optionEntry struct {
 
 // Resolver tracks the options for a single key operation. The constructors
 // ([NewGenerateResolver] and friends) do the marker-interface check at the
-// API boundary.
+// API boundary and resolve the driver up-front, so a
+// successfully-constructed resolver always has [Resolver.DriverName]
+// available.
 type Resolver struct {
 	entries []optionEntry
+
+	driverName string
 }
 
 // asOptions converts a typed option slice to []Option.
@@ -31,36 +45,57 @@ func asOptions[T Option](opts []T) []Option {
 	return base
 }
 
-// newResolver constructs a [Resolver] with the given options.
-func newResolver(opts []Option) *Resolver {
+// newResolver constructs a [Resolver] with the given options and resolves
+// the generic state.
+func newResolver(opts []Option) (*Resolver, error) {
 	r := &Resolver{
 		entries: make([]optionEntry, 0, len(opts)),
 	}
 	for _, opt := range opts {
 		r.entries = append(r.entries, optionEntry{opt: opt})
 	}
-	return r
+	if err := r.resolveGeneric(); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // NewGenerateResolver constructs a [Resolver] for a key-generation
 // operation.
 func NewGenerateResolver(opts []GenerateOption) (*Resolver, error) {
-	return newResolver(asOptions(opts)), nil
+	return newResolver(asOptions(opts))
 }
 
 // NewRotateResolver constructs a [Resolver] for a key-rotation operation.
 func NewRotateResolver(opts []RotateOption) (*Resolver, error) {
-	return newResolver(asOptions(opts)), nil
+	return newResolver(asOptions(opts))
 }
 
 // NewImportResolver constructs a [Resolver] for a key-import operation.
 func NewImportResolver(opts []ImportOption) (*Resolver, error) {
-	return newResolver(asOptions(opts)), nil
+	return newResolver(asOptions(opts))
 }
 
 // NewExportResolver constructs a [Resolver] for a key-export operation.
 func NewExportResolver(opts []ExportOption) (*Resolver, error) {
-	return newResolver(asOptions(opts)), nil
+	return newResolver(asOptions(opts))
+}
+
+// DriverName returns the driver name requested with [WithDriver], or an
+// empty string if no driver was requested (in which case the caller picks
+// a fallback).
+func (r *Resolver) DriverName() string {
+	return r.driverName
+}
+
+// resolveGeneric applies the generic-state options (such as [WithDriver]).
+func (r *Resolver) resolveGeneric() error {
+	var gs genericState
+	if err := ApplyOptions(r, &gs); err != nil {
+		return err
+	}
+	r.driverName = gs.driver
+	return nil
 }
 
 // ApplyOptions applies every option that targets the given state type
