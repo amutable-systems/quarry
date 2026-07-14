@@ -80,6 +80,17 @@ func GetDriver(name string) (Driver, bool) {
 	return driver, ok
 }
 
+// ParameterReporter is an optional interface for [Driver]s to expose
+// driver-specific parameters of a stored key as [RotateOption]s. The
+// returned options are used by [Store.RotateKey] when the caller passes
+// [CopyParameters] (as derived options, which user options override).
+//
+// Drivers without recoverable per-instance parameters (like the insecure
+// driver) need not implement this.
+type ParameterReporter interface {
+	DriverParameters(ctx context.Context, key *GenericKey) ([]RotateOption, error)
+}
+
 // IterDrivers returns an iterator over the registered drivers.
 func IterDrivers() iter.Seq2[string, Driver] {
 	return func(yield func(string, Driver) bool) {

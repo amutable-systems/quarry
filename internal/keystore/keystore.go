@@ -137,28 +137,67 @@ func (ks *Store) GenerateKey(ctx context.Context, opts ...GenerateOption) (KeyID
 
 // RotateKey generates a new key suitable as a replacement for the provided
 // [KeyID]. By default the new key uses the same driver as the old key
-// (pass [WithDriver] to override) with driver-default parameters.
+// (pass [WithDriver] to override) with driver-default parameters (pass
+// [CopyParameters] to copy them from the old key). Options derived from
+// the old key never override options passed by the caller.
 //
 // Since the underlying mechanism is to generate a fresh key, every
-// [RotateOption] must also implement [GenerateOption].
-//
-// TODO: Implement copying of key options.
+// [RotateOption] other than [Expander]s must also implement
+// [GenerateOption].
 func (ks *Store) RotateKey(ctx context.Context, oldKeyID KeyID, opts ...RotateOption) (KeyID, *GenericKey, error) {
 	oldKey, err := ks.GetKey(ctx, oldKeyID)
 	if err != nil {
 		return BadKeyID, nil, err
 	}
 
-	// Verify that every option can be used for key generation.
-	user := make([]Option, 0, len(opts))
-	for _, opt := range opts {
-		if _, ok := opt.(GenerateOption); !ok {
-			return BadKeyID, nil, fmt.Errorf("rotate option %v cannot be used to generate a new key", opt)
+	// Expand any [Expander] options into derived options, and verify that
+	// everything else can be used for key generation.
+	var derived, user []Option
+	expanded := false
+	appendGenerateOpts := func(dst *[]Option, opts ...RotateOption) error {
+		for _, opt := range opts {
+			if _, ok := opt.(GenerateOption); !ok {
+				return fmt.Errorf("rotate option %v cannot be used to generate a new key", opt)
+			}
+			*dst = append(*dst, opt)
 		}
-		user = append(user, opt)
+		return nil
+	}
+	for _, opt := range opts {
+		if expander, ok := opt.(Expander); ok {
+			more, err := expander.Expand(oldKey)
+			if err != nil {
+				return BadKeyID, nil, err
+			}
+			if err := appendGenerateOpts(&derived, more...); err != nil {
+				return BadKeyID, nil, err
+			}
+			expanded = true
+			continue
+		}
+		if err := appendGenerateOpts(&user, opt); err != nil {
+			return BadKeyID, nil, err
+		}
 	}
 
-	res, err := newResolver(user)
+	// Also ask the old key's driver for any driver-specific parameters. A
+	// missing driver is not an error here -- generateKey will complain
+	// later unless the user gave a [WithDriver] override.
+	if expanded {
+		if drv, ok := GetDriver(oldKey.Driver); ok {
+			if reporter, ok := drv.(ParameterReporter); ok {
+				extra, err := reporter.DriverParameters(ctx, oldKey)
+				if err != nil {
+					return BadKeyID, nil, err
+				}
+				if err := appendGenerateOpts(&derived, extra...); err != nil {
+					return BadKeyID, nil, err
+				}
+			}
+		}
+	}
+
+	res, err := newResolver(derived, user)
 	if err != nil {
 		return BadKeyID, nil, err
 	}

@@ -21,6 +21,13 @@ type genericState struct {
 type optionEntry struct {
 	opt Option
 
+	// derived options (from [CopyParameters] expansion) only provide
+	// defaults. User options are applied after them, and unused derived
+	// options are not an error for [Resolver.CheckUnconsumed] (a derived
+	// [WithRSABits] is legitimately unused if the user switched the keytype
+	// away from RSA).
+	derived bool
+
 	// consumed indicates that opt's Apply has matched at least one state.
 	consumed bool
 }
@@ -46,13 +53,18 @@ func asOptions[T Option](opts []T) []Option {
 	return base
 }
 
-// newResolver constructs a [Resolver] with the given options and resolves
-// the generic state.
-func newResolver(opts []Option) (*Resolver, error) {
+// newResolver constructs a [Resolver] with the given derived and user
+// options and resolves the generic state. Derived options are stored (and
+// thus applied) before user options, which is what lets user options
+// override them.
+func newResolver(derived, user []Option) (*Resolver, error) {
 	r := &Resolver{
-		entries: make([]optionEntry, 0, len(opts)),
+		entries: make([]optionEntry, 0, len(derived)+len(user)),
 	}
-	for _, opt := range opts {
+	for _, opt := range derived {
+		r.entries = append(r.entries, optionEntry{opt: opt, derived: true})
+	}
+	for _, opt := range user {
 		r.entries = append(r.entries, optionEntry{opt: opt})
 	}
 	if err := r.resolveGeneric(); err != nil {
@@ -64,22 +76,22 @@ func newResolver(opts []Option) (*Resolver, error) {
 // NewGenerateResolver constructs a [Resolver] for a key-generation
 // operation.
 func NewGenerateResolver(opts []GenerateOption) (*Resolver, error) {
-	return newResolver(asOptions(opts))
+	return newResolver(nil, asOptions(opts))
 }
 
 // NewRotateResolver constructs a [Resolver] for a key-rotation operation.
 func NewRotateResolver(opts []RotateOption) (*Resolver, error) {
-	return newResolver(asOptions(opts))
+	return newResolver(nil, asOptions(opts))
 }
 
 // NewImportResolver constructs a [Resolver] for a key-import operation.
 func NewImportResolver(opts []ImportOption) (*Resolver, error) {
-	return newResolver(asOptions(opts))
+	return newResolver(nil, asOptions(opts))
 }
 
 // NewExportResolver constructs a [Resolver] for a key-export operation.
 func NewExportResolver(opts []ExportOption) (*Resolver, error) {
-	return newResolver(asOptions(opts))
+	return newResolver(nil, asOptions(opts))
 }
 
 // DriverName returns the driver name requested with [WithDriver], or an
@@ -120,14 +132,17 @@ func (r *Resolver) resolveGeneric() error {
 }
 
 // resolveKeyType collects the keytype requested by every option and
-// cross-checks them. Two options wanting different keytypes is a conflict,
-// regardless of their order.
+// cross-checks them. Two user options wanting different keytypes is a
+// conflict, regardless of their order. Derived options only decide the
+// keytype if no user option expressed one, which is what makes
+// [CopyParameters] combined with a keytype-migrating option (such as
+// [WithCurve] over an RSA source key) work.
 func (r *Resolver) resolveKeyType() (string, error) {
 	type keyTypeSignal struct {
 		opt     Option
 		keyType string
 	}
-	var signals []keyTypeSignal
+	var user, derived []keyTypeSignal
 	for _, e := range r.entries {
 		kt, ok := e.opt.(keyTypeParamer)
 		if !ok {
@@ -135,9 +150,23 @@ func (r *Resolver) resolveKeyType() (string, error) {
 		}
 		val, err := kt.keyTypeParam()
 		if err != nil {
+			if e.derived {
+				// Derived options come from an existing key, so this should
+				// not happen in practice. Make the source obvious if it does.
+				err = fmt.Errorf("invalid derived key parameters: %w", err)
+			}
 			return "", err
 		}
-		signals = append(signals, keyTypeSignal{opt: e.opt, keyType: val})
+		signal := keyTypeSignal{opt: e.opt, keyType: val}
+		if e.derived {
+			derived = append(derived, signal)
+		} else {
+			user = append(user, signal)
+		}
+	}
+	signals := user
+	if len(signals) == 0 {
+		signals = derived
 	}
 	if len(signals) == 0 {
 		return "", nil
@@ -154,7 +183,8 @@ func (r *Resolver) resolveKeyType() (string, error) {
 // ApplyOptions applies every option that targets the given state type
 // (i.e. implements Apply(*S) error) to the provided state, and marks them
 // as consumed. Options targeting other state types are skipped. Drivers
-// use this to fill their keytype- and driver-specific state structs.
+// use this to fill their keytype- and driver-specific state structs (such
+// as [RSAState]).
 func ApplyOptions[S any](r *Resolver, state *S) error {
 	for i := range r.entries {
 		entry := &r.entries[i]
@@ -170,13 +200,14 @@ func ApplyOptions[S any](r *Resolver, state *S) error {
 	return nil
 }
 
-// CheckUnconsumed returns an error listing all options that were not
-// applied to any state. Callers (typically [Store]) should call this after
-// the driver is finished, in order to detect unsupported options.
+// CheckUnconsumed returns an error listing all user-supplied options that
+// were not applied to any state. Callers (typically [Store]) should call
+// this after the driver is finished, in order to detect unsupported
+// options.
 func (r *Resolver) CheckUnconsumed() error {
 	var unused []string
 	for _, e := range r.entries {
-		if !e.consumed {
+		if !e.consumed && !e.derived {
 			unused = append(unused, fmt.Sprintf("%v", e.opt))
 		}
 	}

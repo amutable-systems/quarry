@@ -7,8 +7,11 @@ package keystore_test
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"os"
 	"testing"
 
@@ -198,6 +201,137 @@ func newInsecureStore(t *testing.T) *keystore.Store {
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, store.Close()) })
 	return store
+}
+
+func TestInsecure_RotateKey_CopyParameters_Ed25519(t *testing.T) {
+	ctx := context.Background()
+	store := newInsecureStore(t)
+
+	oldID, oldKey, err := store.GenerateKey(ctx, keystore.WithDriver("insecure"))
+	require.NoError(t, err)
+
+	newID, newKey, err := store.RotateKey(ctx, oldID, keystore.CopyParameters())
+	require.NoError(t, err)
+	assert.NotEqual(t, oldID, newID, "rotation must produce a fresh key id")
+	assert.Equal(t, oldKey.Driver, newKey.Driver)
+	assert.Equal(t, oldKey.KeyType(), newKey.KeyType())
+	assert.Equal(t, keystore.KeyTypeEd25519, newKey.KeyType())
+}
+
+func TestInsecure_RotateKey_CopyParameters_ECDSA(t *testing.T) {
+	ctx := context.Background()
+	store := newInsecureStore(t)
+
+	oldID, oldKey, err := store.GenerateKey(ctx,
+		keystore.WithDriver("insecure"),
+		keystore.WithKeyType(tufmetadata.KeyTypeECDSA_SHA2_P256),
+	)
+	require.NoError(t, err)
+
+	newID, newKey, err := store.RotateKey(ctx, oldID, keystore.CopyParameters())
+	require.NoError(t, err)
+	assert.NotEqual(t, oldID, newID)
+	assert.Equal(t, oldKey.KeyType(), newKey.KeyType())
+	assert.Equal(t, keystore.KeyTypeECDSA_SHA2_P256, newKey.KeyType())
+
+	// Confirm the new key actually generates a valid P-256 signer.
+	signer, err := newKey.GetSigner(ctx)
+	require.NoError(t, err)
+	pub, ok := signer.Public().(*ecdsa.PublicKey)
+	require.True(t, ok)
+	assert.Equal(t, "P-256", pub.Curve.Params().Name)
+}
+
+func TestInsecure_RotateKey_CopyParameters_RSA(t *testing.T) {
+	ctx := context.Background()
+	store := newInsecureStore(t)
+
+	// Generate a 2048-bit RSA key (smaller for test speed) and confirm
+	// CopyParameters produces another 2048-bit key.
+	oldID, oldKey, err := store.GenerateKey(ctx,
+		keystore.WithDriver("insecure"),
+		keystore.WithRSABits(2048),
+	)
+	require.NoError(t, err)
+	require.Equal(t, keystore.KeyTypeRSASSA_PSS_SHA256, oldKey.KeyType())
+
+	newID, newKey, err := store.RotateKey(ctx, oldID, keystore.CopyParameters())
+	require.NoError(t, err)
+	assert.NotEqual(t, oldID, newID)
+	assert.Equal(t, keystore.KeyTypeRSASSA_PSS_SHA256, newKey.KeyType())
+
+	signer, err := newKey.GetSigner(ctx)
+	require.NoError(t, err)
+	pub, ok := signer.Public().(*rsa.PublicKey)
+	require.True(t, ok)
+	assert.Equal(t, 2048, pub.N.BitLen(), "rotated RSA key should preserve bit size")
+}
+
+func TestInsecure_RotateKey_CopyParameters_RSA_Override(t *testing.T) {
+	// CopyParameters() + RSABits(N) over an RSA-M source key produces an
+	// RSA-N replacement (last-wins lets the user-supplied option override
+	// the derived bit size).
+	ctx := context.Background()
+	store := newInsecureStore(t)
+
+	oldID, _, err := store.GenerateKey(ctx,
+		keystore.WithDriver("insecure"),
+		keystore.WithRSABits(2048),
+	)
+	require.NoError(t, err)
+
+	_, newKey, err := store.RotateKey(ctx, oldID,
+		keystore.CopyParameters(),
+		keystore.WithRSABits(3072),
+	)
+	require.NoError(t, err)
+
+	signer, err := newKey.GetSigner(ctx)
+	require.NoError(t, err)
+	pub, ok := signer.Public().(*rsa.PublicKey)
+	require.True(t, ok)
+	assert.Equal(t, 3072, pub.N.BitLen(), "user-supplied RSABits must override CopyParameters-derived")
+}
+
+// Without CopyParameters, RotateKey only inherits the driver from the
+// source -- the keytype falls back to the driver default (ed25519 for the
+// insecure driver), even if the source was a different keytype.
+func TestInsecure_RotateKey_NoCopyParameters_DefaultsKeyType(t *testing.T) {
+	ctx := context.Background()
+	store := newInsecureStore(t)
+
+	oldID, oldKey, err := store.GenerateKey(ctx,
+		keystore.WithDriver("insecure"),
+		keystore.WithKeyType(tufmetadata.KeyTypeECDSA_SHA2_P256),
+	)
+	require.NoError(t, err)
+	require.Equal(t, keystore.KeyTypeECDSA_SHA2_P256, oldKey.KeyType())
+
+	_, newKey, err := store.RotateKey(ctx, oldID)
+	require.NoError(t, err)
+	assert.Equal(t, oldKey.Driver, newKey.Driver, "driver inherits from source")
+	assert.Equal(t, keystore.KeyTypeEd25519, newKey.KeyType(), "without CopyParameters, keytype falls back to driver default")
+}
+
+// CopyParameters plus a keytype-migrating option: the user keytype wins
+// and the derived RSA parameters are dropped rather than reported as a
+// conflict or unsupported option.
+func TestInsecure_RotateKey_CopyParameters_MigrateKeyType(t *testing.T) {
+	ctx := context.Background()
+	store := newInsecureStore(t)
+
+	oldID, _, err := store.GenerateKey(ctx,
+		keystore.WithDriver("insecure"),
+		keystore.WithRSABits(2048),
+	)
+	require.NoError(t, err)
+
+	_, newKey, err := store.RotateKey(ctx, oldID,
+		keystore.CopyParameters(),
+		keystore.WithCurve(elliptic.P256()),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, keystore.KeyTypeECDSA_SHA2_P256, newKey.KeyType())
 }
 
 // Conflicting keytypes must error regardless of option order. (The old
