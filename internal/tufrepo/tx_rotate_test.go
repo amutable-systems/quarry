@@ -229,10 +229,16 @@ func TestRotateRoleKeys_MultipleKeys(t *testing.T) {
 	assert.Equal(t, 2, root.Signed.Roles[tufmetadata.TIMESTAMP].Threshold)
 }
 
-// RotateRoleKeys accepts variadic `...any` options but only routes
-// [keyopts.RotateOption] and [keyopts.GenerateOption] values. Any other type
-// must surface as an "unsupported option type" error at Apply time, with no
-// side-effects on the keystore.
+// noMarkerOpt implements [keystore.Option] but neither
+// [keystore.RotateOption] nor [keystore.GenerateOption], to exercise the
+// option-routing check in rotateRoleKeys.
+type noMarkerOpt struct{}
+
+func (noMarkerOpt) IsOption() {}
+
+// Options that implement neither [keystore.RotateOption] nor
+// [keystore.GenerateOption] must surface as an "unsupported option type"
+// error at Apply time, with no side-effects on the keystore.
 func TestRotateRoleKeys_UnsupportedOption(t *testing.T) {
 	ctx := context.Background()
 	bs := bootstrapRepo(t)
@@ -240,7 +246,7 @@ func TestRotateRoleKeys_UnsupportedOption(t *testing.T) {
 	keysBefore, err := countKeystoreEntries(bs.storeDir)
 	require.NoError(t, err)
 
-	op, err := tufrepo.RotateRoleKeys(tufmetadata.TIMESTAMP, bs.store, "not-an-option")
+	op, err := tufrepo.RotateRoleKeys(tufmetadata.TIMESTAMP, bs.store, noMarkerOpt{})
 	require.NoError(t, err)
 
 	tx, err := bs.repo.TxnStart(ctx)

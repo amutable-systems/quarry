@@ -46,10 +46,12 @@ func ReplaceKeys(roleName string, keys map[keystore.KeyID]*keystore.PublicKey, r
 // rotateRoleKeys rotates a roles' keys with a new set of keys generated with
 // the same parameters.
 //
-// The provided options can either be [keystore.RotateOption]s (used when a key
-// is managed by the given [keystore.Store]) or [keystore.GenerateOption] (used
-// when a key is not available and thus a new key needs to be generated).
-func (tx *Transaction) rotateRoleKeys(ctx context.Context, roleName string, store *keystore.Store, opts ...any) (_ []keystore.KeyID, Err error) {
+// Each option must implement at least one of [keystore.RotateOption]
+// (applied when the source key is locally managed and can be rotated in
+// place) or [keystore.GenerateOption] (applied when the source key is not
+// available and a fresh key needs to be generated). Most concrete options
+// implement both markers and are routed to both paths.
+func (tx *Transaction) rotateRoleKeys(ctx context.Context, roleName string, store *keystore.Store, opts ...keystore.Option) (_ []keystore.KeyID, Err error) {
 	// Copy the option sets (note that some options may be valid generation and
 	// rotation options).
 	var (
@@ -127,16 +129,18 @@ func (tx *Transaction) rotateRoleKeys(ctx context.Context, roleName string, stor
 // retrieve the new [keystore.KeyID]s you will need to fetch the information
 // from [Transaction.RootRoleData] separately.
 //
-// The provided options can either be [keystore.RotateOption]s (used when a key
-// is managed by the given [keystore.Store]) or [keystore.GenerateOption] (used
-// when a key is not available and thus a new key needs to be generated).
+// Each option must implement at least one of [keystore.RotateOption] (used
+// when the source key is locally managed) or [keystore.GenerateOption]
+// (used as the fallback path when a source key is missing and a fresh
+// key has to be generated). Options that implement neither produce a
+// runtime error.
 //
 // This method is NOT recommended for rotation of root keys, because it
 // requires that the root keys be stored in the local keystore for an
 // indeterminate period of time. Replacing the root keys should be done on an
 // offline machine (where the new root is signed) and then included in the
 // repository using [Transaction.UpdateRoleData].
-func RotateRoleKeys(roleName string, store *keystore.Store, opts ...any) (TxnOp, error) {
+func RotateRoleKeys(roleName string, store *keystore.Store, opts ...keystore.Option) (TxnOp, error) {
 	if !tufext.IsCoreRole(roleName) {
 		// TODO: Implement the replacement of delegated role keys.
 		return nil, fmt.Errorf("cannot rotate keys for role %q: delegated role key rotation is not implemented", roleName)
