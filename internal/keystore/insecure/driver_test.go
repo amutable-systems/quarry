@@ -23,7 +23,7 @@ import (
 
 // mustResolveGenerate builds a [keystore.Resolver] that can be handed
 // directly to the driver.
-func mustResolveGenerate(t *testing.T, opts ...keystore.GenerateOption) *keystore.Resolver { //nolint:unparam // for future option-taking tests
+func mustResolveGenerate(t *testing.T, opts ...keystore.GenerateOption) *keystore.Resolver {
 	t.Helper()
 	res, err := keystore.NewGenerateResolver(opts)
 	require.NoError(t, err)
@@ -361,4 +361,13 @@ func TestExportKey_WrongDriver(t *testing.T) {
 	key.Driver = "nonexistent"
 	_, err = insecure.Driver.ExportKey(ctx, key, mustResolveExport(t))
 	assert.Error(t, err)
+}
+
+func TestGenerateKey_UnsupportedKeyType(t *testing.T) {
+	ctx := context.Background()
+
+	res := mustResolveGenerate(t, keystore.WithKeyType("not-a-real-keytype"))
+	_, err := insecure.Driver.GenerateKey(ctx, res)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, keystore.ErrUnsupportedKeyType)
 }

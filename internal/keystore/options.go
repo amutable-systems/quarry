@@ -51,3 +51,18 @@ type GenericOption interface {
 	RotateOption
 	ImportOption
 }
+
+// keyTypeParamer is implemented by options that constrain the TUF keytype
+// of the operation ([WithKeyType] explicitly, keytype-specific options by
+// implication). The resolver collects the keytype from every option
+// up-front and treats any mismatch as a hard conflict (rather than
+// last-wins, which would silently disable the losing option's sibling
+// options). Options are also expected to validate their own values here,
+// since keyTypeParam is called for every option even if no state pass ever
+// matches it.
+//
+// Note that keyTypeParam does not mark an option as consumed, only a
+// matching state pass does.
+type keyTypeParamer interface {
+	keyTypeParam() (string, error)
+}

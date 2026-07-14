@@ -8,9 +8,9 @@ import (
 )
 
 // genericState is the cross-driver state applied when the resolver is
-// constructed. It is intentionally unexported -- driver selection is owned
-// by this package, and drivers only get read access through
-// [Resolver.DriverName].
+// constructed. It is intentionally unexported -- driver selection and
+// keytype resolution are owned by this package, and drivers only get read
+// access through [Resolver.DriverName] and [Resolver.KeyTypeName].
 type genericState struct {
 	// driver is the requested driver name (empty if no [WithDriver] option
 	// was given).
@@ -27,13 +27,14 @@ type optionEntry struct {
 
 // Resolver tracks the options for a single key operation. The constructors
 // ([NewGenerateResolver] and friends) do the marker-interface check at the
-// API boundary and resolve the driver up-front, so a
-// successfully-constructed resolver always has [Resolver.DriverName]
-// available.
+// API boundary and resolve the driver and keytype up-front, so a
+// successfully-constructed resolver always has [Resolver.DriverName] and
+// [Resolver.KeyTypeName] available.
 type Resolver struct {
 	entries []optionEntry
 
-	driverName string
+	driverName  string
+	keyTypeName string
 }
 
 // asOptions converts a typed option slice to []Option.
@@ -88,14 +89,65 @@ func (r *Resolver) DriverName() string {
 	return r.driverName
 }
 
-// resolveGeneric applies the generic-state options (such as [WithDriver]).
+// KeyTypeName returns the TUF keytype requested by the options (explicitly
+// with [WithKeyType], or implied by keytype-specific options), or an empty
+// string if none was requested (in which case the driver picks a default).
+//
+// Note that TUF keytypes only name the key algorithm family -- despite the
+// go-tuf constant name, [tufmetadata.KeyTypeECDSA_SHA2_P256] is just
+// "ecdsa". Parameters beyond the algorithm family are handled by
+// keytype-specific [ApplyOptions] passes in the driver.
+func (r *Resolver) KeyTypeName() string {
+	return r.keyTypeName
+}
+
+// resolveGeneric resolves the keytype and applies the generic-state
+// options (such as [WithDriver]).
 func (r *Resolver) resolveGeneric() error {
+	keyType, err := r.resolveKeyType()
+	if err != nil {
+		return err
+	}
+	r.keyTypeName = keyType
+
 	var gs genericState
 	if err := ApplyOptions(r, &gs); err != nil {
 		return err
 	}
 	r.driverName = gs.driver
 	return nil
+}
+
+// resolveKeyType collects the keytype requested by every option and
+// cross-checks them. Two options wanting different keytypes is a conflict,
+// regardless of their order.
+func (r *Resolver) resolveKeyType() (string, error) {
+	type keyTypeSignal struct {
+		opt     Option
+		keyType string
+	}
+	var signals []keyTypeSignal
+	for _, e := range r.entries {
+		kt, ok := e.opt.(keyTypeParamer)
+		if !ok {
+			continue
+		}
+		val, err := kt.keyTypeParam()
+		if err != nil {
+			return "", err
+		}
+		signals = append(signals, keyTypeSignal{opt: e.opt, keyType: val})
+	}
+	if len(signals) == 0 {
+		return "", nil
+	}
+	for _, signal := range signals[1:] {
+		if signal.keyType != signals[0].keyType {
+			return "", fmt.Errorf("conflicting keytypes: %v wants keytype %q but %v wants keytype %q",
+				signals[0].opt, signals[0].keyType, signal.opt, signal.keyType)
+		}
+	}
+	return signals[0].keyType, nil
 }
 
 // ApplyOptions applies every option that targets the given state type

@@ -14,6 +14,8 @@ import (
 	"crypto/rand"
 	"fmt"
 
+	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
+
 	"go.amutable.dev/quarry/internal/cryptoext"
 	"go.amutable.dev/quarry/internal/keystore"
 )
@@ -22,13 +24,30 @@ type driver struct{}
 
 func (d *driver) Name() string { return "insecure" }
 
-// GenerateKey generates a new key using this driver.
-func (d *driver) GenerateKey(_ context.Context, _ *keystore.Resolver) (*keystore.GenericKey, error) {
-	// TODO: Make this configurable (with options). For now, just default to
-	// ed25519.
-	_, privKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("keystore driver %s: key generation failed: %w", d.Name(), err)
+// GenerateKey generates a new key using this driver. The keytype is taken
+// from [keystore.Resolver.KeyTypeName], with ed25519 as the default.
+func (d *driver) GenerateKey(_ context.Context, res *keystore.Resolver) (_ *keystore.GenericKey, Err error) {
+	defer func() {
+		if Err != nil {
+			Err = fmt.Errorf("keystore driver %s: %w", d.Name(), Err)
+		}
+	}()
+
+	kt := res.KeyTypeName()
+	if kt == "" {
+		kt = tufmetadata.KeyTypeEd25519
+	}
+
+	var privKey crypto.PrivateKey
+	switch kt {
+	case tufmetadata.KeyTypeEd25519:
+		_, k, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("ed25519 key generation: %w", err)
+		}
+		privKey = k
+	default:
+		return nil, fmt.Errorf("%w: %q", keystore.ErrUnsupportedKeyType, kt)
 	}
 	return toGenericKey(privKey)
 }

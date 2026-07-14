@@ -44,6 +44,7 @@ func TestResolver_NoOpts(t *testing.T) {
 	r, err := keystore.NewGenerateResolver(nil)
 	require.NoError(t, err)
 	assert.Empty(t, r.DriverName())
+	assert.Empty(t, r.KeyTypeName())
 	assert.NoError(t, r.CheckUnconsumed())
 }
 

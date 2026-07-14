@@ -17,10 +17,12 @@ var ErrUnsupportedKeyType = errors.New("key type not supported by driver")
 
 // Driver is the top-level interface that all keystore drivers must implement.
 //
-// Drivers must run [ApplyOptions] on the [Resolver] passed to GenerateKey,
-// ImportKey, and ExportKey for every state relevant to the operation --
-// options left unconsumed by a skipped pass cause the operation to be
-// rejected by the caller via [Resolver.CheckUnconsumed].
+// The [Resolver] passed to GenerateKey, ImportKey, and ExportKey has
+// already resolved the generic options ([Resolver.DriverName] and
+// [Resolver.KeyTypeName]). Drivers must run [ApplyOptions] for every state
+// relevant to the operation -- options left unconsumed by a skipped pass
+// cause the operation to be rejected by the caller via
+// [Resolver.CheckUnconsumed].
 type Driver interface {
 	// Name returns the unique name of the keystore driver.
 	Name() string
