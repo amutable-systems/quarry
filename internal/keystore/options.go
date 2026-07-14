@@ -52,14 +52,24 @@ type GenericOption interface {
 	ImportOption
 }
 
+// GenerateRotateOption is satisfied by options that only apply to
+// operations producing new key material ([Store.GenerateKey] and
+// [Store.RotateKey]). Keytype-specific options like [WithRSABits] are
+// typed as this, since key parameters are fixed by the key material for
+// [Driver.ImportKey].
+type GenerateRotateOption interface {
+	GenerateOption
+	RotateOption
+}
+
 // keyTypeParamer is implemented by options that constrain the TUF keytype
-// of the operation ([WithKeyType] explicitly, keytype-specific options by
-// implication). The resolver collects the keytype from every option
-// up-front and treats any mismatch as a hard conflict (rather than
-// last-wins, which would silently disable the losing option's sibling
-// options). Options are also expected to validate their own values here,
-// since keyTypeParam is called for every option even if no state pass ever
-// matches it.
+// of the operation ([WithKeyType] explicitly, keytype-specific options
+// like [WithRSABits] by implication). The resolver collects the keytype
+// from every option up-front and treats any mismatch as a hard conflict
+// (rather than last-wins, which would silently disable the losing
+// option's sibling options). Options are also expected to validate their
+// own values here, since keyTypeParam is called for every option even if
+// no state pass ever matches it.
 //
 // Note that keyTypeParam does not mark an option as consumed, only a
 // matching state pass does.

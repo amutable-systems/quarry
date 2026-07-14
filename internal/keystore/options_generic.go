@@ -65,10 +65,10 @@ func (k withKeyType) String() string { return fmt.Sprintf("WithKeyType(%q)", str
 // go-tuf constant names, [tufmetadata.KeyTypeECDSA_SHA2_P256] is just
 // "ecdsa" -- it does not specify a curve or digest. All parameters other
 // than the algorithm family come from driver defaults or keytype-specific
-// options, and those options already imply their own keytype. As such,
-// WithKeyType is only needed to select a non-default key algorithm with
-// default parameters. Combining options with mismatched keytypes is an
-// error, regardless of the option order.
+// options like [WithCurve] and [WithRSABits], and those options already
+// imply their own keytype. As such, WithKeyType is only needed to select
+// a non-default key algorithm with default parameters. Combining options
+// with mismatched keytypes is an error, regardless of the option order.
 func WithKeyType(keyType string) GenericOption {
 	return withKeyType(keyType)
 }

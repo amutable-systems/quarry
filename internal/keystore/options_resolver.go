@@ -90,8 +90,9 @@ func (r *Resolver) DriverName() string {
 }
 
 // KeyTypeName returns the TUF keytype requested by the options (explicitly
-// with [WithKeyType], or implied by keytype-specific options), or an empty
-// string if none was requested (in which case the driver picks a default).
+// with [WithKeyType], or implied by options like [WithRSABits]), or an
+// empty string if none was requested (in which case the driver picks a
+// default).
 //
 // Note that TUF keytypes only name the key algorithm family -- despite the
 // go-tuf constant name, [tufmetadata.KeyTypeECDSA_SHA2_P256] is just

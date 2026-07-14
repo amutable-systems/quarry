@@ -89,6 +89,9 @@ func TestResolver_ConsumedAcrossMultiplePasses(t *testing.T) {
 	require.NoError(t, keystore.ApplyOptions(r, &cs2))
 	assert.True(t, cs1.marked)
 	assert.True(t, cs2.marked)
+
+	var rs keystore.RSAState
+	require.NoError(t, keystore.ApplyOptions(r, &rs))
 	assert.NoError(t, r.CheckUnconsumed())
 }
 

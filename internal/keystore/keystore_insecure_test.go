@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 	"golang.org/x/sys/unix"
 
 	"go.amutable.dev/quarry/internal/keystore"
@@ -197,6 +198,31 @@ func newInsecureStore(t *testing.T) *keystore.Store {
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, store.Close()) })
 	return store
+}
+
+// Conflicting keytypes must error regardless of option order. (The old
+// resolver silently generated an ECDSA key and dropped the bit size in
+// the bits-first order.)
+func TestInsecure_GenerateKey_ConflictingKeyTypes_OrderIndependent(t *testing.T) {
+	ctx := context.Background()
+	store := newInsecureStore(t)
+
+	for name, opts := range map[string][]keystore.GenerateOption{
+		"KeyTypeFirst": {
+			keystore.WithKeyType(tufmetadata.KeyTypeECDSA_SHA2_P256),
+			keystore.WithRSABits(4096),
+		},
+		"BitsFirst": {
+			keystore.WithRSABits(4096),
+			keystore.WithKeyType(tufmetadata.KeyTypeECDSA_SHA2_P256),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := store.GenerateKey(ctx, opts...)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "conflicting keytypes")
+		})
+	}
 }
 
 // Options that no driver pass consumes must be rejected by

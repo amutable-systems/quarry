@@ -10,8 +10,11 @@ package insecure
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"fmt"
 
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
@@ -19,6 +22,10 @@ import (
 	"go.amutable.dev/quarry/internal/cryptoext"
 	"go.amutable.dev/quarry/internal/keystore"
 )
+
+// defaultRSABits is the RSA modulus length used when the caller asks for
+// an RSA key without specifying a size.
+const defaultRSABits = 3072
 
 type driver struct{}
 
@@ -44,6 +51,34 @@ func (d *driver) GenerateKey(_ context.Context, res *keystore.Resolver) (_ *keys
 		_, k, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			return nil, fmt.Errorf("ed25519 key generation: %w", err)
+		}
+		privKey = k
+	case tufmetadata.KeyTypeECDSA_SHA2_P256:
+		var esState keystore.ECDSAState
+		if err := keystore.ApplyOptions(res, &esState); err != nil {
+			return nil, err
+		}
+		curve := esState.Curve
+		if curve == nil {
+			curve = elliptic.P256()
+		}
+		k, err := ecdsa.GenerateKey(curve, rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("ECDSA %s key generation: %w", curve.Params().Name, err)
+		}
+		privKey = k
+	case tufmetadata.KeyTypeRSASSA_PSS_SHA256:
+		var rsState keystore.RSAState
+		if err := keystore.ApplyOptions(res, &rsState); err != nil {
+			return nil, err
+		}
+		bits := rsState.Bits
+		if bits == 0 {
+			bits = defaultRSABits
+		}
+		k, err := rsa.GenerateKey(rand.Reader, bits)
+		if err != nil {
+			return nil, fmt.Errorf("RSA-%d key generation: %w", bits, err)
 		}
 		privKey = k
 	default:

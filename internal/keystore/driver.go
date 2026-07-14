@@ -20,9 +20,9 @@ var ErrUnsupportedKeyType = errors.New("key type not supported by driver")
 // The [Resolver] passed to GenerateKey, ImportKey, and ExportKey has
 // already resolved the generic options ([Resolver.DriverName] and
 // [Resolver.KeyTypeName]). Drivers must run [ApplyOptions] for every state
-// relevant to the operation -- options left unconsumed by a skipped pass
-// cause the operation to be rejected by the caller via
-// [Resolver.CheckUnconsumed].
+// relevant to the operation (such as [RSAState] when generating an RSA
+// key) -- options left unconsumed by a skipped pass cause the operation to
+// be rejected by the caller via [Resolver.CheckUnconsumed].
 type Driver interface {
 	// Name returns the unique name of the keystore driver.
 	Name() string

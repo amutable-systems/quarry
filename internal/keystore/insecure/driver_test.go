@@ -12,10 +12,13 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
 	"go.amutable.dev/quarry/internal/keystore"
 	"go.amutable.dev/quarry/internal/keystore/insecure"
@@ -361,6 +364,107 @@ func TestExportKey_WrongDriver(t *testing.T) {
 	key.Driver = "nonexistent"
 	_, err = insecure.Driver.ExportKey(ctx, key, mustResolveExport(t))
 	assert.Error(t, err)
+}
+
+func TestGenerateKey_ECDSA_ViaKeyType(t *testing.T) {
+	ctx := context.Background()
+
+	res := mustResolveGenerate(t, keystore.WithKeyType(tufmetadata.KeyTypeECDSA_SHA2_P256))
+	key, err := insecure.Driver.GenerateKey(ctx, res)
+	require.NoError(t, err)
+	require.NotNil(t, key)
+	assert.Equal(t, "insecure", key.Driver)
+	assert.Equal(t, keystore.KeyTypeECDSA_SHA2_P256, key.KeyType())
+
+	signer, err := insecure.Driver.GetSigner(ctx, key)
+	require.NoError(t, err)
+	pub, ok := signer.Public().(*ecdsa.PublicKey)
+	require.True(t, ok, "expected *ecdsa.PublicKey")
+	assert.Equal(t, "P-256", pub.Curve.Params().Name)
+}
+
+func TestGenerateKey_ECDSA_ViaCurve(t *testing.T) {
+	ctx := context.Background()
+
+	res := mustResolveGenerate(t, keystore.WithCurve(elliptic.P256()))
+	key, err := insecure.Driver.GenerateKey(ctx, res)
+	require.NoError(t, err)
+	assert.Equal(t, keystore.KeyTypeECDSA_SHA2_P256, key.KeyType())
+}
+
+func TestGenerateKey_ECDSA_SignVerify(t *testing.T) {
+	ctx := context.Background()
+
+	res := mustResolveGenerate(t, keystore.WithKeyType(tufmetadata.KeyTypeECDSA_SHA2_P256))
+	key, err := insecure.Driver.GenerateKey(ctx, res)
+	require.NoError(t, err)
+
+	signer, err := insecure.Driver.GetSigner(ctx, key)
+	require.NoError(t, err)
+
+	msg := []byte("ecdsa round trip")
+	digest := sha256.Sum256(msg)
+	sig, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	require.NoError(t, err)
+
+	pub, ok := signer.Public().(*ecdsa.PublicKey)
+	require.True(t, ok)
+	assert.True(t, ecdsa.VerifyASN1(pub, digest[:], sig))
+}
+
+func TestGenerateKey_RSA_DefaultBits(t *testing.T) {
+	ctx := context.Background()
+
+	res := mustResolveGenerate(t, keystore.WithKeyType(tufmetadata.KeyTypeRSASSA_PSS_SHA256))
+	key, err := insecure.Driver.GenerateKey(ctx, res)
+	require.NoError(t, err)
+	assert.Equal(t, keystore.KeyTypeRSASSA_PSS_SHA256, key.KeyType())
+
+	signer, err := insecure.Driver.GetSigner(ctx, key)
+	require.NoError(t, err)
+	pub, ok := signer.Public().(*rsa.PublicKey)
+	require.True(t, ok, "expected *rsa.PublicKey")
+	assert.Equal(t, 3072, pub.N.BitLen(), "default RSA bit size")
+}
+
+func TestGenerateKey_RSA_ExplicitBits(t *testing.T) {
+	for _, bits := range []int{2048, 3072, 4096} {
+		t.Run(fmt.Sprintf("RSA-%d", bits), func(t *testing.T) {
+			ctx := context.Background()
+
+			res := mustResolveGenerate(t, keystore.WithRSABits(bits))
+			key, err := insecure.Driver.GenerateKey(ctx, res)
+			require.NoError(t, err)
+			assert.Equal(t, keystore.KeyTypeRSASSA_PSS_SHA256, key.KeyType())
+
+			signer, err := insecure.Driver.GetSigner(ctx, key)
+			require.NoError(t, err)
+			pub, ok := signer.Public().(*rsa.PublicKey)
+			require.True(t, ok)
+			assert.Equal(t, bits, pub.N.BitLen())
+		})
+	}
+}
+
+func TestGenerateKey_RSA_SignVerify(t *testing.T) {
+	ctx := context.Background()
+
+	res := mustResolveGenerate(t, keystore.WithRSABits(2048))
+	key, err := insecure.Driver.GenerateKey(ctx, res)
+	require.NoError(t, err)
+
+	signer, err := insecure.Driver.GetSigner(ctx, key)
+	require.NoError(t, err)
+
+	msg := []byte("rsa-pss round trip")
+	digest := sha256.Sum256(msg)
+	pssOpts := &rsa.PSSOptions{Hash: crypto.SHA256, SaltLength: rsa.PSSSaltLengthAuto}
+	sig, err := signer.Sign(rand.Reader, digest[:], pssOpts)
+	require.NoError(t, err)
+
+	pub, ok := signer.Public().(*rsa.PublicKey)
+	require.True(t, ok)
+	require.NoError(t, rsa.VerifyPSS(pub, crypto.SHA256, digest[:], sig, pssOpts))
 }
 
 func TestGenerateKey_UnsupportedKeyType(t *testing.T) {
