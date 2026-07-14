@@ -10,7 +10,6 @@ import (
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
 	"go.amutable.dev/quarry/internal/keystore"
-	"go.amutable.dev/quarry/internal/keystore/keyopts"
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
@@ -47,22 +46,22 @@ func ReplaceKeys(roleName string, keys map[keystore.KeyID]*keystore.PublicKey, r
 // rotateRoleKeys rotates a roles' keys with a new set of keys generated with
 // the same parameters.
 //
-// The provided options can either be [keyopts.RotateOption]s (used when a key
-// is managed by the given [keystore.Store]) or [keyopts.GenerateOption] (used
+// The provided options can either be [keystore.RotateOption]s (used when a key
+// is managed by the given [keystore.Store]) or [keystore.GenerateOption] (used
 // when a key is not available and thus a new key needs to be generated).
 func (tx *Transaction) rotateRoleKeys(ctx context.Context, roleName string, store *keystore.Store, opts ...any) (_ []keystore.KeyID, Err error) {
 	// Copy the option sets (note that some options may be valid generation and
 	// rotation options).
 	var (
-		rotateOpts   = make([]keyopts.RotateOption, 0, len(opts))
-		generateOpts = make([]keyopts.GenerateOption, 0, len(opts))
+		rotateOpts   = make([]keystore.RotateOption, 0, len(opts))
+		generateOpts = make([]keystore.GenerateOption, 0, len(opts))
 	)
 	for _, opt := range opts {
-		rotateOpt, isRotateOpt := opt.(keyopts.RotateOption)
+		rotateOpt, isRotateOpt := opt.(keystore.RotateOption)
 		if isRotateOpt {
 			rotateOpts = append(rotateOpts, rotateOpt)
 		}
-		generateOpt, isGenerateOpt := opt.(keyopts.GenerateOption)
+		generateOpt, isGenerateOpt := opt.(keystore.GenerateOption)
 		if isGenerateOpt {
 			generateOpts = append(generateOpts, generateOpt)
 		}
@@ -125,8 +124,8 @@ func (tx *Transaction) rotateRoleKeys(ctx context.Context, roleName string, stor
 // retrieve the new [keystore.KeyID]s you will need to fetch the information
 // from [Transaction.RootRoleData] separately.
 //
-// The provided options can either be [keyopts.RotateOption]s (used when a key
-// is managed by the given [keystore.Store]) or [keyopts.GenerateOption] (used
+// The provided options can either be [keystore.RotateOption]s (used when a key
+// is managed by the given [keystore.Store]) or [keystore.GenerateOption] (used
 // when a key is not available and thus a new key needs to be generated).
 //
 // This method is NOT recommended for rotation of root keys, because it

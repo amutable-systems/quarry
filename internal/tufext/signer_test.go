@@ -32,6 +32,20 @@ func insecureDriver(t *testing.T) keystore.Driver {
 	return driver
 }
 
+func mustResolveGenerate(t *testing.T, opts ...keystore.GenerateOption) *keystore.Resolver {
+	t.Helper()
+	res, err := keystore.NewGenerateResolver(opts)
+	require.NoError(t, err)
+	return res
+}
+
+func mustResolveImport(t *testing.T, opts ...keystore.ImportOption) *keystore.Resolver {
+	t.Helper()
+	res, err := keystore.NewImportResolver(opts)
+	require.NoError(t, err)
+	return res
+}
+
 // verifyTUFSignature creates a root metadata that trusts the given key for the
 // specified role, then uses go-tuf's VerifyDelegate to verify the signed
 // metadata is valid from a TUF perspective.
@@ -46,14 +60,14 @@ func verifyTUFSignature(t *testing.T, roleName string, key *keystore.GenericKey,
 
 func generateInsecureKey(ctx context.Context, t *testing.T) *keystore.GenericKey {
 	t.Helper()
-	key, err := insecureDriver(t).GenerateKey(ctx)
+	key, err := insecureDriver(t).GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 	return key
 }
 
 func importInsecureKey(ctx context.Context, t *testing.T, privKey crypto.PrivateKey) *keystore.GenericKey {
 	t.Helper()
-	key, err := insecureDriver(t).ImportKey(ctx, privKey)
+	key, err := insecureDriver(t).ImportKey(ctx, privKey, mustResolveImport(t))
 	require.NoError(t, err)
 	return key
 }

@@ -21,6 +21,31 @@ import (
 	"go.amutable.dev/quarry/internal/keystore/insecure"
 )
 
+// mustResolveGenerate builds a [keystore.Resolver] that can be handed
+// directly to the driver.
+func mustResolveGenerate(t *testing.T, opts ...keystore.GenerateOption) *keystore.Resolver { //nolint:unparam // for future option-taking tests
+	t.Helper()
+	res, err := keystore.NewGenerateResolver(opts)
+	require.NoError(t, err)
+	return res
+}
+
+// mustResolveImport is the import version of [mustResolveGenerate].
+func mustResolveImport(t *testing.T, opts ...keystore.ImportOption) *keystore.Resolver { //nolint:unparam // mirrors mustResolveGenerate for future option-taking tests
+	t.Helper()
+	res, err := keystore.NewImportResolver(opts)
+	require.NoError(t, err)
+	return res
+}
+
+// mustResolveExport is the export version of [mustResolveGenerate].
+func mustResolveExport(t *testing.T, opts ...keystore.ExportOption) *keystore.Resolver { //nolint:unparam // mirrors mustResolveGenerate for future option-taking tests
+	t.Helper()
+	res, err := keystore.NewExportResolver(opts)
+	require.NoError(t, err)
+	return res
+}
+
 func TestDriverName(t *testing.T) {
 	assert.Equal(t, "insecure", insecure.Driver.Name())
 }
@@ -34,7 +59,7 @@ func TestDriverRegistered(t *testing.T) {
 func TestGenerateKey(t *testing.T) {
 	ctx := context.Background()
 
-	key, err := insecure.Driver.GenerateKey(ctx)
+	key, err := insecure.Driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 	require.NotNil(t, key)
 
@@ -49,10 +74,10 @@ func TestGenerateKey(t *testing.T) {
 func TestGenerateKeyProducesDifferentKeys(t *testing.T) {
 	ctx := context.Background()
 
-	key1, err := insecure.Driver.GenerateKey(ctx)
+	key1, err := insecure.Driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
-	key2, err := insecure.Driver.GenerateKey(ctx)
+	key2, err := insecure.Driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
 	id1, err := key1.ID()
@@ -66,7 +91,7 @@ func TestGenerateKeyProducesDifferentKeys(t *testing.T) {
 func TestGetSigner(t *testing.T) {
 	ctx := context.Background()
 
-	key, err := insecure.Driver.GenerateKey(ctx)
+	key, err := insecure.Driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
 	signer, err := insecure.Driver.GetSigner(ctx, key)
@@ -89,10 +114,10 @@ func TestGetSigner(t *testing.T) {
 func TestExportKey(t *testing.T) {
 	ctx := context.Background()
 
-	key, err := insecure.Driver.GenerateKey(ctx)
+	key, err := insecure.Driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
-	exported, err := insecure.Driver.ExportKey(ctx, key)
+	exported, err := insecure.Driver.ExportKey(ctx, key, mustResolveExport(t))
 	require.NoError(t, err)
 	require.NotNil(t, exported)
 
@@ -116,7 +141,7 @@ func TestImportKey_Ed25519(t *testing.T) {
 	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	genericKey, err := insecure.Driver.ImportKey(ctx, privKey)
+	genericKey, err := insecure.Driver.ImportKey(ctx, privKey, mustResolveImport(t))
 	require.NoError(t, err)
 	require.NotNil(t, genericKey)
 
@@ -135,7 +160,7 @@ func TestImportKey_ECDSA(t *testing.T) {
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 
-	genericKey, err := insecure.Driver.ImportKey(ctx, privKey)
+	genericKey, err := insecure.Driver.ImportKey(ctx, privKey, mustResolveImport(t))
 	require.NoError(t, err)
 	require.NotNil(t, genericKey)
 
@@ -153,7 +178,7 @@ func TestImportKey_RSA(t *testing.T) {
 	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	genericKey, err := insecure.Driver.ImportKey(ctx, privKey)
+	genericKey, err := insecure.Driver.ImportKey(ctx, privKey, mustResolveImport(t))
 	require.NoError(t, err)
 	require.NotNil(t, genericKey)
 
@@ -168,7 +193,7 @@ func TestImportKey_RSA(t *testing.T) {
 func TestImportKey_InvalidType(t *testing.T) {
 	ctx := context.Background()
 
-	_, err := insecure.Driver.ImportKey(ctx, "not a key")
+	_, err := insecure.Driver.ImportKey(ctx, "not a key", mustResolveImport(t))
 	assert.Error(t, err, "importing a non-key should fail")
 }
 
@@ -176,16 +201,16 @@ func TestRoundTrip_GenerateExportImport(t *testing.T) {
 	ctx := context.Background()
 
 	// Generate a key.
-	original, err := insecure.Driver.GenerateKey(ctx)
+	original, err := insecure.Driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
 	// Export the key.
-	exported, err := insecure.Driver.ExportKey(ctx, original)
+	exported, err := insecure.Driver.ExportKey(ctx, original, mustResolveExport(t))
 	require.NoError(t, err)
 
 	// The exported value from insecure is a crypto.Signer, which is also a
 	// CommonPrivateKey. Re-import it.
-	reimported, err := insecure.Driver.ImportKey(ctx, exported)
+	reimported, err := insecure.Driver.ImportKey(ctx, exported, mustResolveImport(t))
 	require.NoError(t, err)
 
 	// The keys should be equivalent.
@@ -202,10 +227,10 @@ func TestExportKey_ECDSA(t *testing.T) {
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 
-	genericKey, err := insecure.Driver.ImportKey(ctx, privKey)
+	genericKey, err := insecure.Driver.ImportKey(ctx, privKey, mustResolveImport(t))
 	require.NoError(t, err)
 
-	exported, err := insecure.Driver.ExportKey(ctx, genericKey)
+	exported, err := insecure.Driver.ExportKey(ctx, genericKey, mustResolveExport(t))
 	require.NoError(t, err)
 
 	signer, ok := exported.(crypto.Signer)
@@ -219,10 +244,10 @@ func TestExportKey_RSA(t *testing.T) {
 	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	genericKey, err := insecure.Driver.ImportKey(ctx, privKey)
+	genericKey, err := insecure.Driver.ImportKey(ctx, privKey, mustResolveImport(t))
 	require.NoError(t, err)
 
-	exported, err := insecure.Driver.ExportKey(ctx, genericKey)
+	exported, err := insecure.Driver.ExportKey(ctx, genericKey, mustResolveExport(t))
 	require.NoError(t, err)
 
 	signer, ok := exported.(crypto.Signer)
@@ -237,13 +262,13 @@ func TestRoundTrip_ImportExportImport_ECDSA(t *testing.T) {
 	require.NoError(t, err)
 
 	// Import → Export → Re-import.
-	imported, err := insecure.Driver.ImportKey(ctx, privKey)
+	imported, err := insecure.Driver.ImportKey(ctx, privKey, mustResolveImport(t))
 	require.NoError(t, err)
 
-	exported, err := insecure.Driver.ExportKey(ctx, imported)
+	exported, err := insecure.Driver.ExportKey(ctx, imported, mustResolveExport(t))
 	require.NoError(t, err)
 
-	reimported, err := insecure.Driver.ImportKey(ctx, exported)
+	reimported, err := insecure.Driver.ImportKey(ctx, exported, mustResolveImport(t))
 	require.NoError(t, err)
 
 	importedID, err := imported.ID()
@@ -260,13 +285,13 @@ func TestRoundTrip_ImportExportImport_RSA(t *testing.T) {
 	require.NoError(t, err)
 
 	// Import → Export → Re-import.
-	imported, err := insecure.Driver.ImportKey(ctx, privKey)
+	imported, err := insecure.Driver.ImportKey(ctx, privKey, mustResolveImport(t))
 	require.NoError(t, err)
 
-	exported, err := insecure.Driver.ExportKey(ctx, imported)
+	exported, err := insecure.Driver.ExportKey(ctx, imported, mustResolveExport(t))
 	require.NoError(t, err)
 
-	reimported, err := insecure.Driver.ImportKey(ctx, exported)
+	reimported, err := insecure.Driver.ImportKey(ctx, exported, mustResolveImport(t))
 	require.NoError(t, err)
 
 	importedID, err := imported.ID()
@@ -280,7 +305,7 @@ func TestGetSigner_WrongDriver(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a GenericKey with a wrong driver name.
-	key, err := insecure.Driver.GenerateKey(ctx)
+	key, err := insecure.Driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
 	key.Driver = "nonexistent"
@@ -291,7 +316,7 @@ func TestGetSigner_WrongDriver(t *testing.T) {
 func TestGetSigner_CorruptKeyData(t *testing.T) {
 	ctx := context.Background()
 
-	key, err := insecure.Driver.GenerateKey(ctx)
+	key, err := insecure.Driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
 	// Corrupt the key data so PKCS#8 parsing fails.
@@ -303,10 +328,10 @@ func TestGetSigner_CorruptKeyData(t *testing.T) {
 func TestGetSigner_MismatchedPublicKey(t *testing.T) {
 	ctx := context.Background()
 
-	key1, err := insecure.Driver.GenerateKey(ctx)
+	key1, err := insecure.Driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
-	key2, err := insecure.Driver.GenerateKey(ctx)
+	key2, err := insecure.Driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
 	// Put key1's private key data with key2's public key.
@@ -318,7 +343,7 @@ func TestGetSigner_MismatchedPublicKey(t *testing.T) {
 func TestGetSigner_InvalidJSON(t *testing.T) {
 	ctx := context.Background()
 
-	key, err := insecure.Driver.GenerateKey(ctx)
+	key, err := insecure.Driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
 	// Set invalid JSON as key data.
@@ -330,10 +355,10 @@ func TestGetSigner_InvalidJSON(t *testing.T) {
 func TestExportKey_WrongDriver(t *testing.T) {
 	ctx := context.Background()
 
-	key, err := insecure.Driver.GenerateKey(ctx)
+	key, err := insecure.Driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
 	key.Driver = "nonexistent"
-	_, err = insecure.Driver.ExportKey(ctx, key)
+	_, err = insecure.Driver.ExportKey(ctx, key, mustResolveExport(t))
 	assert.Error(t, err)
 }

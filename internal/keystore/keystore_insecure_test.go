@@ -38,7 +38,7 @@ func TestInsecure_Store_AddGetUnlinkKey(t *testing.T) {
 	driver, ok := keystore.GetDriver("insecure")
 	require.True(t, ok)
 
-	key, err := driver.GenerateKey(ctx)
+	key, err := driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
 	// Add the key.
@@ -88,7 +88,7 @@ func TestInsecure_Store_GetSigner(t *testing.T) {
 	driver, ok := keystore.GetDriver("insecure")
 	require.True(t, ok)
 
-	key, err := driver.GenerateKey(ctx)
+	key, err := driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
 	keyID, err := store.AddKey(ctx, key)
@@ -122,7 +122,7 @@ func TestInsecure_Store_MultipleKeys(t *testing.T) {
 	// Add several keys.
 	var keyIDs []keystore.KeyID //nolint:prealloc // test code
 	for range 5 {
-		key, err := driver.GenerateKey(ctx)
+		key, err := driver.GenerateKey(ctx, mustResolveGenerate(t))
 		require.NoError(t, err)
 
 		keyID, err := store.AddKey(ctx, key)
@@ -176,7 +176,7 @@ func TestInsecure_StoreFromFd(t *testing.T) {
 	driver, ok := keystore.GetDriver("insecure")
 	require.True(t, ok)
 
-	key, err := driver.GenerateKey(ctx)
+	key, err := driver.GenerateKey(ctx, mustResolveGenerate(t))
 	require.NoError(t, err)
 
 	keyID, err := store.AddKey(ctx, key)
@@ -189,3 +189,34 @@ func TestInsecure_StoreFromFd(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, keyID, retrievedID)
 }
+
+func newInsecureStore(t *testing.T) *keystore.Store {
+	t.Helper()
+	storeDir := t.TempDir()
+	store, err := keystore.OpenStore(storeDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, store.Close()) })
+	return store
+}
+
+// Options that no driver pass consumes must be rejected by
+// Store.GenerateKey.
+func TestInsecure_GenerateKey_UnsupportedOption(t *testing.T) {
+	ctx := context.Background()
+	store := newInsecureStore(t)
+
+	_, _, err := store.GenerateKey(ctx, "insecure", unsupportedTestOpt{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported option")
+	assert.Contains(t, err.Error(), "unsupportedTestOpt()")
+}
+
+// unsupportedTestOpt targets a state type no driver ever resolves.
+type unsupportedTestOpt struct{}
+
+func (unsupportedTestOpt) IsOption()         {}
+func (unsupportedTestOpt) IsGenerateOption() {}
+
+func (unsupportedTestOpt) Apply(*struct{ never bool }) error { return nil }
+
+func (unsupportedTestOpt) String() string { return "unsupportedTestOpt()" }

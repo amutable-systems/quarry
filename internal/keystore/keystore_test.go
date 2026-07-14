@@ -17,7 +17,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"go.amutable.dev/quarry/internal/keystore"
-	"go.amutable.dev/quarry/internal/keystore/keyopts"
 )
 
 const testDriverName = "test-driver"
@@ -32,7 +31,7 @@ type testDriver struct {
 
 func (d *testDriver) Name() string { return testDriverName }
 
-func (d *testDriver) GenerateKey(_ context.Context, _ ...keyopts.GenerateOption) (*keystore.GenericKey, error) {
+func (d *testDriver) GenerateKey(_ context.Context, _ *keystore.Resolver) (*keystore.GenericKey, error) {
 	_, privKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -53,11 +52,11 @@ func (d *testDriver) GenerateKey(_ context.Context, _ ...keyopts.GenerateOption)
 	return key, nil
 }
 
-func (d *testDriver) ImportKey(context.Context, any, ...keyopts.ImportOption) (*keystore.GenericKey, error) {
+func (d *testDriver) ImportKey(context.Context, any, *keystore.Resolver) (*keystore.GenericKey, error) {
 	panic("not implemented")
 }
 
-func (d *testDriver) ExportKey(context.Context, *keystore.GenericKey, ...keyopts.ExportOption) (any, error) {
+func (d *testDriver) ExportKey(context.Context, *keystore.GenericKey, *keystore.Resolver) (any, error) {
 	panic("not implemented")
 }
 
@@ -79,9 +78,18 @@ func init() {
 	keystore.MustRegisterDriver(testDrv)
 }
 
+// mustResolveGenerate builds a [keystore.Resolver] that can be handed
+// directly to a driver.
+func mustResolveGenerate(t *testing.T, opts ...keystore.GenerateOption) *keystore.Resolver { //nolint:unparam // mirrors the insecure-driver test helper for future option-taking tests
+	t.Helper()
+	res, err := keystore.NewGenerateResolver(opts)
+	require.NoError(t, err)
+	return res
+}
+
 func generateTestKey(t *testing.T) *keystore.GenericKey {
 	t.Helper()
-	key, err := testDrv.GenerateKey(context.Background())
+	key, err := testDrv.GenerateKey(context.Background(), mustResolveGenerate(t))
 	require.NoError(t, err)
 	return key
 }

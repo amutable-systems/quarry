@@ -16,7 +16,6 @@ import (
 
 	"go.amutable.dev/quarry/internal/cryptoext"
 	"go.amutable.dev/quarry/internal/keystore"
-	"go.amutable.dev/quarry/internal/keystore/keyopts"
 )
 
 type driver struct{}
@@ -24,12 +23,9 @@ type driver struct{}
 func (d *driver) Name() string { return "insecure" }
 
 // GenerateKey generates a new key using this driver.
-func (d *driver) GenerateKey(_ context.Context, opts ...keyopts.GenerateOption) (*keystore.GenericKey, error) {
-	if len(opts) != 0 {
-		panic("TODO: implement GenerateOption")
-	}
-	// TODO: Make this configurable (with GenerateOption). For now, just
-	// default to ed25519.
+func (d *driver) GenerateKey(_ context.Context, _ *keystore.Resolver) (*keystore.GenericKey, error) {
+	// TODO: Make this configurable (with options). For now, just default to
+	// ed25519.
 	_, privKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("keystore driver %s: key generation failed: %w", d.Name(), err)
@@ -38,10 +34,7 @@ func (d *driver) GenerateKey(_ context.Context, opts ...keyopts.GenerateOption) 
 }
 
 // ImportKey imports an existing key into the driver.
-func (d *driver) ImportKey(_ context.Context, key any, opts ...keyopts.ImportOption) (*keystore.GenericKey, error) {
-	if len(opts) != 0 {
-		panic("TODO: implement ImportOption")
-	}
+func (d *driver) ImportKey(_ context.Context, key any, _ *keystore.Resolver) (*keystore.GenericKey, error) {
 	privKey, ok := key.(cryptoext.CommonPrivateKey)
 	if !ok {
 		return nil, fmt.Errorf("keystore driver %s: unsupported private key %T", d.Name(), key)
@@ -50,10 +43,7 @@ func (d *driver) ImportKey(_ context.Context, key any, opts ...keyopts.ImportOpt
 }
 
 // ExportKey exports a key from the driver.
-func (d *driver) ExportKey(ctx context.Context, key *keystore.GenericKey, opts ...keyopts.ExportOption) (any, error) {
-	if len(opts) != 0 {
-		panic("TODO: implement ExportOption")
-	}
+func (d *driver) ExportKey(ctx context.Context, key *keystore.GenericKey, _ *keystore.Resolver) (any, error) {
 	// In the insecure driver, the signing interface is identical to an
 	// exported key.
 	return d.GetSigner(ctx, key)

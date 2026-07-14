@@ -20,7 +20,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"go.amutable.dev/quarry/internal/generics"
-	"go.amutable.dev/quarry/internal/keystore/keyopts"
 	"go.amutable.dev/quarry/internal/pathrsext"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 )
@@ -97,20 +96,22 @@ func (ks *Store) sync() (Err error) {
 // TODO: This should be dynamic!
 const DefaultDriver = "insecure"
 
-// GenerateKey generates a new key with the named driver. This is mostly a
-// shorthand for [Driver.GenerateKey] and [Store.AddKey].
-//
-// TODO: The driver name here should be a GenerateOption (with a default value
-// based on the priority configured by each driver)...
-func (ks *Store) GenerateKey(ctx context.Context, driverName string, opts ...keyopts.GenerateOption) (_ KeyID, _ *GenericKey, Err error) {
+// generateKey is the shared body of [Store.GenerateKey] and
+// [Store.RotateKey].
+func (ks *Store) generateKey(ctx context.Context, res *Resolver, driverName string) (KeyID, *GenericKey, error) {
 	driver, ok := GetDriver(driverName)
 	if !ok {
 		return BadKeyID, nil, fmt.Errorf("cannot generate key: unknown driver %s", driverName)
 	}
-	key, err := driver.GenerateKey(ctx, opts...)
+
+	key, err := driver.GenerateKey(ctx, res)
 	if err != nil {
 		return BadKeyID, nil, err
 	}
+	if err := res.CheckUnconsumed(); err != nil {
+		return BadKeyID, nil, err
+	}
+
 	keyID, err := ks.AddKey(ctx, key)
 	if err != nil {
 		return BadKeyID, nil, err
@@ -118,30 +119,44 @@ func (ks *Store) GenerateKey(ctx context.Context, driverName string, opts ...key
 	return keyID, key, nil
 }
 
-// RotateKey generates a new key with the same key types and options as the
-// provided [GenericKey], to facilitate easier key rotation.
-func (ks *Store) RotateKey(ctx context.Context, oldKeyID KeyID, opts ...keyopts.RotateOption) (KeyID, *GenericKey, error) {
-	if len(opts) > 0 {
-		panic("TODO: implement RotateOption")
+// GenerateKey generates a new key with the named driver. This is mostly a
+// shorthand for [Driver.GenerateKey] and [Store.AddKey].
+//
+// TODO: The driver name here should be a GenerateOption (with a default value
+// based on the priority configured by each driver)...
+func (ks *Store) GenerateKey(ctx context.Context, driverName string, opts ...GenerateOption) (KeyID, *GenericKey, error) {
+	res, err := NewGenerateResolver(opts)
+	if err != nil {
+		return BadKeyID, nil, err
 	}
+	return ks.generateKey(ctx, res, driverName)
+}
+
+// RotateKey generates a new key suitable as a replacement for the provided
+// [KeyID]. The new key uses the same driver as the old key with
+// driver-default parameters.
+//
+// Since the underlying mechanism is to generate a fresh key, every
+// [RotateOption] must also implement [GenerateOption].
+//
+// TODO: Implement copying of key options.
+func (ks *Store) RotateKey(ctx context.Context, oldKeyID KeyID, opts ...RotateOption) (KeyID, *GenericKey, error) {
 	oldKey, err := ks.GetKey(ctx, oldKeyID)
 	if err != nil {
 		return BadKeyID, nil, err
 	}
-	driver, ok := GetDriver(oldKey.Driver)
-	if !ok {
-		return BadKeyID, nil, fmt.Errorf("cannot rotate key %s: unknown driver %s", oldKey.niceID(), oldKey.Driver)
+
+	// Verify that every option can be used for key generation.
+	user := make([]Option, 0, len(opts))
+	for _, opt := range opts {
+		if _, ok := opt.(GenerateOption); !ok {
+			return BadKeyID, nil, fmt.Errorf("rotate option %v cannot be used to generate a new key", opt)
+		}
+		user = append(user, opt)
 	}
-	// TODO: Implement copying of key options.
-	key, err := driver.GenerateKey(ctx)
-	if err != nil {
-		return BadKeyID, nil, err
-	}
-	keyID, err := ks.AddKey(ctx, key)
-	if err != nil {
-		return BadKeyID, nil, err
-	}
-	return keyID, key, nil
+
+	res := newResolver(user)
+	return ks.generateKey(ctx, res, oldKey.Driver)
 }
 
 // AddKey adds the given [GenericKey] to the key store and returns the [KeyID]

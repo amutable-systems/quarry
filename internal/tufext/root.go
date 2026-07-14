@@ -13,7 +13,6 @@ import (
 
 	"go.amutable.dev/quarry/internal/generics"
 	"go.amutable.dev/quarry/internal/keystore"
-	"go.amutable.dev/quarry/internal/keystore/keyopts"
 )
 
 // RootBuilder is a wrapper type for building an initial TUF root.json object.
@@ -31,7 +30,7 @@ type RootBuilder struct {
 
 	// Options for configurating the on-demand generation of keys in Sign.
 	GenerateKeyDriver string
-	GenerateKeyOpts   []keyopts.GenerateOption
+	GenerateKeyOpts   []keystore.GenerateOption
 }
 
 // NewRootBuilder constructs a new [RootBuilder] with default values.
