@@ -1,0 +1,215 @@
+# Copyright (C) 2026 Amutable GmbH
+
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  ACTIONLINT_VERSION: "v1.7.9"
+  GOLANGCI_LINT_VERSION: "v2.12.2"
+  JUST_VERSION: "1.53.0"
+  LIBPATHRS_VERSION: "0.2.5"
+  ZIZMOR_VERSION: "1.26.1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: go build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - uses: ./.github/actions/setup-libpathrs
+        with:
+          version: ${{ env.LIBPATHRS_VERSION }}
+      - name: install just
+        run: cargo install --locked "just@${JUST_VERSION}"
+      - name: build
+        run: just build-all
+
+  build-container:
+    name: docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: install just
+        run: cargo install --locked "just@${JUST_VERSION}"
+      - name: build in container
+        run: just build-all-in-container
+
+  go-test:
+    name: go test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - uses: ./.github/actions/setup-libpathrs
+        with:
+          version: ${{ env.LIBPATHRS_VERSION }}
+      - name: install just
+        run: cargo install --locked "just@${JUST_VERSION}"
+      - name: test
+        run: just test
+
+  go-lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - uses: ./.github/actions/setup-libpathrs
+        with:
+          version: ${{ env.LIBPATHRS_VERSION }}
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+  go-modcheck:
+    name: go mod tidy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: check go.mod is tidy
+        run: go mod tidy -diff
+
+  lint-shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: install just
+        run: cargo install --locked "just@${JUST_VERSION}"
+      - name: shellcheck
+        run: just lint-shell
+
+  go-vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          # Scan with the latest stable toolchain -- stdlib vulnerabilities are
+          # attributed to the toolchain doing the scan, so scanning with an
+          # older pinned toolchain would flag already-fixed stdlib issues.
+          go-version: stable
+      - uses: ./.github/actions/setup-libpathrs
+        with:
+          version: ${{ env.LIBPATHRS_VERSION }}
+      - name: install just
+        run: cargo install --locked "just@${JUST_VERSION}"
+      - name: govulncheck
+        run: just vuln
+
+  gha-actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: actionlint
+        run: go run "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
+
+  gha-zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@192e21d79ab29983730a13d1382995c2307fbcaa # v0.5.7
+        with:
+          version: ${{ env.ZIZMOR_VERSION }}
+          advanced-security: false
+          annotations: true
+
+  complete:
+    name: complete
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    # Run even if some needed jobs failed or were skipped (but not if the
+    # whole run was cancelled), otherwise this job would be marked as skipped
+    # and skipped jobs satisfy required status checks.
+    if: ${{ !cancelled() }}
+    needs:
+      - build
+      - build-container
+      - go-test
+      - go-vuln
+      - go-modcheck
+      - go-lint
+      - lint-shell
+      - gha-actionlint
+      - gha-zizmor
+    steps:
+      - name: check that all jobs succeeded
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: jq --exit-status 'all(.[]; .result == "success")' <<<"$NEEDS_JSON"

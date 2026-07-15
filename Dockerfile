@@ -33,6 +33,7 @@ RUN apt-get update -y && \
     rm -rf /var/lib/apt/lists/*
 
 # Should be kept in sync with go.mod.
+# TODO: Create a renovate job that maintains this.
 ARG LIBPATHRS_VERSION=0.2.5
 ARG LIBPATHRS_SHA256=f8f4a9419eb839cd5decbd120b65f0495bf6eac07155477fe39a8c2a23da589d
 ADD --checksum=sha256:${LIBPATHRS_SHA256} \

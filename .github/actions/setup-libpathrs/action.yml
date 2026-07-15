@@ -1,0 +1,53 @@
+# Copyright (C) 2026 Amutable GmbH
+
+# TODO: Move this to cyphar/setup-libpathrs so this can be used elsewhere.
+
+name: setup-libpathrs
+description: Build and install libpathrs.
+
+inputs:
+  version:
+    description: libpathrs version to install
+    required: true
+  # TODO: Support specifying whether you want static or dynamic libraries to
+  # get installed.
+
+runs:
+  using: composite
+  steps:
+    - name: cache libpathrs build
+      id: cache-libpathrs
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/libpathrs-${{ inputs.version }}
+        key: libpathrs-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}
+
+    - name: fetch libpathrs
+      if: steps.cache-libpathrs.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      env:
+        LIBPATHRS_VERSION: ${{ inputs.version }}
+      run: |
+        set -Eeuo pipefail
+        curl -fsSLO \
+            "https://github.com/cyphar/libpathrs/releases/download/v${LIBPATHRS_VERSION}/libpathrs-${LIBPATHRS_VERSION}.tar.xz"
+        # This fails if the tarball doesn't match, but also if the requested
+        # version has no entry in SHA256SUMS ("no file was verified").
+        sha256sum --check --ignore-missing "${GITHUB_ACTION_PATH}/SHA256SUMS"
+        tar -xJf "libpathrs-${LIBPATHRS_VERSION}.tar.xz"
+
+    - name: build libpathrs
+      if: steps.cache-libpathrs.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: ${{ runner.temp }}/libpathrs-${{ inputs.version }}
+      run: make release
+
+    - name: install libpathrs
+      shell: bash
+      working-directory: ${{ runner.temp }}/libpathrs-${{ inputs.version }}
+      run: |
+        sudo ./install.sh \
+            --disable-dynamic \
+            --prefix=/usr \
+            --libdir=/usr/lib
