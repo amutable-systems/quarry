@@ -157,6 +157,10 @@ func generateRoot(ctx context.Context, cmd *cli.Command) (_ *tufext.SignedRoot, 
 var rootCommand = withKeystoreFlag(&cli.Command{
 	Name:  "root",
 	Usage: "generate a TUF root.json file",
+	// --keys takes a comma-sparated list as a single map value, which
+	// urfave/cli doesn't allow by default so disable comma splitting (sadly
+	// this is a global option).
+	DisableSliceFlagSeparator: true,
 	Flags: append([]cli.Flag{
 		&cli.StringFlag{
 			Name:      "output",

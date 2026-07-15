@@ -34,6 +34,10 @@ var repoctlCommand = withRepoFlag(withKeystoreFlag(&cli.Command{
 var repoctlInitCommand = &cli.Command{
 	Name:  "init",
 	Usage: "create a new quarry repository",
+	// --keys takes a comma-sparated list as a single map value, which
+	// urfave/cli doesn't allow by default so disable comma splitting (sadly
+	// this is a global option).
+	DisableSliceFlagSeparator: true,
 	MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{
 		{
 			Flags: [][]cli.Flag{
