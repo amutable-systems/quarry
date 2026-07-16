@@ -24,6 +24,31 @@ build-all-in-container:
 		-o type=local,dest="{{outdir}}" \
 		.
 
+test:
+	go test -race -tags "{{buildtags}}" ./...
+
+lint: lint-go lint-gomod lint-shell lint-gha vuln
+
+lint-go:
+	golangci-lint run
+
+lint-gomod:
+	go mod tidy -diff
+
+lint-shell:
+	git ls-files -z \
+		| xargs -0 file --mime-type -- \
+		| grep 'text/x-shellscript$' \
+		| cut -d: -f1 \
+		| xargs -d'\n' -r shellcheck --
+
+lint-gha:
+	zizmor .github/
+	go run github.com/rhysd/actionlint/cmd/actionlint@latest
+
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@latest -tags "{{ replace(buildtags, ' ', ',') }}" ./...
+
 install: install-hardhat install-client install-client-config
 
 install-hardhat:
