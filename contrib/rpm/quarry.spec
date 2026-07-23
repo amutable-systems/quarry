@@ -25,10 +25,13 @@ BuildRequires:  systemd-rpm-macros
 BuildRequires:  systemd-sysusers
 
 %description
+A TUF-based [1] update system that is solid as bedrock but produces updates
+using a protocol that is as dumb as rocks.
+
+[1]: https://theupdateframework.io/
 
 %package hardhat
 Summary:        Management Tool for Quarry Repositories
-Requires:       %{name} = %{version}
 
 %description hardhat
 A fairly minimal CLI management tool for Quarry repositories. It provides the
@@ -37,7 +40,6 @@ repository containing arbitrary package contents.
 
 %package client
 Summary:        Client for Quarry Repositories
-Requires:       %{name} = %{version}
 
 %description client
 A custom TUF client that supports Quarry-specific extensions. In addition to
@@ -55,7 +57,6 @@ without needing any changes to sysupdate.
 %if %{with http}
 %package client-http
 Summary:        sysupdate-compatible HTTP Server Frontend for Quarry Repositories
-Requires:       %{name} = %{version}
 Requires:       %{name}-client = %{version}
 
 %description client-http
@@ -68,7 +69,6 @@ transparently without needing any changes to sysupdate.
 
 %package sysupdate
 Summary:        Quarry-based sysupdate Runner
-Requires:       %{name} = %{version}
 Requires:       %{name}-client = %{version}
 %if %{with http}
 Requires:       %{name}-client-http = %{version}
@@ -132,9 +132,6 @@ just install-sysupdate
 
 %postun sysupdate
 %systemd_postun_with_restart %{name}-sysupdate.timer %{name}-sysupdate.service
-
-%files
-%doc README.md
 
 %files hardhat
 %{_bindir}/%{name}-hardhat
