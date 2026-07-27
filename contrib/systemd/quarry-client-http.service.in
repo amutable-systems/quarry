@@ -15,7 +15,10 @@ User=quarry
 Group=quarry
 
 ProtectSystem=full
-StateDirectory=/var/lib/quarry-client
+# Keep the mode in sync with quarry-client.tmpfiles, which also creates
+# this directory at boot for quarry-sysupdate's cache_dir.
+StateDirectory=quarry-client
+StateDirectoryMode=0750
 
 ProtectHostname=yes
 ProtectHome=yes
