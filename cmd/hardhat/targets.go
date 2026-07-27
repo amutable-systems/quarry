@@ -129,6 +129,15 @@ func getContentLength(ctx context.Context, url *url.URL) (int64, error) {
 		return -1, fmt.Errorf("fetch %s: %w", url, err)
 	}
 	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		// An error page's Content-Length is not the target's length. R2
+		// serves 404 pages with a plausible-looking size that would end up
+		// in targets.json and fail length verification on every fetch.
+		return -1, fmt.Errorf("fetch %s failed with status code %.3d", url, res.StatusCode)
+	}
+	if res.ContentLength < 0 {
+		return -1, fmt.Errorf("fetch %s: response has no Content-Length", url)
+	}
 	return res.ContentLength, nil
 }
 
