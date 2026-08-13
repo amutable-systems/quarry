@@ -90,6 +90,50 @@ type SetTagsParams struct {
 	Remove []string `json:"remove,omitempty"`
 }
 
+// String represents a set of tags changes in the form of
+// "'tagA':'tagB':-'tagC'" with removed tags including a "-" prefix.
+func (p *SetTagsParams) String() string {
+	if p == nil {
+		return ""
+	}
+	var buf strings.Builder
+	for i, tag := range p.Add {
+		if i > 0 {
+			buf.WriteRune(':')
+		}
+		buf.WriteRune('\'')
+		buf.WriteString(tag)
+		buf.WriteRune('\'')
+	}
+	for _, tag := range p.Remove {
+		if buf.Len() > 0 {
+			buf.WriteRune(':')
+		}
+		buf.WriteString(`-'`)
+		buf.WriteString(tag)
+		buf.WriteRune('\'')
+	}
+	return buf.String()
+}
+
+// Invert swaps the Add and Remove sets from [SetTagsParams], which is very
+// useful for reverting the application of tags.
+//
+// NOTE: If you use this to revert a [SetTags] operation you must be sure that
+// Add does not contain pre-existing tags and Remove does not contain
+// non-existent tags as otherwise the state after the revert will not match the
+// state before it.
+func (p *SetTagsParams) Invert() { p.Add, p.Remove = p.Remove, p.Add }
+
+// Inverted is like [SetTagsParams.Invert] but returns a cloned copy that is
+// inverted.
+func (p *SetTagsParams) Inverted() *SetTagsParams {
+	pnew := new(SetTagsParams)
+	*pnew = *p
+	pnew.Invert()
+	return pnew
+}
+
 // IsEmpty indicates whether the requested set of changes is actually a no-op.
 func (p *SetTagsParams) IsEmpty() bool { return p == nil || len(p.Add) == 0 && len(p.Remove) == 0 }
 

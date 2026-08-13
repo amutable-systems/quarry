@@ -22,6 +22,14 @@ var updateCommand = withExtensionDirFlag(withQuarryUserFlag(withQuarryProxyFlag(
 			&xsysupdate.TransferFileExtension{
 				OverrideSourcePathURL: ctxQuarryProxyURL(ctx),
 			},
+			&xsysupdate.TagsExtension{
+				// TODO: There is no ownership model for machine tags yet, so
+				// as a temporary workaround we take full control of the acp.*
+				// and amutable.* tag namespaces. These tags always exactly
+				// match the set shipped by the configured repositories, and
+				// tags outside them are never touched.
+				AllowedNamespaces: []string{"acp.", "amutable."},
+			},
 		}
 		ctx, err := exts.DoInit(ctx)
 		if err != nil {

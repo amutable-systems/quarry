@@ -231,6 +231,20 @@ func TestSetTags_ErrorReply(t *testing.T) {
 	assert.Nil(t, rejected, "non-rejection errors must not report tags as rejected")
 }
 
+func TestSetTagsParams_Invert(t *testing.T) {
+	p := hostnamed.SetTagsParams{Add: []string{"acp.a"}, Remove: []string{"acp.b", "acp.c"}}
+	p.Invert()
+	assert.Equal(t, hostnamed.SetTagsParams{Add: []string{"acp.b", "acp.c"}, Remove: []string{"acp.a"}}, p)
+}
+
+func TestSetTagsParams_Inverted(t *testing.T) {
+	p := hostnamed.SetTagsParams{Add: []string{"acp.a"}, Remove: []string{"acp.b", "acp.c"}}
+	p2 := p.Inverted()
+	assert.Equal(t, hostnamed.SetTagsParams{Add: []string{"acp.a"}, Remove: []string{"acp.b", "acp.c"}}, p,
+		"Inverted must not modify the original params")
+	assert.Equal(t, &hostnamed.SetTagsParams{Add: []string{"acp.b", "acp.c"}, Remove: []string{"acp.a"}}, p2)
+}
+
 func TestSetTagsParams_IsEmpty(t *testing.T) {
 	assert.True(t, (*hostnamed.SetTagsParams)(nil).IsEmpty(), "IsEmpty must be nil-safe")
 	assert.True(t, (&hostnamed.SetTagsParams{}).IsEmpty())
