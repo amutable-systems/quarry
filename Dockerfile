@@ -104,7 +104,8 @@ RUN apt-get update -y && \
         meson \
         ninja-build \
         pkgconf \
-        python3-jinja2 && \
+        python3-jinja2 \
+        rename && \
     apt-get clean -y && \
     rm -rf /var/lib/apt/lists/*
 
@@ -118,19 +119,18 @@ RUN git init -q /usr/src/systemd && \
 # Build systemd with as few features as possible to reduce the number of
 # dependencies and build times, especially as we currently only test against
 # systemd-hostnamed which has very few features.
-#
-# systemd builds its binaries with an rpath of $ORIGIN/src/shared, which means
-# that libsystemd*.so will be loaded correctly on any system as long as it is
-# distributed in a subdirectory along with the binaries.
 RUN meson setup /usr/src/systemd/build /usr/src/systemd \
         --auto-features=disabled \
         --buildtype=release \
         -Dmode=release
 ARG SD_BINARIES=systemd-hostnamed
-RUN ninja -C /usr/src/systemd/build $SD_BINARIES
+# Build the .standalone variants of the binaries, which will statically link
+# against libsystemd-shared, making the binaries entirely self-contained.
+RUN printf '%s.standalone\0' $SD_BINARIES | \
+        xargs -0 ninja -C /usr/src/systemd/build --
 RUN cd /usr/src/systemd/build && \
-    install -Dt /opt/systemd $SD_BINARIES && \
-    install -Dt /opt/systemd/src/shared src/shared/libsystemd-shared-*.so
+    rename 's/\.standalone$//' * && \
+    install -Dt /opt/systemd $SD_BINARIES
 
 # --------------------------------------------------------------------------- #
 # systemd-export: provides just the systemd binaries for -o type=local builds

@@ -20,6 +20,7 @@ require (
 	github.com/urfave/cli/v3 v3.8.0
 	golang.org/x/sys v0.42.0
 	gopkg.in/ini.v1 v1.67.2
+	snai.pe/go-varlink v0.0.0-20260218093529-c14cc4939572
 )
 
 require (
