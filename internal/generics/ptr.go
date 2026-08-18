@@ -10,3 +10,10 @@ func PtrToAny[T any](v *T) any {
 	}
 	return v
 }
+
+// Ptr returns a pointer to a copy of the given value. This is primarily useful
+// for filling in optional JSON fields, where a nil pointer and a pointer to the
+// zero value have to be distinguishable.
+func Ptr[T any](v T) *T {
+	return &v
+}

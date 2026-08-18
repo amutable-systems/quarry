@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"iter"
 	"strconv"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
@@ -53,27 +53,72 @@ func getClient(ctx context.Context, repoNames ...string) (*tufclient.Client, err
 	return client, nil
 }
 
-func uapi16FromTargetFile(repo *config.Repository, target *tufmetadata.TargetFiles) iter.Seq2[*uapi16.File, error] {
-	return generics.ErrorIter(func(yield func(*uapi16.File) bool) error {
-		targetExt := tufext.TargetFilesExt(target)
-
-		for url, err := range targetExt.FetchURLs(&repo.DataRootURL.URL) {
-			if err != nil {
-				return fmt.Errorf("get target candidate url: %w", err)
+// earliestTimestampExpiry returns the earliest timestamp.json expiry of any of
+// the repositories in the client, which bounds how long any listing generated
+// from those repositories can be trusted for. The zero time is returned if the
+// client has no repositories.
+func earliestTimestampExpiry(ctx context.Context, client *tufclient.Client) (time.Time, error) {
+	var (
+		errs   []error
+		expiry time.Time
+	)
+	for repoName, updater := range client.IterRepos(ctx) {
+		meta := updater.GetTrustedMetadataSet()
+		if meta.Timestamp == nil {
+			// FIXME: The local client TrustedMetadata state does not get filled
+			// until we do a refresh but go-tuf's client does not allow Refresh
+			// on the same updater more than once(?!). So we do a refresh here
+			// opportunistically.
+			// TODO: Add a (*Client).Refresh helper to make this much less
+			// fragile.
+			if err := updater.Refresh(); err != nil {
+				errs = append(errs, fmt.Errorf("refresh repo %s: %w", repoName, err))
+				continue
 			}
-			file := &uapi16.File{
-				// TODO: What should we do about separators here?
-				Name:     target.Path,
-				DataURL:  url.String(),
-				DataSize: uint64(target.Length),
-				SHA256:   digest.SHA256.Encode(target.Hashes["sha256"]),
-			}
-			if !yield(file) {
-				return nil
-			}
+			meta = updater.GetTrustedMetadataSet()
 		}
-		return nil
-	})
+		timestampExpiry := meta.Timestamp.Signed.Expires
+		if expiry.IsZero() || expiry.After(timestampExpiry) {
+			expiry = timestampExpiry
+		}
+	}
+	return expiry, errors.Join(errs...)
+}
+
+// uapi16FromTargetFile converts a TUF target file into the equivalent UAPI.16
+// file object.
+func uapi16FromTargetFile(target *tufclient.TargetInfo) (*uapi16.File, error) {
+	// The target file might not provide a sha256 hash, in which case we must
+	// abort loudly since UAPI.16 only supports sha256 and the alternatives are
+	// worse (missing files or clients using unverified files).
+	hashBytes, ok := target.Hashes["sha256"]
+	if !ok {
+		return nil, errors.New("target has no sha256 hash, which uapi.16 cannot express")
+	}
+	hash := digest.SHA256.Encode(hashBytes)
+	if err := digest.SHA256.Validate(hash); err != nil {
+		return nil, fmt.Errorf("target has invalid sha256 hash: %w", err)
+	}
+	if target.Length < 0 {
+		return nil, fmt.Errorf("target has invalid negative length %d", target.Length)
+	}
+	targetExt := tufext.TargetFilesExt(target.TargetFiles)
+
+	// TODO(inline-data): Output a literal as well once we support inline data.
+	var contents []*uapi16.Contents
+	for url, err := range targetExt.FetchURLs(&target.Repo.DataRootURL.URL) {
+		if err != nil {
+			return nil, fmt.Errorf("get target candidate url: %w", err)
+		}
+		contents = append(contents, &uapi16.Contents{URL: url.String()})
+	}
+
+	return &uapi16.File{
+		Name:     target.Path,
+		Size:     generics.Ptr(uint64(target.Length)),
+		SHA256:   hash,
+		Contents: contents,
+	}, nil
 }
 
 func pprintHashes(wtr io.Writer, prefix string, hashes tufmetadata.Hashes) {

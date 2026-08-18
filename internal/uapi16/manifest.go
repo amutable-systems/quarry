@@ -2,44 +2,86 @@
 
 package uapi16
 
-// MediaType is the MIME media-type for the UAPI.16 manifest.
-const MediaType = "application/vnd.uapi.16.file.manifest"
+// MediaType is the MIME media-type for the UAPI.16 manifest, which is
+// identified by this mediaType being stored in the root file object of a
+// manifest.
+const MediaType = "application/vnd.uapi.16.manifest"
 
-// File represents a single file from a quarry repository.
+// Filename is the name a UAPI.16 manifest is expected to have when it is
+// stored in a directory alongside the files it describes.
+const Filename = "Uapi16Manifest"
+
+// Contents describes a single source that the data of a [File] can be acquired
+// from. At most one of [Contents.File], [Contents.URL] and [Contents.Literal]
+// may be set -- if none of them are set, the data is expected to be found in a
+// file named [File.Name] stored next to the manifest itself.
+type Contents struct {
+	// File is the name of a file stored in the same location as the manifest.
+	File string `json:"file,omitzero"`
+
+	// URL is a full http:// or https:// URL to fetch the data from.
+	URL string `json:"url,omitzero"`
+
+	// Literal is the data itself, in (possibly URL-safe) base64 form.
+	Literal string `json:"literal,omitzero"`
+
+	// Encoding is the encoding that the source data is stored in, using the
+	// same specifiers as HTTP's Content-Encoding (i.e. "gzip" or "zstd"). If
+	// unset, the source data is not encoded.
+	Encoding string `json:"encoding,omitzero"`
+
+	// EncodedSize is the size of the full encoded source data, and may only be
+	// set if Encoding is set. If unset, consumers cannot check the size of the
+	// encoded data before decoding it.
+	EncodedSize *uint64 `json:"encodedSize,omitzero"`
+
+	// OriginalSize is the size of the full decoded source data. If unset,
+	// consumers cannot check the size of the decoded data.
+	OriginalSize *uint64 `json:"originalSize,omitzero"`
+
+	// Offset is the offset within the decoded source data at which the data of
+	// the [File] starts. The slice extends over [File.Size] bytes, so Offset
+	// plus [File.Size] may not exceed OriginalSize. Unlike the sizes, an unset
+	// offset is defined to mean an offset of zero, so there is no need to tell
+	// the two apart.
+	Offset uint64 `json:"offset,omitzero"`
+}
+
+// File represents a single file object in a UAPI.16 manifest.
+//
+// The first file object of a manifest is the root file object, which describes
+// the directory the manifest as a whole is for -- it has [File.MediaType] set
+// and [File.Name] unset, while every subsequent file object is the other way
+// around.
+//
+// TODO: Support slices, GPT partition metadata, and all the rest of it.
 type File struct {
-	// Name is the logical name of the file.
-	Name string `json:"name"`
+	// MediaType must be [MediaType], and may only be set for the root file
+	// object (which has an empty Name field).
+	MediaType string `json:"mediaType,omitzero"`
 
-	// DataURL is a URL where the data can be retreived.
-	DataURL string `json:"dataUrl"`
+	// Name is the normalised relative path of the file within the directory
+	// described by the manifest and must be a valid name according to
+	// [ValidateName].
+	Name string `json:"name,omitzero"`
 
-	// DataSize is the size of the decompressed data.
-	DataSize uint64 `json:"dataSize"`
+	// Size is the size of the file contents in bytes (i.e. the size of the
+	// slice of decoded data referenced by Contents). An unset (nil) size means
+	// "the remainder of the source data" to consumers when using offsets.
+	Size *uint64 `json:"size,omitzero"`
 
-	// SHA256 is the sha256 digest of the data slice.
-	SHA256 string `json:"sha256"`
+	// SHA256 is the hex-encoded sha256 digest of the file contents.
+	SHA256 string `json:"sha256,omitzero"`
 
-	// TODO: Support slices and all the rest of it.
-}
+	// Contents is the set of alternative sources that the file contents may be
+	// acquired from. Consumers are free to pick whichever source suits them
+	// best, so every entry must describe the exact same data.
+	Contents []*Contents `json:"contents,omitzero"`
 
-// Manifest is a representation of the minimal parts of the draft [UAPI.16
-// manifest format] we need to represent our binary blobs.
-//
-// TODO: We will eventually want to stuff the slice information into the repo
-// metadata.
-//
-// [UAPI.16 manifest format] <https://github.com/uapi-group/specifications/pull/213>
-type Manifest struct {
-	// MediaType must be "application/vnd.uapi.16.file.manifest".
-	MediaType string `json:"mediaType"`
-
-	// Files is the list of files in the manifest.
-	Files []*File `json:"files"`
-}
-
-// New returns a new Manifest prefilled with sane defaults.
-func New() *Manifest {
-	return &Manifest{
-		MediaType: MediaType,
-	}
+	// ValidBeforeUSec is the point in time at which the file object expires,
+	// in microseconds since the UNIX epoch. If unset, the file object never
+	// expires -- the exact opposite of an expiry of zero (i.e. expired since
+	// the UNIX epoch), so the two must not be conflated. Setting this on the
+	// root file object expires the manifest as a whole.
+	ValidBeforeUSec *uint64 `json:"validBeforeUSec,omitzero"`
 }

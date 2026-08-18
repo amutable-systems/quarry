@@ -4,13 +4,15 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path"
+	"strings"
 
 	"github.com/urfave/cli/v3"
 
+	"go.amutable.dev/quarry/internal/generics"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufclient"
 	"go.amutable.dev/quarry/internal/uapi16"
@@ -84,35 +86,55 @@ func (o *formatListFormatter) Output(_ context.Context, target *tufclient.Target
 
 func (*formatListFormatter) Finish(context.Context) error { return nil }
 
-// uapi16ListFormatter collects the target files into a UAPI.16 manifest, which
-// can only be output once the listing is complete.
-type uapi16ListFormatter struct {
-	wtr      io.Writer
-	manifest *uapi16.Manifest
-}
+// uapi16ListFormatter streams the target files out as a UAPI.16 manifest.
+type uapi16ListFormatter struct{ wtr *uapi16.Writer }
 
 func newUAPI16ListFormatter(wtr io.Writer) *uapi16ListFormatter {
-	return &uapi16ListFormatter{wtr: wtr, manifest: uapi16.New()}
+	return &uapi16ListFormatter{wtr: uapi16.NewWriter(wtr)}
 }
 
-func (*uapi16ListFormatter) Begin(context.Context, *tufclient.Client) error { return nil }
+func (o *uapi16ListFormatter) Begin(ctx context.Context, client *tufclient.Client) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var root uapi16.File
+	// Include the earliest repo expiry in the manifest to act as a backstop
+	// against someone using this manifest indefinitely.
+	expiry, err := earliestTimestampExpiry(ctx, client)
+	if err != nil {
+		return fmt.Errorf("get repo metadata expiry: %w", err)
+	}
+	if !expiry.IsZero() {
+		// Make sure we don't mishandle negative timestamps.
+		expiryUSec := uint64(max(expiry.UnixMicro(), 0))
+		root.ValidBeforeUSec = generics.Ptr(expiryUSec)
+	}
+	if err := o.wtr.WriteRoot(&root); err != nil {
+		return fmt.Errorf("write uapi16 manifest root: %w", err)
+	}
+	return nil
+}
 
 func (o *uapi16ListFormatter) Output(_ context.Context, target *tufclient.TargetInfo) error {
-	for file, err := range uapi16FromTargetFile(target.Repo, target.TargetFiles) {
-		if err != nil {
-			return err
-		}
-		o.manifest.Files = append(o.manifest.Files, file)
+	file, err := uapi16FromTargetFile(target)
+	if err != nil {
+		return err
 	}
-	return nil
+	if err := uapi16.ValidateName(file.Name); err != nil {
+		return fmt.Errorf("target cannot be represented as uapi.16 manifest entry: %w", err)
+	}
+	// We must not output any UAPI.16 submanifests as the TUF targets list is
+	// the canonical source of all manifest information and someone inserting a
+	// submanifest into a repo could cause UAPI.16 consumers to incorrectly
+	// trust the manifest (allowing for stuffing attacks).
+	basename := path.Base(file.Name) //nolint:forbidigo // purely lexical, never touches the filesystem
+	if basename == uapi16.Filename || strings.HasPrefix(basename, uapi16.Filename+".") {
+		return fmt.Errorf("target would be interpreted as a uapi.16 sub-manifest (%s) which is invalid when sourced from TUF", basename)
+	}
+	return o.wtr.WriteFile(file)
 }
 
-func (o *uapi16ListFormatter) Finish(context.Context) error {
-	if err := json.NewEncoder(o.wtr).Encode(o.manifest); err != nil {
-		return fmt.Errorf("write uapi16 manifest: %w", err)
-	}
-	return nil
-}
+func (*uapi16ListFormatter) Finish(context.Context) error { return nil }
 
 // getListFormatter returns the [listFormatter] selected by the user's flags,
 // with all output written to the given [io.Writer].

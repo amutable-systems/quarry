@@ -16,6 +16,7 @@ import (
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 	"github.com/urfave/cli/v3"
 
+	"go.amutable.dev/quarry/internal/generics"
 	"go.amutable.dev/quarry/internal/tufclient"
 	"go.amutable.dev/quarry/internal/tufclient/config"
 	"go.amutable.dev/quarry/internal/uapi16"
@@ -45,6 +46,23 @@ data_root_url = "https://example.com/data"
 	return repo
 }
 
+// testClient returns a client with no repositories configured. That is enough
+// for the formatters -- none of them need repository state to format a target
+// file, and an empty client gives the UAPI.16 manifest no expiry.
+func testClient(t *testing.T) *tufclient.Client {
+	t.Helper()
+	// cache_dir is %-expanded by config.Parse, and t.TempDir() embeds the test
+	// name -- which for our subtests contains things like "%n".
+	cacheDir := strings.ReplaceAll(t.TempDir(), "%", "%%")
+	cfg, err := config.Parse(strings.NewReader(
+		"config_version = 1\ncache_dir = \"" + cacheDir + "\"\n"))
+	require.NoError(t, err)
+	client, err := tufclient.NewClient(t.Context(), cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	return client
+}
+
 // testTarget returns a target file in the [testRepo] repository.
 func testTarget(t *testing.T, path string, length int64, sha256 string) *tufclient.TargetInfo {
 	t.Helper()
@@ -67,8 +85,7 @@ func outputAll(t *testing.T, newFormatter func(io.Writer) listFormatter, targets
 	var buf bytes.Buffer
 	formatter := newFormatter(&buf)
 
-	// No client is needed by any formatter at this point.
-	require.NoError(t, formatter.Begin(t.Context(), nil))
+	require.NoError(t, formatter.Begin(t.Context(), testClient(t)))
 	for _, target := range targets {
 		require.NoError(t, formatter.Output(t.Context(), target))
 	}
@@ -142,31 +159,48 @@ func TestUAPI16ListFormatter(t *testing.T) {
 	var buf bytes.Buffer
 	formatter := newUAPI16ListFormatter(&buf)
 
-	require.NoError(t, formatter.Begin(t.Context(), nil))
+	// The manifest is streamed, so the root file object appears up-front and
+	// each target is written as it is seen.
+	require.NoError(t, formatter.Begin(t.Context(), testClient(t)))
+	assert.Equal(t, "\x1e{\"mediaType\":\""+uapi16.MediaType+"\"}\n", buf.String())
+
 	require.NoError(t, formatter.Output(t.Context(), testTarget(t, "FooOS.raw", 14, fooHash)))
 	require.NoError(t, formatter.Output(t.Context(), testTarget(t, "sub/dir/BarOS.raw", 15, barHash)))
-	// The manifest can only be written once the whole listing is known.
-	assert.Empty(t, buf.String(), "no manifest should be written before Finish")
-
 	require.NoError(t, formatter.Finish(t.Context()))
 
-	var manifest uapi16.Manifest
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &manifest))
-	assert.Equal(t, uapi16.MediaType, manifest.MediaType)
 	assert.Equal(t, []*uapi16.File{
+		{MediaType: uapi16.MediaType},
 		{
 			Name:     "FooOS.raw",
-			DataURL:  "https://example.com/data/FooOS.raw",
-			DataSize: 14,
+			Size:     generics.Ptr[uint64](14),
 			SHA256:   fooHash,
+			Contents: []*uapi16.Contents{{URL: "https://example.com/data/FooOS.raw"}},
 		},
 		{
 			Name:     "sub/dir/BarOS.raw",
-			DataURL:  "https://example.com/data/sub/dir/BarOS.raw",
-			DataSize: 15,
+			Size:     generics.Ptr[uint64](15),
 			SHA256:   barHash,
+			Contents: []*uapi16.Contents{{URL: "https://example.com/data/sub/dir/BarOS.raw"}},
 		},
-	}, manifest.Files)
+	}, parseManifest(t, buf.Bytes()))
+}
+
+// parseManifest splits a JSON-SEQ manifest into its file objects, verifying
+// the record framing as it goes.
+func parseManifest(t *testing.T, data []byte) []*uapi16.File {
+	t.Helper()
+	require.NotEmpty(t, data)
+	require.Equal(t, byte(0x1e), data[0], "manifest must start with an RS byte")
+
+	records := strings.Split(string(data[1:]), "\x1e")
+	files := make([]*uapi16.File, 0, len(records))
+	for _, record := range records {
+		require.True(t, strings.HasSuffix(record, "\n"), "record %q must end with a newline", record)
+		var file uapi16.File
+		require.NoError(t, json.Unmarshal([]byte(record), &file))
+		files = append(files, &file)
+	}
+	return files
 }
 
 // getListFormatterFor runs a dummy command with the given arguments and
