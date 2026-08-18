@@ -39,14 +39,14 @@ var listCommand = &cli.Command{
 				{
 					&cli.StringFlag{
 						Name:    "format",
-						Usage:   "output formatted text for each target file (%%R = repo, %%n = target name, %%s = size, %%h = sha256 hash, %%u = download URL)",
+						Usage:   "output formatted text for each target file (%R = repo, %n = target name, %s = size, %h = sha256 hash, %u = download URL)",
 						Aliases: []string{"f"},
 					},
 				},
 				{
 					&cli.BoolFlag{
 						Name:  "uapi-16",
-						Usage: "output the list as a UAPI.16 manifest (for sysupdate) to the given path ('-' for stdout)",
+						Usage: "output the list as a UAPI.16 manifest",
 					},
 				},
 			},
