@@ -51,6 +51,25 @@ func roundTripExtensionJSON[W any](t *testing.T, zero W) {
 	assert.Equal(t, want, *got)
 }
 
+// An extension value is stored without HTML escaping, so that a struct which
+// keeps its extensions as raw JSON does not end up with "\u0026" baked into
+// every URL it was handed. (A struct that decodes its extensions into Go
+// values washes the escapes out either way.)
+func TestSetExtensionJSON_NoEscape(t *testing.T) {
+	const url = "https://example.com/?a=1&b=2"
+
+	obj := extensibleByExtras{Name: "FooOS.raw"}
+	_, err := jsonutils.SetExtensionJSON(&obj, extField, url)
+	require.NoError(t, err)
+	assert.JSONEq(t, `"`+url+`"`, string(obj.Extras[extField]))
+	assert.Contains(t, string(obj.Extras[extField]), "?a=1&b=2")
+
+	got, err := jsonutils.GetExtensionJSON[string](obj, extField)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, url, *got)
+}
+
 func TestExtensionJSON_TUFTypes(t *testing.T) {
 	t.Run("SignedRoot", func(t *testing.T) {
 		roundTripExtensionJSON(t, tufext.SignedRoot{})
