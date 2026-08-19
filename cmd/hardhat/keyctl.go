@@ -49,7 +49,7 @@ var keyctlGenerateCommand = &cli.Command{
 		if err != nil {
 			return fmt.Errorf("failed to generate key: %w", err)
 		}
-		fmt.Println(keyID)
+		mustFprintln(os.Stdout, keyID)
 		return nil
 	},
 }
@@ -109,7 +109,7 @@ var keyctlListCommand = &cli.Command{
 				return fmt.Errorf("failed to list keys: %w", err)
 			}
 			if allKeys == nil && !verbose {
-				fmt.Println(keyID)
+				mustFprintln(os.Stdout, keyID)
 				continue
 			}
 
@@ -120,7 +120,7 @@ var keyctlListCommand = &cli.Command{
 			}
 			switch {
 			case verbose:
-				if err := pprintGenericKey("", key); err != nil {
+				if err := pprintGenericKey(os.Stdout, "", key); err != nil {
 					fmt.Fprintf(os.Stderr, "could not output key %s: %v", keyID, err)
 					continue
 				}
@@ -207,11 +207,11 @@ var keyctlInfoCommand = &cli.Command{
 				if err := b64.Close(); err != nil {
 					return err
 				}
-				fmt.Println()
+				mustFprintln(os.Stdout)
 			}
 
 		default:
-			return pprintGenericKey("", key)
+			return pprintGenericKey(os.Stdout, "", key)
 		}
 		return nil
 	},

@@ -33,16 +33,17 @@ var refreshCommand = &cli.Command{
 		}
 		defer funchelpers.VerifyClose(&Err, client)
 
+		wtr := os.Stdout
 		var errs []error
 		for repoName, updater := range client.IterRepos(ctx) {
-			fmt.Printf("Refreshing %s ...", repoName)
-			_ = os.Stdout.Sync()
+			mustFprintf(wtr, "Refreshing %s ...", repoName)
+			_ = wtr.Sync()
 
 			if err := updater.Refresh(); err != nil {
-				fmt.Printf(" FAILED: %v\n", err)
+				mustFprintf(wtr, " FAILED: %v\n", err)
 				errs = append(errs, err)
 			} else {
-				fmt.Printf(" OK!\n")
+				mustFprintf(wtr, " OK!\n")
 			}
 		}
 		return errors.Join(errs...)

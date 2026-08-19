@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"strconv"
 
@@ -75,35 +76,35 @@ func uapi16FromTargetFile(repo *config.Repository, target *tufmetadata.TargetFil
 	})
 }
 
-func pprintHashes(prefix string, hashes tufmetadata.Hashes) {
-	fmt.Printf("%sHashes:\n", prefix)
+func pprintHashes(wtr io.Writer, prefix string, hashes tufmetadata.Hashes) {
+	mustFprintf(wtr, "%sHashes:\n", prefix)
 	for algoName, hashBytes := range hashes {
-		fmt.Printf("%s - %s:%s\n", prefix, algoName, hashBytes)
+		mustFprintf(wtr, "%s - %s:%s\n", prefix, algoName, hashBytes)
 	}
 }
 
-func pprintTargetFile(prefix string, repo *config.Repository, target *tufmetadata.TargetFiles) {
+func pprintTargetFile(wtr io.Writer, prefix string, repo *config.Repository, target *tufmetadata.TargetFiles) {
 	targetExt := tufext.TargetFilesExt(target)
 
-	fmt.Printf("%s%s:\n", prefix, target.Path)
+	mustFprintf(wtr, "%s%s:\n", prefix, target.Path)
 	prefix += "\t"
-	fmt.Printf("%sURL(s):\n", prefix)
+	mustFprintf(wtr, "%sURL(s):\n", prefix)
 	for url, err := range targetExt.FetchURLs(&repo.DataRootURL.URL) {
 		if err != nil {
-			fmt.Printf("%s - <invalid target url: %v>\n", prefix, err)
+			mustFprintf(wtr, "%s - <invalid target url: %v>\n", prefix, err)
 		}
-		fmt.Printf("%s - %s\n", prefix, url)
+		mustFprintf(wtr, "%s - %s\n", prefix, url)
 	}
-	fmt.Printf("%sSize: %d\n", prefix, target.Length)
-	pprintHashes(prefix, target.Hashes)
+	mustFprintf(wtr, "%sSize: %d\n", prefix, target.Length)
+	pprintHashes(wtr, prefix, target.Hashes)
 	if target.Custom != nil {
-		fmt.Printf("%sCustom:\n", prefix)
-		pprint.JSON(prefix+"\t", "\t", []byte(*target.Custom))
+		mustFprintf(wtr, "%sCustom:\n", prefix)
+		pprint.JSON(wtr, prefix+"\t", "\t", []byte(*target.Custom))
 	}
 	// TODO(ext): UnrecognisedFields
 }
 
-func expandTargetFile(fmtStr string, repo *config.Repository, target *tufmetadata.TargetFiles) error {
+func expandTargetFile(wtr io.Writer, fmtStr string, repo *config.Repository, target *tufmetadata.TargetFiles) error {
 	targetExt := tufext.TargetFilesExt(target)
 
 	expander := expand.NewExpansions().
@@ -127,6 +128,6 @@ func expandTargetFile(fmtStr string, repo *config.Repository, target *tufmetadat
 	if err != nil {
 		return fmt.Errorf("invalid --format: %w", err)
 	}
-	fmt.Println(expanded)
+	mustFprintln(wtr, expanded)
 	return nil
 }

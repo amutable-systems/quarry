@@ -229,7 +229,7 @@ var httpCommand = &cli.Command{
 			BaseContext: func(_ net.Listener) context.Context { return ctx },
 			Protocols:   &proto,
 		}
-		fmt.Printf("Listening on http://%s...\n", server.Addr)
+		mustFprintf(os.Stdout, "Listening on http://%s...\n", server.Addr)
 
 		var (
 			wg    sync.WaitGroup

@@ -50,7 +50,7 @@ var keystoreDriversCommand = &cli.Command{
 
 		verbose := cmd.Bool("verbose")
 		if verbose {
-			fmt.Println("Enabled drivers:")
+			mustFprintln(os.Stdout, "Enabled drivers:")
 		}
 		for driver := range keystore.IterDrivers() {
 			isDefault := driver == keystore.DefaultDriver
@@ -68,7 +68,7 @@ var keystoreDriversCommand = &cli.Command{
 					suffix = " (default)"
 				}
 			}
-			fmt.Printf("%s%s%s\n", prefix, driver, suffix)
+			mustFprintf(os.Stdout, "%s%s%s\n", prefix, driver, suffix)
 		}
 		if allDrivers != nil {
 			return json.NewEncoder(os.Stdout).Encode(allDrivers)

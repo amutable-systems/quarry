@@ -197,21 +197,22 @@ var rootCommand = withKeystoreFlag(&cli.Command{
 		if err != nil {
 			return fmt.Errorf("failed to write targets data: %w", err)
 		}
-		if output != os.Stdout {
-			fmt.Printf("wrote %d bytes to %s\n", n, cmd.String("output"))
+		wtr := os.Stdout
+		if output != wtr {
+			mustFprintf(wtr, "wrote %d bytes to %s\n", n, cmd.String("output"))
 			// Only output new key information if it won't cause issues with
 			// pipelines / redirects.
 			if len(newRoleKeyIDs) > 0 {
-				fmt.Println("Generated keys:")
+				mustFprintln(wtr, "Generated keys:")
 				for roleName, keyIDs := range newRoleKeyIDs {
-					fmt.Printf("\t%s:\n", roleName)
+					mustFprintf(wtr, "\t%s:\n", roleName)
 					for _, keyID := range keyIDs {
-						fmt.Printf("\t - %s\n", keyID)
+						mustFprintf(wtr, "\t - %s\n", keyID)
 					}
 				}
 			}
 		} else {
-			fmt.Printf("\n")
+			mustFprintf(wtr, "\n")
 		}
 		return nil
 	},

@@ -77,13 +77,13 @@ var listCommand = &cli.Command{
 					manifest.Files = append(manifest.Files, uapi16File)
 				}
 			} else if cmd.Bool("verbose") {
-				pprintTargetFile("", target.Repo, target.TargetFiles)
+				pprintTargetFile(os.Stdout, "", target.Repo, target.TargetFiles)
 			} else if fmtStr := cmd.String("format"); cmd.IsSet("format") {
-				if err := expandTargetFile(fmtStr, target.Repo, target.TargetFiles); err != nil {
+				if err := expandTargetFile(os.Stdout, fmtStr, target.Repo, target.TargetFiles); err != nil {
 					return fmt.Errorf("error while %%-formatting target file %s from repo %s: %w", target.Path, target.Repo.Name, err)
 				}
 			} else {
-				fmt.Println(target.Path)
+				mustFprintln(os.Stdout, target.Path)
 			}
 		}
 		if manifest != nil {

@@ -115,19 +115,20 @@ var repoctlInitCommand = &cli.Command{
 			return fmt.Errorf("failed to commit the initial transaction to the repo: %w", err)
 		}
 
+		wtr := os.Stdout
 		if len(newRoleKeyIDs) > 0 {
-			fmt.Println("Generated keys:")
+			mustFprintln(wtr, "Generated keys:")
 			for roleName, keyIDs := range newRoleKeyIDs {
-				fmt.Printf("\t%s:\n", roleName)
+				mustFprintf(wtr, "\t%s:\n", roleName)
 				for _, keyID := range keyIDs {
-					fmt.Printf("\t - %s\n", keyID)
+					mustFprintf(wtr, "\t - %s\n", keyID)
 				}
 			}
 		}
-		fmt.Println("root.json:")
-		pprint.ToJSON("\t", "\t", signedRoot)
-		fmt.Println("timestamp.json:")
-		pprint.ToJSON("\t", "\t", timestamp)
+		mustFprintln(wtr, "root.json:")
+		pprint.ToJSON(wtr, "\t", "\t", signedRoot)
+		mustFprintln(wtr, "timestamp.json:")
+		pprint.ToJSON(wtr, "\t", "\t", timestamp)
 		return nil
 	},
 }
@@ -186,6 +187,7 @@ var repoctlRefreshCommand = &cli.Command{
 			refreshWindow = &v
 		}
 
+		wtr := os.Stdout
 		for _, roleName := range cmd.StringSlice("role") {
 			if err := tx.BumpExpiry(ctx, roleName, func(oldExpiry time.Time, _ any) (*time.Time, error) {
 				deadline := tx.RefTime.Add(-time.Second)
@@ -193,13 +195,13 @@ var repoctlRefreshCommand = &cli.Command{
 					deadline = oldExpiry.Add(-*refreshWindow)
 				}
 				if tx.RefTime.Before(deadline) {
-					fmt.Printf("Repository %s.json is not due for a refresh until %s (expiry is %s).\n",
+					mustFprintf(wtr, "Repository %s.json is not due for a refresh until %s (expiry is %s).\n",
 						roleName, deadline.Format(time.RFC3339), oldExpiry.Format(time.RFC3339))
 					return nil, nil //nolint:nilnil // nil indicates no change needed
 				}
 				expireAfter := cmd.Duration("expire-after")
 				newExpiry := tx.RefTime.Add(expireAfter)
-				fmt.Printf("Repository %s.json updated to expire at %s (duration is %s).\n",
+				mustFprintf(wtr, "Repository %s.json updated to expire at %s (duration is %s).\n",
 					roleName, newExpiry.Format(time.RFC3339), expireAfter)
 				return &newExpiry, nil
 			}); err != nil {
@@ -219,14 +221,14 @@ var repoctlRefreshCommand = &cli.Command{
 		}
 
 		if len(newTimestampKeyIDs) > 0 {
-			fmt.Println("Rotated timestamp keys:")
+			mustFprintln(wtr, "Rotated timestamp keys:")
 			for _, keyID := range newTimestampKeyIDs {
-				fmt.Printf(" - %s\n", keyID)
+				mustFprintf(wtr, " - %s\n", keyID)
 			}
 		}
 
-		fmt.Println("timestamp.json:")
-		pprint.ToJSON("\t", "\t", timestamp)
+		mustFprintln(wtr, "timestamp.json:")
+		pprint.ToJSON(wtr, "\t", "\t", timestamp)
 		return nil
 	},
 }
@@ -284,15 +286,16 @@ var repoctlSnapshotCommand = &cli.Command{
 			return fmt.Errorf("failed to commit the transaction to the repo: %w", err)
 		}
 
+		wtr := os.Stdout
 		if len(newTimestampKeyIDs) > 0 {
-			fmt.Println("Rotated timestamp keys:")
+			mustFprintln(wtr, "Rotated timestamp keys:")
 			for _, keyID := range newTimestampKeyIDs {
-				fmt.Printf(" - %s\n", keyID)
+				mustFprintf(wtr, " - %s\n", keyID)
 			}
 		}
 
-		fmt.Println("timestamp.json:")
-		pprint.ToJSON("\t", "\t", timestamp)
+		mustFprintln(wtr, "timestamp.json:")
+		pprint.ToJSON(wtr, "\t", "\t", timestamp)
 		return nil
 	},
 }
