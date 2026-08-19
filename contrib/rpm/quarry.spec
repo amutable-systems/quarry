@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Amutable GmbH
 
-%bcond_without http
-%bcond_with insecure
+%bcond http     1
+%bcond insecure 0
 
 %define buildtags %{?with_http:http} %{?with_insecure:insecure} %{nil}
 
@@ -25,10 +25,13 @@ BuildRequires:  systemd-rpm-macros
 BuildRequires:  systemd-sysusers
 
 %description
+A TUF-based [1] update system that is solid as bedrock but produces updates
+using a protocol that is as dumb as rocks.
+
+[1]: https://theupdateframework.io/
 
 %package hardhat
 Summary:        Management Tool for Quarry Repositories
-Requires:       %{name} = %{version}
 
 %description hardhat
 A fairly minimal CLI management tool for Quarry repositories. It provides the
@@ -37,7 +40,6 @@ repository containing arbitrary package contents.
 
 %package client
 Summary:        Client for Quarry Repositories
-Requires:       %{name} = %{version}
 
 %description client
 A custom TUF client that supports Quarry-specific extensions. In addition to
@@ -55,7 +57,6 @@ without needing any changes to sysupdate.
 %if %{with http}
 %package client-http
 Summary:        sysupdate-compatible HTTP Server Frontend for Quarry Repositories
-Requires:       %{name} = %{version}
 Requires:       %{name}-client = %{version}
 
 %description client-http
@@ -67,8 +68,7 @@ transparently without needing any changes to sysupdate.
 %endif
 
 %package sysupdate
-Summary:        Quarry-Based sysupdate Runner
-Requires:       %{name} = %{version}
+Summary:        Quarry-based sysupdate Runner
 Requires:       %{name}-client = %{version}
 %if %{with http}
 Requires:       %{name}-client-http = %{version}
@@ -79,7 +79,7 @@ This is a wrapper around systemd-sysupdate to permit more flexible update
 schemes than are currently supported by upstream systemd.
 
 %prep
-%autosetup
+%autosetup -C
 
 %build
 export BUILDTAGS="%{buildtags}"
@@ -133,25 +133,19 @@ just install-sysupdate
 %postun sysupdate
 %systemd_postun_with_restart %{name}-sysupdate.timer %{name}-sysupdate.service
 
-%files
-%defattr(-,root,root)
-%doc README.md
-
 %files hardhat
-%defattr(-,root,root)
 %{_bindir}/%{name}-hardhat
-#%dir %{_rundir}/%{name}
+#%%dir %%{_rundir}/%{name}
 %{_tmpfilesdir}/%{name}-hardhat.conf
 %{_sysusersdir}/%{name}-hardhat.conf
 
 %files client
-%defattr(-,root,root)
 %{_bindir}/%{name}-client
 %{_unitdir}/%{name}-client*
 %dir %{_datarootdir}/amutable/%{name}
 %config(noreplace) %{_sysconfdir}/%{name}-client.toml
 %config %{_sharedstatedir}/%{name}-client/config.toml
-%if !0%{with http}
+%if %{without http}
 %attr(-,quarry,quarry) %dir %{_sharedstatedir}/%{name}-client
 %{_tmpfilesdir}/%{name}-client.conf
 %{_sysusersdir}/%{name}-client-http.conf
