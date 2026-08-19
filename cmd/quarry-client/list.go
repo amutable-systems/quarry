@@ -16,6 +16,7 @@ import (
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufclient"
 	"go.amutable.dev/quarry/internal/uapi16"
+	"go.amutable.dev/quarry/internal/uapi16ext"
 )
 
 // listFormatter is the backend used by "list" to output the target files it
@@ -116,7 +117,7 @@ func (o *uapi16ListFormatter) Begin(ctx context.Context, client *tufclient.Clien
 }
 
 func (o *uapi16ListFormatter) Output(_ context.Context, target *tufclient.TargetInfo) error {
-	file, err := uapi16FromTargetFile(target)
+	file, err := uapi16ext.FromTargetFile(target.TargetFiles, &target.Repo.DataRootURL.URL)
 	if err != nil {
 		return err
 	}

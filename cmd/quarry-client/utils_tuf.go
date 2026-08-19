@@ -10,18 +10,15 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/opencontainers/go-digest"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
 	"go.amutable.dev/quarry/cmd/internal/cliext"
 	"go.amutable.dev/quarry/cmd/internal/pprint"
 	"go.amutable.dev/quarry/internal/ctxext"
 	"go.amutable.dev/quarry/internal/expand"
-	"go.amutable.dev/quarry/internal/generics"
 	"go.amutable.dev/quarry/internal/tufclient"
 	"go.amutable.dev/quarry/internal/tufclient/config"
 	"go.amutable.dev/quarry/internal/tufext"
-	"go.amutable.dev/quarry/internal/uapi16"
 )
 
 // getClient constructs a [tufclient.Client] from the configuration state.
@@ -83,42 +80,6 @@ func earliestTimestampExpiry(ctx context.Context, client *tufclient.Client) (tim
 		}
 	}
 	return expiry, errors.Join(errs...)
-}
-
-// uapi16FromTargetFile converts a TUF target file into the equivalent UAPI.16
-// file object.
-func uapi16FromTargetFile(target *tufclient.TargetInfo) (*uapi16.File, error) {
-	// The target file might not provide a sha256 hash, in which case we must
-	// abort loudly since UAPI.16 only supports sha256 and the alternatives are
-	// worse (missing files or clients using unverified files).
-	hashBytes, ok := target.Hashes["sha256"]
-	if !ok {
-		return nil, errors.New("target has no sha256 hash, which uapi.16 cannot express")
-	}
-	hash := digest.SHA256.Encode(hashBytes)
-	if err := digest.SHA256.Validate(hash); err != nil {
-		return nil, fmt.Errorf("target has invalid sha256 hash: %w", err)
-	}
-	if target.Length < 0 {
-		return nil, fmt.Errorf("target has invalid negative length %d", target.Length)
-	}
-	targetExt := tufext.TargetFilesExt(target.TargetFiles)
-
-	// TODO(inline-data): Output a literal as well once we support inline data.
-	var contents []*uapi16.Contents
-	for url, err := range targetExt.FetchURLs(&target.Repo.DataRootURL.URL) {
-		if err != nil {
-			return nil, fmt.Errorf("get target candidate url: %w", err)
-		}
-		contents = append(contents, &uapi16.Contents{URL: url.String()})
-	}
-
-	return &uapi16.File{
-		Name:     target.Path,
-		Size:     generics.Ptr(uint64(target.Length)),
-		SHA256:   hash,
-		Contents: contents,
-	}, nil
 }
 
 func pprintHashes(wtr io.Writer, prefix string, hashes tufmetadata.Hashes) {

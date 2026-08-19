@@ -2,6 +2,12 @@
 
 package uapi16
 
+import (
+	"encoding/json"
+
+	"go.amutable.dev/quarry/internal/jsonutils"
+)
+
 // MediaType is the MIME media-type for the UAPI.16 manifest, which is
 // identified by this mediaType being stored in the root file object of a
 // manifest.
@@ -45,6 +51,37 @@ type Contents struct {
 	// offset is defined to mean an offset of zero, so there is no need to tell
 	// the two apart.
 	Offset uint64 `json:"offset,omitzero"`
+
+	// UnrecognizedFields contains any extension fields (named in the
+	// "x<Vendor>Foobar" style described by the specification) that this
+	// implementation does not know about. They are stored as raw JSON so that
+	// they survive a decode-encode round-trip untouched.
+	//
+	// An entry whose name collides with one of the fields above is dropped
+	// when encoding -- the typed field always wins, even when it is unset and
+	// thus not emitted at all. Names are compared case-insensitively, as that
+	// is how [encoding/json] matches them when decoding.
+	UnrecognizedFields map[string]json.RawMessage `json:"-"`
+}
+
+// MarshalJSON implements [json.Marshaler], emitting [Contents.UnrecognizedFields]
+// alongside the fields this implementation knows about.
+func (contents Contents) MarshalJSON() ([]byte, error) {
+	type knownFields Contents // shed the methods to avoid recursing forever
+	return jsonutils.MarshalExtensible(knownFields(contents), contents.UnrecognizedFields)
+}
+
+// UnmarshalJSON implements [json.Unmarshaler], collecting every field this
+// implementation does not know about into [Contents.UnrecognizedFields].
+func (contents *Contents) UnmarshalJSON(data []byte) error {
+	type knownFields Contents // shed the methods to avoid recursing forever
+	known, extensions, err := jsonutils.UnmarshalExtensible[knownFields](data)
+	if err != nil {
+		return err
+	}
+	*contents = Contents(known)
+	contents.UnrecognizedFields = extensions
+	return nil
 }
 
 // File represents a single file object in a UAPI.16 manifest.
@@ -84,4 +121,35 @@ type File struct {
 	// the UNIX epoch), so the two must not be conflated. Setting this on the
 	// root file object expires the manifest as a whole.
 	ValidBeforeUSec *uint64 `json:"validBeforeUSec,omitzero"`
+
+	// UnrecognizedFields contains any extension fields (named in the
+	// "x<Vendor>Foobar" style described by the specification) that this
+	// implementation does not know about. They are stored as raw JSON so that
+	// they survive a decode-encode round-trip untouched.
+	//
+	// An entry whose name collides with one of the fields above is dropped
+	// when encoding -- the typed field always wins, even when it is unset and
+	// thus not emitted at all. Names are compared case-insensitively, as that
+	// is how [encoding/json] matches them when decoding.
+	UnrecognizedFields map[string]json.RawMessage `json:"-"`
+}
+
+// MarshalJSON implements [json.Marshaler], emitting [File.UnrecognizedFields]
+// alongside the fields this implementation knows about.
+func (file File) MarshalJSON() ([]byte, error) {
+	type knownFields File // shed the methods to avoid recursing forever
+	return jsonutils.MarshalExtensible(knownFields(file), file.UnrecognizedFields)
+}
+
+// UnmarshalJSON implements [json.Unmarshaler], collecting every field this
+// implementation does not know about into [File.UnrecognizedFields].
+func (file *File) UnmarshalJSON(data []byte) error {
+	type knownFields File // shed the methods to avoid recursing forever
+	known, extensions, err := jsonutils.UnmarshalExtensible[knownFields](data)
+	if err != nil {
+		return err
+	}
+	*file = File(known)
+	file.UnrecognizedFields = extensions
+	return nil
 }
