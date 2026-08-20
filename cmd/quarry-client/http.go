@@ -203,6 +203,9 @@ func proxyTargetFile(rw http.ResponseWriter, req *http.Request) (Err error) {
 		rw.Header().Set("Content-Type", "application/octet-stream")
 		if digestValue := hashesToContentDigest(info.Hashes); digestValue != "" {
 			rw.Header().Set("Content-Digest", digestValue)
+			// Include Repr-Digest for inline data as well as redirects so that
+			// users can rely on just Repr-Digest if they prefer.
+			rw.Header().Set("Repr-Digest", digestValue)
 		}
 		_, _ = rw.Write(data)
 		return nil
@@ -216,12 +219,20 @@ func proxyTargetFile(rw http.ResponseWriter, req *http.Request) (Err error) {
 		if err != nil {
 			return fmt.Errorf("bad target data in repo %s for target %s: cannot compute target url: %w", info.Repo.Name, targetPath, err)
 		}
-		// TODO: Is it really not possible to provide Content-Length and
-		// Content-Digest here...?
+		// We cannot use Content-Digest or Content-Length with redirects (they
+		// represent the body of the redirect itself) but RFC 9530 section 3
+		// implies that Repr-Digest is valid to use in this case. Unfortunately
+		// there is no Repr-Length so we need a custom header for that.
 		rw.Header().Set("X-Quarry-Content-Length", strconv.FormatInt(info.Length, 10))
 		if digestValue := hashesToContentDigest(info.Hashes); digestValue != "" {
+			rw.Header().Set("Repr-Digest", digestValue)
+			// Include our old extension header for compatibility.
 			rw.Header().Set("X-Quarry-Content-Digest", digestValue)
 		}
+		// In order for Repr-Digest to be valid (and to reduce noise), stop
+		// [http.Redirect] from outputting a dummy HTML note body for the
+		// redirect.
+		rw.Header()["Content-Type"] = nil
 		http.Redirect(rw, req, url.String(), http.StatusFound)
 		return nil
 	}
