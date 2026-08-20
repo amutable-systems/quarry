@@ -7,15 +7,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -139,12 +142,28 @@ func serveSHA256SUMS(rw http.ResponseWriter, req *http.Request) (Err error) {
 	return nil
 }
 
-func hashesToContentDigest(hashes tufmetadata.Hashes) []string {
+// rfc9530HashAlgos maps TUF hash algorithm names to the equivalent hash
+// algorithm keys registered for use in RFC 9530 digest fields.
+var rfc9530HashAlgos = map[string]string{
+	"sha256": "sha-256",
+	"sha512": "sha-512",
+}
+
+// hashesToContentDigest converts a set of TUF-represented hashes into an RFC
+// 9530 Content-Digest dictionary value. Hash algorithms with no registered RFC
+// 9530 equivalent are skipped, and users should make sure to not set
+// Content-Digest if the returned string is empty (as that violates RFC 9530).
+func hashesToContentDigest(hashes tufmetadata.Hashes) string {
 	digests := make([]string, 0, len(hashes))
-	for algoName, hashBytes := range hashes {
-		digests = append(digests, fmt.Sprintf("%s=%s", algoName, hashBytes))
+	for _, algoName := range slices.Sorted(maps.Keys(hashes)) {
+		rfcAlgoName, ok := rfc9530HashAlgos[algoName]
+		if !ok {
+			continue
+		}
+		digests = append(digests, fmt.Sprintf("%s=:%s:",
+			rfcAlgoName, base64.StdEncoding.EncodeToString(hashes[algoName])))
 	}
-	return digests
+	return strings.Join(digests, ", ")
 }
 
 func proxyTargetFile(rw http.ResponseWriter, req *http.Request) (Err error) {
@@ -182,7 +201,9 @@ func proxyTargetFile(rw http.ResponseWriter, req *http.Request) (Err error) {
 	} else if data != nil {
 		rw.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		rw.Header().Set("Content-Type", "application/octet-stream")
-		rw.Header()["X-Quarry-Content-Digest"] = hashesToContentDigest(info.Hashes)
+		if digestValue := hashesToContentDigest(info.Hashes); digestValue != "" {
+			rw.Header().Set("Content-Digest", digestValue)
+		}
 		_, _ = rw.Write(data)
 		return nil
 	}
@@ -198,7 +219,9 @@ func proxyTargetFile(rw http.ResponseWriter, req *http.Request) (Err error) {
 		// TODO: Is it really not possible to provide Content-Length and
 		// Content-Digest here...?
 		rw.Header().Set("X-Quarry-Content-Length", strconv.FormatInt(info.Length, 10))
-		rw.Header()["X-Quarry-Content-Digest"] = hashesToContentDigest(info.Hashes)
+		if digestValue := hashesToContentDigest(info.Hashes); digestValue != "" {
+			rw.Header().Set("X-Quarry-Content-Digest", digestValue)
+		}
 		http.Redirect(rw, req, url.String(), http.StatusFound)
 		return nil
 	}
