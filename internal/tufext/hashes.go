@@ -4,8 +4,11 @@ package tufext
 
 import (
 	"errors"
+	"fmt"
+	"io"
 
 	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/umoci/pkg/hardening"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 )
 
@@ -33,4 +36,24 @@ func HashesToDigest(hashes tufmetadata.Hashes) ([]digest.Digest, error) {
 		return nil, ErrNoSupportedHashTypes
 	}
 	return digests, nil
+}
+
+// VerifiedReadCloser wraps the given reader so that the data read from it is
+// verified against the given TUF-represented size and hashes. Verification is
+// only complete once the stream has been fully consumed and the error return
+// of [io.ReadCloser.Close] has been checked.
+func VerifiedReadCloser(rdr io.ReadCloser, size int64, hashes tufmetadata.Hashes) (io.ReadCloser, error) {
+	digests, err := HashesToDigest(hashes)
+	if err != nil {
+		return nil, fmt.Errorf("convert TUF hashes to digests: %w", err)
+	}
+	for _, digest := range digests {
+		// Wrap the reader with a stack of VerifiedReadClosers for each digest.
+		rdr = &hardening.VerifiedReadCloser{
+			Reader:         rdr,
+			ExpectedDigest: digest,
+			ExpectedSize:   size,
+		}
+	}
+	return rdr, nil
 }
