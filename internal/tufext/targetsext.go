@@ -25,12 +25,14 @@ type targetFilesExt struct {
 	*tufmetadata.TargetFiles
 }
 
-const overrideURLField = "x-quarry-override-url"
+// OverrideURLField is the target file extension field that holds the override
+// URL (see [targetFilesExt.OverrideURL]).
+const OverrideURLField = "x-quarry-override-url"
 
 // WithOverrideURL adds and override URL for the given target file. See
 // [OverrideURL] for more information around what override URLs are.
 func (t targetFilesExt) WithOverrideURL(u *url.URL) targetFilesExt {
-	_, err := jsonutils.SetExtensionJSON(t.TargetFiles, overrideURLField, u.String())
+	_, err := jsonutils.SetExtensionJSON(t.TargetFiles, OverrideURLField, u.String())
 	if err != nil {
 		panic(err) // programmer error
 	}
@@ -47,7 +49,7 @@ func (t targetFilesExt) WithOverrideURL(u *url.URL) targetFilesExt {
 // or the machine is meant to operate offline).
 func (t targetFilesExt) OverrideURL() (*url.URL, error) {
 	// TODO: Cache this....
-	urlStr, err := jsonutils.GetExtensionJSON[string](t.TargetFiles, overrideURLField)
+	urlStr, err := jsonutils.GetExtensionJSON[string](t.TargetFiles, OverrideURLField)
 	if err != nil {
 		return nil, err
 	}

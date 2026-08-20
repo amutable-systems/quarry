@@ -6,21 +6,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"iter"
+	"io"
 	"strconv"
+	"time"
 
-	"github.com/opencontainers/go-digest"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
 	"go.amutable.dev/quarry/cmd/internal/cliext"
 	"go.amutable.dev/quarry/cmd/internal/pprint"
 	"go.amutable.dev/quarry/internal/ctxext"
 	"go.amutable.dev/quarry/internal/expand"
-	"go.amutable.dev/quarry/internal/generics"
 	"go.amutable.dev/quarry/internal/tufclient"
 	"go.amutable.dev/quarry/internal/tufclient/config"
 	"go.amutable.dev/quarry/internal/tufext"
-	"go.amutable.dev/quarry/internal/uapi16"
 )
 
 // getClient constructs a [tufclient.Client] from the configuration state.
@@ -52,58 +50,67 @@ func getClient(ctx context.Context, repoNames ...string) (*tufclient.Client, err
 	return client, nil
 }
 
-func uapi16FromTargetFile(repo *config.Repository, target *tufmetadata.TargetFiles) iter.Seq2[*uapi16.File, error] {
-	return generics.ErrorIter(func(yield func(*uapi16.File) bool) error {
-		targetExt := tufext.TargetFilesExt(target)
-
-		for url, err := range targetExt.FetchURLs(&repo.DataRootURL.URL) {
-			if err != nil {
-				return fmt.Errorf("get target candidate url: %w", err)
+// earliestTimestampExpiry returns the earliest timestamp.json expiry of any of
+// the repositories in the client, which bounds how long any listing generated
+// from those repositories can be trusted for. The zero time is returned if the
+// client has no repositories.
+func earliestTimestampExpiry(ctx context.Context, client *tufclient.Client) (time.Time, error) {
+	var (
+		errs   []error
+		expiry time.Time
+	)
+	for repoName, updater := range client.IterRepos(ctx) {
+		meta := updater.GetTrustedMetadataSet()
+		if meta.Timestamp == nil {
+			// FIXME: The local client TrustedMetadata state does not get filled
+			// until we do a refresh but go-tuf's client does not allow Refresh
+			// on the same updater more than once(?!). So we do a refresh here
+			// opportunistically.
+			// TODO: Add a (*Client).Refresh helper to make this much less
+			// fragile.
+			if err := updater.Refresh(); err != nil {
+				errs = append(errs, fmt.Errorf("refresh repo %s: %w", repoName, err))
+				continue
 			}
-			file := &uapi16.File{
-				// TODO: What should we do about separators here?
-				Name:     target.Path,
-				DataURL:  url.String(),
-				DataSize: uint64(target.Length),
-				SHA256:   digest.SHA256.Encode(target.Hashes["sha256"]),
-			}
-			if !yield(file) {
-				return nil
-			}
+			meta = updater.GetTrustedMetadataSet()
 		}
-		return nil
-	})
+		timestampExpiry := meta.Timestamp.Signed.Expires
+		if expiry.IsZero() || expiry.After(timestampExpiry) {
+			expiry = timestampExpiry
+		}
+	}
+	return expiry, errors.Join(errs...)
 }
 
-func pprintHashes(prefix string, hashes tufmetadata.Hashes) {
-	fmt.Printf("%sHashes:\n", prefix)
+func pprintHashes(wtr io.Writer, prefix string, hashes tufmetadata.Hashes) {
+	mustFprintf(wtr, "%sHashes:\n", prefix)
 	for algoName, hashBytes := range hashes {
-		fmt.Printf("%s - %s:%s\n", prefix, algoName, hashBytes)
+		mustFprintf(wtr, "%s - %s:%s\n", prefix, algoName, hashBytes)
 	}
 }
 
-func pprintTargetFile(prefix string, repo *config.Repository, target *tufmetadata.TargetFiles) {
+func pprintTargetFile(wtr io.Writer, prefix string, repo *config.Repository, target *tufmetadata.TargetFiles) {
 	targetExt := tufext.TargetFilesExt(target)
 
-	fmt.Printf("%s%s:\n", prefix, target.Path)
+	mustFprintf(wtr, "%s%s:\n", prefix, target.Path)
 	prefix += "\t"
-	fmt.Printf("%sURL(s):\n", prefix)
+	mustFprintf(wtr, "%sURL(s):\n", prefix)
 	for url, err := range targetExt.FetchURLs(&repo.DataRootURL.URL) {
 		if err != nil {
-			fmt.Printf("%s - <invalid target url: %v>\n", prefix, err)
+			mustFprintf(wtr, "%s - <invalid target url: %v>\n", prefix, err)
 		}
-		fmt.Printf("%s - %s\n", prefix, url)
+		mustFprintf(wtr, "%s - %s\n", prefix, url)
 	}
-	fmt.Printf("%sSize: %d\n", prefix, target.Length)
-	pprintHashes(prefix, target.Hashes)
+	mustFprintf(wtr, "%sSize: %d\n", prefix, target.Length)
+	pprintHashes(wtr, prefix, target.Hashes)
 	if target.Custom != nil {
-		fmt.Printf("%sCustom:\n", prefix)
-		pprint.JSON(prefix+"\t", "\t", []byte(*target.Custom))
+		mustFprintf(wtr, "%sCustom:\n", prefix)
+		pprint.JSON(wtr, prefix+"\t", "\t", []byte(*target.Custom))
 	}
 	// TODO(ext): UnrecognisedFields
 }
 
-func expandTargetFile(fmtStr string, repo *config.Repository, target *tufmetadata.TargetFiles) error {
+func expandTargetFile(wtr io.Writer, fmtStr string, repo *config.Repository, target *tufmetadata.TargetFiles) error {
 	targetExt := tufext.TargetFilesExt(target)
 
 	expander := expand.NewExpansions().
@@ -127,6 +134,6 @@ func expandTargetFile(fmtStr string, repo *config.Repository, target *tufmetadat
 	if err != nil {
 		return fmt.Errorf("invalid --format: %w", err)
 	}
-	fmt.Println(expanded)
+	mustFprintln(wtr, expanded)
 	return nil
 }

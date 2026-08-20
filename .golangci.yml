@@ -43,6 +43,8 @@ linters:
         # Lexical path operations are _very_ dangerous to use.
         - pattern: ^filepath\.(Join|Clean|Glob|Split|Dir|Base|Abs|EvalSymlinks|Rel|Walk(|Dir))$
           pkg: ^path/filepath$
+        - pattern: ^path\.(Join|Clean|Split|Dir|Base)$
+          pkg: ^path$
         # These operations all can lead to accidentally reaeding or writing
         # outside of the expected directory. They can be used, with great care.
         - pattern: ^os\.(Open|Create|Truncate|(Write|Read|Open)File|(Remove|Mkdir)\w*|(Syml|L)ink|Ch(own|mod))$

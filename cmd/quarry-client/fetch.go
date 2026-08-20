@@ -47,7 +47,9 @@ var fetchCommand = &cli.Command{
 
 		var output io.Writer
 		outputPath := cmd.String("output")
-		if outputPath != "-" {
+		// We overwrite outputPath later, so save this check here.
+		toStdout := outputPath == "-"
+		if !toStdout {
 			if strings.HasSuffix(outputPath, "/") {
 				outputPath = filepath.Join(outputPath, target) //nolint:forbidigo // user-controlled host path
 			}
@@ -91,7 +93,7 @@ var fetchCommand = &cli.Command{
 			return fmt.Errorf("close check %s failed: %w", target, err)
 		}
 
-		if outputPath != "-" {
+		if !toStdout {
 			outputFile := output.(*os.File) //nolint:forcetypeassert // guaranteed to be true
 			if err := fdutils.WithFileFd(outputFile, func(srcFd uintptr) error {
 				return unix.Linkat(int(srcFd), "", unix.AT_FDCWD, outputPath, unix.AT_EMPTY_PATH) //nolint:forbidigo // user-controlled host paths

@@ -24,7 +24,7 @@ func reParseJSON[T any](data any) (T, error) {
 	case json.RawMessage:
 		encoded = []byte(data) // no need to waste cycles
 	default:
-		encoded, err = json.Marshal(data)
+		encoded, err = MarshalNoEscapeHTML(data)
 	}
 	if err != nil {
 		return *new(T), fmt.Errorf("re-marshal %v (%T): %w", data, data, err)
@@ -56,8 +56,13 @@ func GetExtensionJSON[T any](extStruct any, field string) (*T, error) {
 // SetExtensionJSON places the JSON-encoded version of the given data as an
 // extension with the given field name. If there was already an existing value
 // with the same extension name, the old (unparsed) value is returned.
+//
+// The value is encoded without HTML escaping (see [MarshalNoEscapeHTML]), as
+// otherwise a "&" in something like a URL would be escaped into the stored
+// bytes and could never be un-escaped again by a struct that keeps its
+// extensions as [json.RawMessage].
 func SetExtensionJSON[W any](extStruct *W, field string, value any) (json.RawMessage, error) {
-	extBytes, err := json.Marshal(value)
+	extBytes, err := MarshalNoEscapeHTML(value)
 	if err != nil {
 		return nil, fmt.Errorf("marshal value %T: %w", value, err)
 	}

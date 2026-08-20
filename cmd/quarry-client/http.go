@@ -177,8 +177,9 @@ func proxyTargetFile(rw http.ResponseWriter, req *http.Request) (Err error) {
 	infoExt := tufext.TargetFilesExt(info.TargetFiles)
 
 	// Redirect to the first target URL.
-	// TODO(uapi16): Once we get UAPI.16 support into systemd, we would
-	// generate an entry for every URL candidate.
+	// TODO(uapi16): Once we get UAPI.16 support into systemd, we can serve a
+	// manifest that lists every URL candidate as an alternative contents source
+	// (as "quarry-client list --uapi-16" does) and drop this shim entirely.
 	for url, err := range infoExt.FetchURLs(&info.Repo.DataRootURL.URL) {
 		if err != nil {
 			return fmt.Errorf("bad target data in repo %s for target %s: cannot compute target url: %w", info.Repo.Name, targetPath, err)
@@ -229,7 +230,7 @@ var httpCommand = &cli.Command{
 			BaseContext: func(_ net.Listener) context.Context { return ctx },
 			Protocols:   &proto,
 		}
-		fmt.Printf("Listening on http://%s...\n", server.Addr)
+		mustFprintf(os.Stdout, "Listening on http://%s...\n", server.Addr)
 
 		var (
 			wg    sync.WaitGroup
