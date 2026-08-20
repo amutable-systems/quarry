@@ -73,14 +73,20 @@ func fromTargetFile(t *testing.T, target *tufmetadata.TargetFiles, wantURLs ...s
 }
 
 // A target with no TUF metadata beyond what UAPI.16 can express gets no
-// extension fields at all.
+// extension fields at all. This also includes "x-quarry-override-url", which
+// is mapped to a UAPI.16-native representation.
 func TestFromTargetFileNoExtensions(t *testing.T) {
 	assert.Nil(t, fromTargetFile(t, testTarget(t, "")))
+	assert.Nil(t, fromTargetFile(t,
+		testTarget(t, `"x-quarry-override-url": "https://mirror.example.com/data/FooOS.raw"`),
+		"https://mirror.example.com/data/FooOS.raw",
+		"https://example.com/data/FooOS.raw"))
 }
 
 // The worked example: "custom.quarry" is hoisted into xAmutableQuarry, while
 // the unrecognised target fields and the rest of "custom" land in
-// xAmutableTufExt.
+// xAmutableTufExt (aside from "x-quarry-*" fields that are mapped to
+// UAPI.16-native concepts).
 func TestFromTargetFileExtensions(t *testing.T) {
 	target := testTarget(t, `
 		"custom": {
@@ -89,7 +95,7 @@ func TestFromTargetFileExtensions(t *testing.T) {
 			"someVendorThing": 3
 		},
 		"x-quarry-override-url": "https://mirror.example.com/data/FooOS.raw?a=1&b=2",
-		"x-someone-else": {"a": 1}`)
+		"x-someone-else": {"url": "https://mirror.example.org/?a=1&b=2"}`)
 
 	extensions := fromTargetFile(t, target,
 		// The override URL is preferred over the repository's own URL.
@@ -98,9 +104,16 @@ func TestFromTargetFileExtensions(t *testing.T) {
 
 	require.Len(t, extensions, 2)
 	assert.JSONEq(t, `{"component":"rootfs","channel":"stable"}`, string(extensions["xAmutableQuarry"]))
+
+	// Only the known x-quarry-* fields are dropped from xAmutableTufExt --
+	// other vendors' extension fields are kept verbatim.
+	var tufExt map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(extensions["xAmutableTufExt"], &tufExt))
+	assert.NotContains(t, tufExt, "x-quarry-override-url")
+	assert.Contains(t, tufExt, "x-someone-else")
+
 	assert.JSONEq(t, `{
-		"x-quarry-override-url": "https://mirror.example.com/data/FooOS.raw?a=1&b=2",
-		"x-someone-else": {"a": 1},
+		"x-someone-else": {"url": "https://mirror.example.org/?a=1&b=2"},
 		"custom": {"sysupdate": {"version": "42"}, "someVendorThing": 3}
 	}`, string(extensions["xAmutableTufExt"]))
 

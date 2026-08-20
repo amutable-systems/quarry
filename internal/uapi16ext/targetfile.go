@@ -34,6 +34,13 @@ const (
 	tufExtCustomField = "custom"
 )
 
+// knownTUFExtFields is the set of TUF extension fields that [FromTargetFile]
+// understands and already expresses through other UAPI.16 fields. These fields
+// are thus excluded from the [TUFExtField] fallback.
+var knownTUFExtFields = map[string]struct{}{
+	tufext.OverrideURLField: {},
+}
+
 // tufCustom is the part of a TUF target's "custom" field that Quarry cares
 // about; everything else in there comes back as the extension fields of this
 // struct (see [jsonutils.UnmarshalExtensible]).
@@ -51,6 +58,9 @@ func targetExtensions(target *tufmetadata.TargetFiles) (map[string]json.RawMessa
 	// Map any unknown TUF fields into xAmutableTufExt.
 	tufExt := make(map[string]json.RawMessage, len(target.UnrecognizedFields)+1)
 	for name, value := range target.UnrecognizedFields {
+		if _, ok := knownTUFExtFields[name]; ok {
+			continue
+		}
 		encoded, err := jsonutils.MarshalNoEscapeHTML(value)
 		if err != nil {
 			return nil, fmt.Errorf("encode unrecognised tuf target field %q: %w", name, err)
