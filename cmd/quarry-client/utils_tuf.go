@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -94,6 +95,12 @@ func pprintTargetFile(wtr io.Writer, prefix string, repo *config.Repository, tar
 
 	mustFprintf(wtr, "%s%s:\n", prefix, target.Path)
 	prefix += "\t"
+	// Inline data takes priority over the fetch URLs, so mention it first.
+	if data, err := targetExt.InlineData(); err != nil {
+		mustFprintf(wtr, "%sInline data: <invalid: %v>\n", prefix, err)
+	} else if data != nil {
+		mustFprintf(wtr, "%sInline data: %d bytes\n", prefix, len(data))
+	}
 	mustFprintf(wtr, "%sURL(s):\n", prefix)
 	for url, err := range targetExt.FetchURLs(&repo.DataRootURL.URL) {
 		if err != nil {
@@ -119,7 +126,15 @@ func expandTargetFile(wtr io.Writer, fmtStr string, repo *config.Repository, tar
 		WithSource('s', func(_ *[]any) (string, error) { return strconv.FormatInt(target.Length, 10), nil }).
 		WithSource('h', func(_ *[]any) (string, error) { return target.Hashes["sha256"].String(), nil }).
 		WithSource('u', func(_ *[]any) (string, error) {
-			// TODO: This doesn'T work
+			// TODO: This doesn't work when handling multiple fetch URLs.
+
+			// Inlined targets might not be uploaded so represent them as a
+			// data: URL.
+			if data, err := targetExt.InlineData(); err != nil {
+				return "", err
+			} else if data != nil {
+				return "data:;base64," + base64.StdEncoding.EncodeToString(data), nil
+			}
 			for url, err := range targetExt.FetchURLs(&repo.DataRootURL.URL) {
 				var urlStr string
 				if url != nil {

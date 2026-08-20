@@ -3,6 +3,7 @@
 package tufext
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -56,4 +57,17 @@ func VerifiedReadCloser(rdr io.ReadCloser, size int64, hashes tufmetadata.Hashes
 		}
 	}
 	return rdr, nil
+}
+
+// VerifyData verifies that the given in-memory data matches the given
+// TUF-represented size and hashes.
+func VerifyData(data []byte, size int64, hashes tufmetadata.Hashes) error {
+	rdr, err := VerifiedReadCloser(io.NopCloser(bytes.NewReader(data)), size, hashes)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(io.Discard, rdr); err != nil {
+		return err
+	}
+	return rdr.Close()
 }

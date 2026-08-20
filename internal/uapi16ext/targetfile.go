@@ -3,6 +3,7 @@
 package uapi16ext
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +40,7 @@ const (
 // are thus excluded from the [TUFExtField] fallback.
 var knownTUFExtFields = map[string]struct{}{
 	tufext.OverrideURLField: {},
+	tufext.InlineDataField:  {},
 }
 
 // tufCustom is the part of a TUF target's "custom" field that Quarry cares
@@ -134,9 +136,19 @@ func FromTargetFile(target *tufmetadata.TargetFiles, baseURLs ...*url.URL) (*uap
 		return nil, fmt.Errorf("target has invalid negative length %d", target.Length)
 	}
 
-	// TODO(inline-data): Output a literal as well once we support inline data.
+	targetExt := tufext.TargetFilesExt(target)
+
 	var contents []*uapi16.Contents
-	for url, err := range tufext.TargetFilesExt(target).FetchURLs(baseURLs...) {
+	// x-quarry-inline-data becomes a UAPI.16 literal contents entry.
+	if data, err := targetExt.InlineData(); err != nil {
+		return nil, fmt.Errorf("get target inline data: %w", err)
+	} else if data != nil {
+		contents = append(contents, &uapi16.Contents{
+			Literal: base64.StdEncoding.EncodeToString(data),
+		})
+	}
+	// All other fetch URLs become UAPI.16 url contents entries.
+	for url, err := range targetExt.FetchURLs(baseURLs...) {
 		if err != nil {
 			return nil, fmt.Errorf("get target candidate url: %w", err)
 		}
