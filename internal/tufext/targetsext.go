@@ -59,6 +59,52 @@ func (t targetFilesExt) OverrideURL() (*url.URL, error) {
 	return url.Parse(*urlStr)
 }
 
+// InlineDataField is the target file extension field that holds the literal
+// contents of the target file (see [targetFilesExt.InlineData]).
+const InlineDataField = "x-quarry-inline-data"
+
+// WithInlineData embeds the given data into the target file metadata itself,
+// stored as a standard-base64 JSON string. This is intended for very small
+// target files, where embedding the data directly into the (already signed
+// and verified) targets metadata is cheaper than a round-trip to the
+// repository for a tiny blob.
+//
+// The data must match the target file's length and hashes or clients will
+// reject it (see [targetFilesExt.InlineData]). This is not verified here, as
+// the caller may not have filled in those fields yet.
+func (t targetFilesExt) WithInlineData(data []byte) targetFilesExt {
+	_, err := jsonutils.SetExtensionJSON(t.TargetFiles, InlineDataField, data)
+	if err != nil {
+		panic(err) // programmer error
+	}
+	return t
+}
+
+// InlineData returns the inline data embedded in this target file, verified
+// against the target file's length and hashes. If there is no inline data
+// then nil, nil is returned.
+//
+// A verification failure is an error rather than being treated as missing
+// inline data -- the extension is part of the same signed metadata as the
+// hashes it mismatches, so such metadata is inconsistent with itself and
+// should not be trusted.
+func (t targetFilesExt) InlineData() ([]byte, error) {
+	dataPtr, err := jsonutils.GetExtensionJSON[[]byte](t.TargetFiles, InlineDataField)
+	if err != nil {
+		return nil, err
+	}
+	if dataPtr == nil || *dataPtr == nil {
+		// An explicit JSON null carries no data -- treat it like an absent
+		// field (in contrast to "", which is a present-but-empty file).
+		return nil, nil
+	}
+	data := *dataPtr
+	if err := VerifyData(data, t.Length, t.Hashes); err != nil {
+		return nil, fmt.Errorf("verify inline data for target %s: %w", t.Path, err)
+	}
+	return data, nil
+}
+
 // FetchURL returns the set of URLs that can be used to fetch this resource. If
 // more than one URL is given, the target file being unavailable at one URL
 // does not mean it is not available at a later URL.

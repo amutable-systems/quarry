@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/opencontainers/umoci/pkg/hardening"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
 	"go.amutable.dev/quarry/internal/tufext"
@@ -35,8 +34,9 @@ const ErrorReadDeadline = 200 * time.Millisecond
 //
 // TODO: Should we also return the response information...?
 func VerifiedHTTPGet(ctx context.Context, url *url.URL, length int64, hashes tufmetadata.Hashes) (_ io.ReadCloser, _ *http.Response, Err error) {
-	digests, err := tufext.HashesToDigest(hashes)
-	if err != nil {
+	// Make sure the hashes are good before doing the request -- they get
+	// re-converted later in [tufext.VerifiedReadCloser].
+	if _, err := tufext.HashesToDigest(hashes); err != nil {
 		return nil, nil, fmt.Errorf("convert TUF hashes to digests: %w", err)
 	}
 
@@ -89,14 +89,11 @@ func VerifiedHTTPGet(ctx context.Context, url *url.URL, length int64, hashes tuf
 		}
 		return nil, res, err
 	}
-	rdr := res.Body
-	for _, digest := range digests {
-		// Wrap the reader with a stack of VerifiedReadClosers for each digest.
-		rdr = &hardening.VerifiedReadCloser{
-			Reader:         rdr,
-			ExpectedDigest: digest,
-			ExpectedSize:   length,
-		}
+	rdr, err := tufext.VerifiedReadCloser(res.Body, length, hashes)
+	if err != nil {
+		// Unreachable thanks to the pre-flight check above, but be safe.
+		_ = res.Body.Close()
+		return nil, res, err
 	}
 	// Replace the response reader with the hardened version to avoid caller
 	// bugs where they accidentally read from Response.Body.

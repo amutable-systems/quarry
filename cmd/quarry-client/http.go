@@ -176,6 +176,17 @@ func proxyTargetFile(rw http.ResponseWriter, req *http.Request) (Err error) {
 	}
 	infoExt := tufext.TargetFilesExt(info.TargetFiles)
 
+	// Serve inline data directly if available to save on redirects.
+	if data, err := infoExt.InlineData(); err != nil {
+		return fmt.Errorf("bad target data in repo %s for target %s: %w", info.Repo.Name, targetPath, err)
+	} else if data != nil {
+		rw.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		rw.Header().Set("Content-Type", "application/octet-stream")
+		rw.Header()["X-Quarry-Content-Digest"] = hashesToContentDigest(info.Hashes)
+		_, _ = rw.Write(data)
+		return nil
+	}
+
 	// Redirect to the first target URL.
 	// TODO(uapi16): Once we get UAPI.16 support into systemd, we can serve a
 	// manifest that lists every URL candidate as an alternative contents source

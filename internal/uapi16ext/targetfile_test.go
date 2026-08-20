@@ -3,6 +3,8 @@
 package uapi16ext_test
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/url"
@@ -179,6 +181,27 @@ func TestFromTargetFileNonObjectQuarryCustom(t *testing.T) {
 	assert.JSONEq(t, `{"custom":{"sysupdate":{"version":"42"}}}`, string(extensions["xAmutableTufExt"]))
 }
 
+// Inline data is emitted as a literal contents entry ahead of the download
+// URLs, and (being a known x-quarry-* field) is not duplicated into
+// xAmutableTufExt.
+func TestFromTargetFileInlineData(t *testing.T) {
+	data := []byte("FooOS raw data")
+	sum := sha256.Sum256(data)
+	literal := base64.StdEncoding.EncodeToString(data)
+
+	target := testTarget(t, `"x-quarry-inline-data": "`+literal+`"`)
+	target.Length = int64(len(data))
+	target.Hashes = tufmetadata.Hashes{"sha256": sum[:]}
+
+	file, err := uapi16ext.FromTargetFile(target, testBaseURL(t))
+	require.NoError(t, err)
+	assert.Equal(t, []*uapi16.Contents{
+		{Literal: literal},
+		{URL: "https://example.com/data/FooOS.raw"},
+	}, file.Contents)
+	assert.Nil(t, file.UnrecognizedFields, "inline data must not be duplicated into xAmutableTufExt")
+}
+
 // The generated file object round-trips through a manifest unchanged.
 func TestFromTargetFileRoundTrip(t *testing.T) {
 	target := testTarget(t, `
@@ -222,5 +245,13 @@ func TestFromTargetFileErrors(t *testing.T) {
 	t.Run("no-base-urls", func(t *testing.T) {
 		_, err := uapi16ext.FromTargetFile(testTarget(t, ""))
 		require.ErrorContains(t, err, "no baseURLs")
+	})
+
+	// A literal that does not match the target hashes must never be emitted.
+	t.Run("inline-data-mismatch", func(t *testing.T) {
+		literal := base64.StdEncoding.EncodeToString([]byte("this is not it"))
+		target := testTarget(t, `"x-quarry-inline-data": "`+literal+`"`)
+		_, err := uapi16ext.FromTargetFile(target, testBaseURL(t))
+		require.ErrorContains(t, err, "inline data")
 	})
 }

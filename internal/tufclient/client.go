@@ -5,6 +5,7 @@
 package tufclient
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -175,12 +176,25 @@ type TargetInfo struct {
 // Fetch retreives the target file referenced by this [TargetInfo] and returns
 // a stream to the file contents. This stream is backed by a
 // [hardening.VerifiedReadCloser], so users must check the return value of the
-// [io.ReadCloser.Close] method before using the data for anything.
+// [io.ReadCloser.Close] method before using the data for anything. For targets
+// with inline data, the returned stream is an in-memory buffer whose contents
+// have already been verified (making the Close error check a no-op).
 //
 // A wrapped [fs.ErrNotExist] error is returned if the target file could not be
 // found (either in the repository metadata or from the download URL).
 func (info *TargetInfo) Fetch(ctx context.Context) (io.ReadCloser, error) {
 	infoExt := tufext.TargetFilesExt(info.TargetFiles)
+
+	// Targets with inline data short-circuit fetching entirely. InlineData
+	// verifies the data against the target hashes for us, and a verification
+	// failure is fatal rather than a reason to fall back to the fetch URLs --
+	// the signed metadata is inconsistent with itself, so it should not be
+	// trusted (and the data was likely never uploaded anywhere anyway).
+	if data, err := infoExt.InlineData(); err != nil {
+		return nil, fmt.Errorf("get inline data for target %s: %w", info.Path, err)
+	} else if data != nil {
+		return io.NopCloser(bytes.NewReader(data)), nil
+	}
 
 	// Rather than using the go-tuf DownloadTarget (which requires the data be
 	// stored in-memory) we fetch it directly.

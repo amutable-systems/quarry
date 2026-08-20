@@ -5,6 +5,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -19,6 +21,7 @@ import (
 	"go.amutable.dev/quarry/internal/generics"
 	"go.amutable.dev/quarry/internal/tufclient"
 	"go.amutable.dev/quarry/internal/tufclient/config"
+	"go.amutable.dev/quarry/internal/tufext"
 	"go.amutable.dev/quarry/internal/uapi16"
 )
 
@@ -78,6 +81,19 @@ func testTarget(t *testing.T, path string, length int64, sha256 string) *tufclie
 	}
 }
 
+// testInlineTarget returns a target file in the [testRepo] repository whose
+// contents are embedded in the target metadata as inline data.
+func testInlineTarget(t *testing.T, path string, data []byte) *tufclient.TargetInfo {
+	t.Helper()
+	sum := sha256.Sum256(data)
+	target := testTarget(t, path, int64(len(data)), hex.EncodeToString(sum[:]))
+	tufext.TargetFilesExt(target.TargetFiles).WithInlineData(data)
+	// SetExtensionJSON round-trips the struct through JSON, which drops
+	// non-JSON fields like Path -- so it has to be set again afterwards.
+	target.Path = path
+	return target
+}
+
 // outputAll runs the whole formatter lifecycle over the given targets and
 // returns everything that was written.
 func outputAll(t *testing.T, newFormatter func(io.Writer) listFormatter, targets ...*tufclient.TargetInfo) string {
@@ -113,6 +129,23 @@ func TestVerboseListFormatter(t *testing.T) {
 		"\t - sha256:"+fooHash+"\n", got)
 }
 
+// Inline data is mentioned ahead of the URLs, which it takes priority over.
+func TestVerboseListFormatterInlineData(t *testing.T) {
+	data := []byte("inline FooOS data")
+	sum := sha256.Sum256(data)
+
+	got := outputAll(t,
+		func(wtr io.Writer) listFormatter { return newVerboseListFormatter(wtr) },
+		testInlineTarget(t, "FooOS.raw", data))
+	assert.Equal(t, "FooOS.raw:\n"+
+		"\tInline data: 17 bytes\n"+
+		"\tURL(s):\n"+
+		"\t - https://example.com/data/FooOS.raw\n"+
+		"\tSize: 17\n"+
+		"\tHashes:\n"+
+		"\t - sha256:"+hex.EncodeToString(sum[:])+"\n", got)
+}
+
 // The "custom" target file metadata is pretty-printed inline, which is the one
 // part of the verbose output that does not come from [pprintTargetFile].
 func TestVerboseListFormatterCustom(t *testing.T) {
@@ -146,6 +179,16 @@ func TestFormatListFormatter(t *testing.T) {
 			assert.Equal(t, test.expected, got)
 		})
 	}
+}
+
+// %u expands to a data: URL for inline targets, as there is (probably) no
+// download URL with the target's blob behind it.
+func TestFormatListFormatterInlineData(t *testing.T) {
+	data := []byte("inline FooOS data")
+	got := outputAll(t,
+		func(wtr io.Writer) listFormatter { return newFormatListFormatter(wtr, "%u") },
+		testInlineTarget(t, "FooOS.raw", data))
+	assert.Equal(t, "data:;base64,"+base64.StdEncoding.EncodeToString(data)+"\n", got)
 }
 
 func TestFormatListFormatterInvalid(t *testing.T) {
