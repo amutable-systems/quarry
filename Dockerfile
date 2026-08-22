@@ -16,6 +16,11 @@ ARG GO_VERSION=1.26
 ARG RUST_IMAGE_DIGEST=sha256:1f0dbad1df66647807e6952d1db85d0b2bda7606cb2139d82517e4f009967376
 ARG GO_IMAGE_DIGEST=sha256:68b7145ec43d1820b9a56704554b53d1520aa2a15cb5233e374188a31b2a1bce
 
+# Build using an older Debian so that the binaries are built against an older
+# glibc which will work with our GHA CI environment.
+ARG SD_DEBIAN_RELEASE=bookworm
+ARG SD_DEBIAN_IMAGE_DIGEST=sha256:813017f3d62be4b5891a7acca6a01bdcd4b8513daa81b1ab99d3a50385b26931
+
 # --------------------------------------------------------------------------- #
 # libpathrs-build: builds libpathrs.a from source
 # --------------------------------------------------------------------------- #
@@ -79,6 +84,59 @@ ARG BUILDTAGS="http insecure"
 COPY . /usr/src/quarry
 ENV OUTDIR=/opt/quarry/bin
 RUN just build-all
+
+# --------------------------------------------------------------------------- #
+# systemd-build: builds systemd daemons from upstream git for conformance
+# tests against real varlink services
+# --------------------------------------------------------------------------- #
+FROM debian:${SD_DEBIAN_RELEASE}@${SD_DEBIAN_IMAGE_DIGEST} AS systemd-build
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -y && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        gcc \
+        git \
+        gperf \
+        libcap-dev \
+        libmount-dev \
+        meson \
+        ninja-build \
+        pkgconf \
+        python3-jinja2 && \
+    apt-get clean -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# TODO: Create a renovate job that maintains this.
+ARG SYSTEMD_COMMIT=15458a89f1e39223c958f9ba06f4355b7d60a3ed
+RUN git init -q /usr/src/systemd && \
+    git -C /usr/src/systemd fetch --depth=1 \
+        https://github.com/systemd/systemd.git "${SYSTEMD_COMMIT}" && \
+    git -C /usr/src/systemd checkout -q FETCH_HEAD
+
+# Build systemd with as few features as possible to reduce the number of
+# dependencies and build times, especially as we currently only test against
+# systemd-hostnamed which has very few features.
+#
+# systemd builds its binaries with an rpath of $ORIGIN/src/shared, which means
+# that libsystemd*.so will be loaded correctly on any system as long as it is
+# distributed in a subdirectory along with the binaries.
+RUN meson setup /usr/src/systemd/build /usr/src/systemd \
+        --auto-features=disabled \
+        --buildtype=release \
+        -Dmode=release
+ARG SD_BINARIES=systemd-hostnamed
+RUN ninja -C /usr/src/systemd/build $SD_BINARIES
+RUN cd /usr/src/systemd/build && \
+    install -Dt /opt/systemd $SD_BINARIES && \
+    install -Dt /opt/systemd/src/shared src/shared/libsystemd-shared-*.so
+
+# --------------------------------------------------------------------------- #
+# systemd-export: provides just the systemd binaries for -o type=local builds
+# --------------------------------------------------------------------------- #
+FROM scratch AS systemd-export
+COPY --from=systemd-build /opt/systemd/ /
 
 # --------------------------------------------------------------------------- #
 # export: provides just the quarry binaries for -o type=local builds
