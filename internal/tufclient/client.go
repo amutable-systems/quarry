@@ -176,22 +176,17 @@ type TargetInfo struct {
 // Fetch retreives the target file referenced by this [TargetInfo] and returns
 // a stream to the file contents. This stream is backed by a
 // [hardening.VerifiedReadCloser], so users must check the return value of the
-// [io.ReadCloser.Close] method before using the data for anything. For targets
-// with inline data, the returned stream is an in-memory buffer whose contents
-// have already been verified (making the Close error check a no-op).
+// [io.ReadCloser.Close] method before using the data for anything.
 //
 // A wrapped [fs.ErrNotExist] error is returned if the target file could not be
 // found (either in the repository metadata or from the download URL).
 func (info *TargetInfo) Fetch(ctx context.Context) (io.ReadCloser, error) {
 	infoExt := tufext.TargetFilesExt(info.TargetFiles)
 
-	// Targets with inline data short-circuit fetching entirely. InlineData
-	// verifies the data against the target hashes for us, and a verification
-	// failure is fatal rather than a reason to fall back to the fetch URLs --
-	// the signed metadata is inconsistent with itself, so it should not be
-	// trusted (and the data was likely never uploaded anywhere anyway).
+	// Return the inline data if it is available (and valid).
 	if data, err := infoExt.InlineData(); err != nil {
-		return nil, fmt.Errorf("get inline data for target %s: %w", info.Path, err)
+		slog.Info("Target file inline data is invalid, falling back to remote URL fetching...",
+			"repo", info.Repo.Name, "target", info.Path, "err", err.Error())
 	} else if data != nil {
 		return io.NopCloser(bytes.NewReader(data)), nil
 	}
@@ -203,15 +198,17 @@ func (info *TargetInfo) Fetch(ctx context.Context) (io.ReadCloser, error) {
 			return nil, fmt.Errorf("check target candidate urls: %w", err)
 		}
 		rdr, _, err := httputils.VerifiedHTTPGet(ctx, url, info.Length, info.Hashes)
-		if errors.Is(err, fs.ErrNotExist) {
-			slog.Info("Target file not available at URL, trying next candidate...",
-				"repo", info.Repo.Name, "target", info.Path, "url", url.String())
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				slog.Info("Target file not available at URL, trying next candidate...",
+					"repo", info.Repo.Name, "target", info.Path, "url", url.String())
+			} else {
+				slog.Info("Target file could not be fetched from URL, trying next candidate...",
+					"repo", info.Repo.Name, "target", info.Path, "url", url.String(), "err", err.Error())
+			}
 			continue
 		}
-		if err != nil {
-			return nil, fmt.Errorf("fetch target candidate url %s: %w", url, err)
-		}
-		return rdr, err
+		return rdr, nil
 	}
 	return nil, fmt.Errorf("%w: target not present at any fetch url", fs.ErrNotExist)
 }
