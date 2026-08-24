@@ -78,6 +78,9 @@ func (exts ExtensionSet) abortOnError(ctx context.Context, Err error, logArgs ..
 		logArgs = append(logArgs, "err", Err.Error())
 		slog.Error("[xsysupdate] Error occurred during sysupdate extension operation.",
 			logArgs...)
+		// This abort may have been triggered by cancellation but it must complete
+		// so drop the cancel but keep everything else.
+		ctx = context.WithoutCancel(ctx)
 		if err := exts.DoAbort(ctx, Err); err != nil {
 			logArgs = append(logArgs, "abortErr", err.Error())
 			slog.Error("[xsysupdate] Extension abort failed while handling operational error.",
