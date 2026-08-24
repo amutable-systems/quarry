@@ -30,7 +30,7 @@ const (
 )
 
 var defaultConfigCandidates = [...]string{
-	"/etc/quarry-client.toml",
+	"/etc/quarry-client/config.toml",
 	"/run/quarry-client/config.toml",
 	"/usr/local/lib/quarry-client/config.toml",
 	"/usr/lib/quarry-client/config.toml",

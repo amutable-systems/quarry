@@ -67,7 +67,7 @@ install-client-http-service:
 	sed 's|@bindir@|{{bindir}}|g;s|@client_http_port@|{{client_http_port}}|g' contrib/systemd/quarry-client-http.socket.in >{{destdir}}{{unitdir}}/quarry-client-http.socket
 
 install-client-config:
-	install -Dm0644 ./contrib/quarry-client.toml {{destdir}}{{sysconfdir}}/quarry-client.toml
+	install -Dm0644 ./contrib/quarry-client.toml {{destdir}}{{sysconfdir}}/quarry-client/config.toml
 
 [private]
 build cmd tags="":
