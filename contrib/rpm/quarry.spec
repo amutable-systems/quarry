@@ -93,8 +93,6 @@ export CLIENT_HTTP_PORT=%{client_http_port}
 %endif
 
 just install
-# Also install the config to /var/lib/...
-install -Dm0644 ./contrib/quarry-client.toml %{buildroot}%{_sharedstatedir}/%{name}-client/config.toml
 
 %if %{with http}
 just install-client-http-service
@@ -143,8 +141,8 @@ just install-sysupdate
 %{_bindir}/%{name}-client
 %{_unitdir}/%{name}-client*
 %dir %{_datarootdir}/amutable/%{name}
-%config(noreplace) %{_sysconfdir}/%{name}-client.toml
-%config %{_sharedstatedir}/%{name}-client/config.toml
+%dir %{_sysconfdir}/%{name}-client
+%config(noreplace) %{_sysconfdir}/%{name}-client/config.toml
 %if %{without http}
 %attr(-,quarry,quarry) %dir %{_sharedstatedir}/%{name}-client
 %{_tmpfilesdir}/%{name}-client.conf

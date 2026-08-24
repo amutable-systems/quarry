@@ -2,7 +2,7 @@
 
 config_version = 1
 cache_dir = "/var/lib/quarry-client/latest-metadata"
-#include = ["/etc/quarry-client.conf.d/*.conf"] # TODO: Implement drop-ins.
+# TODO: Implement drop-ins (<prefix>/quarry-client/config.toml.d/*.toml).
 
 # Official AmutableOS update repository (nightly stream).
 [repo."updates.example.com/base-os/nightly"]
