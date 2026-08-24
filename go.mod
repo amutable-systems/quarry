@@ -2,7 +2,7 @@
 
 module go.amutable.dev/quarry
 
-go 1.25.5
+go 1.26.4
 
 require (
 	cyphar.com/go-pathrs v0.2.5
