@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"go.amutable.dev/quarry/internal/hostnamed"
+	"go.amutable.dev/quarry/internal/systemdcmd"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufclient"
 )
@@ -78,6 +79,10 @@ type TagsExtension struct {
 	// appliedSetTags is the [hostnamed.SetTagsParams] used in BeforeUpdate,
 	// kept for revert purposes in Abort. If nil or empty, Abort is a no-op.
 	appliedSetTags *hostnamed.SetTagsParams
+	// testingSkipSysupdate is set by tests to disable the call to start the
+	// systemd-sysupdate-auto-enable.service unit, which will fail in our test
+	// environment.
+	testingSkipSysupdate bool
 }
 
 var _ Extension = &TagsExtension{}
@@ -254,6 +259,16 @@ func (ext *TagsExtension) BeforeUpdate(ctx context.Context) error {
 	ext.appliedSetTags = applied
 	if err != nil {
 		return fmt.Errorf("apply machine tags: %w", err)
+	}
+
+	// Trigger the auto-enablement of any components or features that are
+	// conditional based on the tags we just applied.
+	// TODO: This should be dropped once we have more on-demand handling, as
+	// this model cannot handle disabling a component.
+	if !ext.testingSkipSysupdate {
+		if err := systemdcmd.Call(ctx, "systemctl", "start", "systemd-sysupdate-auto-enable.service"); err != nil {
+			return fmt.Errorf("failed to trigger systemd-sysupdate-auto-enable service: %w", err)
+		}
 	}
 	return nil
 }
