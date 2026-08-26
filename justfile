@@ -24,6 +24,14 @@ build-all-in-container:
 		-o type=local,dest="{{outdir}}" \
 		.
 
+sd_binaries := env("SD_BINARIES", "systemd-hostnamed")
+
+build-systemd:
+	{{ container_engine }} buildx build -f Dockerfile --target systemd-export \
+		--build-arg SD_BINARIES="{{ sd_binaries }}" \
+		-o type=local,dest="{{ outdir }}/systemd" \
+		.
+
 test:
 	go test -race -tags "{{buildtags}}" ./...
 

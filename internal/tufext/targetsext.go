@@ -65,9 +65,9 @@ const InlineDataField = "x-quarry-inline-data"
 
 // WithInlineData embeds the given data into the target file metadata itself,
 // stored as a standard-base64 JSON string. This is intended for very small
-// target files, where embedding the data directly into the (already signed
-// and verified) targets metadata is cheaper than a round-trip to the
-// repository for a tiny blob.
+// target files, where embedding the data directly into the (already signed and
+// verified) targets metadata is cheaper than a round-trip to the repository
+// for a tiny blob.
 //
 // The data must match the target file's length and hashes or clients will
 // reject it (see [targetFilesExt.InlineData]). This is not verified here, as
@@ -80,14 +80,9 @@ func (t targetFilesExt) WithInlineData(data []byte) targetFilesExt {
 	return t
 }
 
-// InlineData returns the inline data embedded in this target file, verified
-// against the target file's length and hashes. If there is no inline data
-// then nil, nil is returned.
-//
-// A verification failure is an error rather than being treated as missing
-// inline data -- the extension is part of the same signed metadata as the
-// hashes it mismatches, so such metadata is inconsistent with itself and
-// should not be trusted.
+// InlineData returns the inline data embedded in this target file after
+// verifying it against the target file's length and hashes with [VerifyData].
+// If there is no inline data then nil, nil is returned.
 func (t targetFilesExt) InlineData() ([]byte, error) {
 	dataPtr, err := jsonutils.GetExtensionJSON[[]byte](t.TargetFiles, InlineDataField)
 	if err != nil {

@@ -144,3 +144,5 @@ gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C
 gopkg.in/yaml.v3 v3.0.0-20200605160147-a5ece683394c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+snai.pe/go-varlink v0.0.0-20260218093529-c14cc4939572 h1:leOjTEQrYper9Tz4iBCvMKqKM97H90dtOmO7rBx1s4o=
+snai.pe/go-varlink v0.0.0-20260218093529-c14cc4939572/go.mod h1:kEnNpP//ZOjTyl638c8ha6YoGdEwOIVqUBHmbhZrnoQ=
