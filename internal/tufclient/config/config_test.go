@@ -3,6 +3,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -469,6 +470,104 @@ data_root_url = "https://example.com/%m/data"
 
 	assert.Equal(t, "https://example.com/"+id, repo.MetaRootURL.String())
 	assert.Equal(t, "https://example.com/"+id+"/data", repo.DataRootURL.String())
+}
+
+func mergeFragments(t *testing.T, fragments ...string) *Config {
+	t.Helper()
+	cfg := &Config{Version: ConfigVersion, Repos: make(map[string]*Repository)}
+	for _, fragment := range fragments {
+		parsed, err := parseToml(strings.NewReader(fragment))
+		require.NoError(t, err)
+		cfg.merge(parsed)
+	}
+	require.NoError(t, cfg.expandAndValidate())
+	return cfg
+}
+
+func TestMerge_EmptyURLResetsToDefault(t *testing.T) {
+	cfg := mergeFragments(t, `
+config_version = 1
+[repo."example.com/base-os"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://mirror.example"
+data_root_url = "https://mirror.example/data"
+`, `
+config_version = 1
+[repo."example.com/base-os"]
+meta_root_url = ""
+data_root_url = ""
+`)
+
+	repo := cfg.Repos["example.com/base-os"]
+	require.NotNil(t, repo)
+	assert.Equal(t, "https://example.com/base-os", repo.MetaRootURL.String())
+	assert.Equal(t, "https://example.com/base-os/targets", repo.DataRootURL.String())
+}
+
+func TestMerge_EmptyURLResetsOnFirstDefinition(t *testing.T) {
+	cfg := mergeFragments(t, `
+config_version = 1
+[repo."example.com/base-os"]
+root_trust = "insecure-tofu"
+meta_root_url = ""
+`)
+
+	repo := cfg.Repos["example.com/base-os"]
+	require.NotNil(t, repo)
+	assert.Equal(t, "https://example.com/base-os", repo.MetaRootURL.String())
+}
+
+func TestMerge_UnsetURLKeepsOverride(t *testing.T) {
+	cfg := mergeFragments(t, `
+config_version = 1
+[repo."example.com/base-os"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://mirror.example"
+`, `
+config_version = 1
+[repo."example.com/base-os"]
+data_root_url = "https://data.example"
+`)
+
+	repo := cfg.Repos["example.com/base-os"]
+	require.NotNil(t, repo)
+	assert.Equal(t, "https://mirror.example", repo.MetaRootURL.String())
+	assert.Equal(t, "https://data.example", repo.DataRootURL.String())
+}
+
+func TestParseToml_RepoNameExpandedBeforeMerge(t *testing.T) {
+	main, err := parseToml(strings.NewReader(`
+config_version = 1
+[repo."a/%m"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://main.example"
+`))
+	require.NoError(t, err)
+	require.Len(t, main.Repos, 1)
+
+	var name string
+	for n := range main.Repos {
+		name = n
+	}
+	require.NotContains(t, name, "%")
+
+	dropIn, err := parseToml(strings.NewReader(fmt.Sprintf(`
+config_version = 1
+[repo.%q]
+meta_root_url = "https://dropin.example"
+`, name)))
+	require.NoError(t, err)
+
+	cfg := &Config{Version: ConfigVersion, Repos: make(map[string]*Repository)}
+	cfg.merge(main)
+	cfg.merge(dropIn)
+	require.NoError(t, cfg.expandAndValidate())
+
+	require.Len(t, cfg.Repos, 1, "a drop-in naming the expanded repo must not add a second one")
+	repo := cfg.Repos[name]
+	require.NotNil(t, repo)
+	assert.Equal(t, "https://dropin.example", repo.MetaRootURL.String())
+	assert.Equal(t, "insecure-tofu", repo.RootTrust.Type())
 }
 
 func TestParseConfig_Expand_URL(t *testing.T) {

@@ -5,13 +5,12 @@ package cliext
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/urfave/cli/v3"
 
 	"go.amutable.dev/quarry/internal/ctxext"
-	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufclient/config"
+	"go.amutable.dev/quarry/internal/uapi6conf"
 )
 
 type ctxKey string
@@ -22,10 +21,13 @@ const configCtxKey ctxKey = "--config"
 func WithConfigFlag(cmd *cli.Command) *cli.Command {
 	cmd.Flags = append(cmd.Flags,
 		&cli.StringFlag{
-			Name:      "config",
-			Usage:     "path to the quarry-client configuration file",
+			Name: "config",
+			Usage: fmt.Sprintf(
+				// Split this very long help message over a few lines...
+				"path to the quarry-client configuration file\n(default: config.toml in the standard search paths:\n\t%v\nwith \".d\"-style drop-ins)",
+				uapi6conf.Standard("", "quarry-client"), // TODO: Should we pass this to config.LoadPath()?
+			),
 			TakesFile: true,
-			Value:     config.DefaultConfigPath(),
 			Sources:   cli.EnvVars("QUARRY_CLIENT_CONFIG"),
 		},
 		&cli.StringFlag{
@@ -36,18 +38,18 @@ func WithConfigFlag(cmd *cli.Command) *cli.Command {
 			Sources:   cli.EnvVars("QUARRY_CLIENT_CACHEDIR"),
 		})
 
-	cmd.Before = WrapBeforeFuncs(cmd.Before, func(ctx context.Context, cmd *cli.Command) (_ context.Context, Err error) {
-		cfgPath := cmd.String("config")
-
-		cfgFile, err := os.Open(cfgPath) //nolint:forbidigo // user-controlled host path
-		if err != nil {
-			return nil, fmt.Errorf("open config: %w", err)
+	cmd.Before = WrapBeforeFuncs(cmd.Before, func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
+		var (
+			cfg *config.Config
+			err error
+		)
+		if cfgPath := cmd.String("config"); cfgPath != "" {
+			cfg, err = config.LoadPath(cfgPath)
+		} else {
+			cfg, err = config.Load()
 		}
-		defer funchelpers.VerifyClose(&Err, cfgFile)
-
-		cfg, err := config.Parse(cfgFile)
 		if err != nil {
-			return nil, fmt.Errorf("invalid config %s: %w", cfgPath, err)
+			return nil, err
 		}
 		// Replace the in-memory config option with --cache-dir if it was unset
 		// in the config or the user explicitly requested it.

@@ -18,7 +18,6 @@ import (
 	"slices"
 
 	"github.com/BurntSushi/toml"
-	"golang.org/x/sys/unix"
 
 	"go.amutable.dev/quarry/internal/expand"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
@@ -28,24 +27,6 @@ import (
 const (
 	MaxRootBytes = 512_000 // 512k
 )
-
-var defaultConfigCandidates = [...]string{
-	"/etc/quarry-client/config.toml",
-	"/run/quarry-client/config.toml",
-	"/usr/local/lib/quarry-client/config.toml",
-	"/usr/lib/quarry-client/config.toml",
-}
-
-// DefaultConfigPath returns the recommended default config path.
-func DefaultConfigPath() string {
-	for _, path := range defaultConfigCandidates {
-		if err := unix.Access(path, unix.F_OK); err == nil {
-			return path
-		}
-	}
-	// If none of the candidates are available, just show the first one.
-	return defaultConfigCandidates[0]
-}
 
 // RootTrustSource represents a source of trust for the initial state of a
 // client's locally cached root.json.
@@ -404,6 +385,7 @@ func parseToml(rdr io.Reader) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
+	// Every fragment declares its own version, so each can be upgraded on its own.
 	if v := cfg.Version; v != ConfigVersion {
 		return nil, fmt.Errorf("%w %d: only version %d is supported", ErrUnsupportedVersion, v, ConfigVersion)
 	}
@@ -428,7 +410,7 @@ func parseToml(rdr io.Reader) (*Config, error) {
 }
 
 // expandAndValidate applies the %-expansions, fills in the URL fields derived
-// from the repository name, and validates the result.
+// from the repository name, and validates the merged configuration.
 func (cfg *Config) expandAndValidate() error {
 	var err error
 
