@@ -384,6 +384,21 @@ var ErrUnsupportedVersion = errors.New("unsupported config_version")
 
 // Parse parses the TOML form of [Config].
 func Parse(rdr io.Reader) (*Config, error) {
+	cfg, err := parseToml(rdr)
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.expandAndValidate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// parseToml parses a single configuration fragment. The repository names are
+// expanded here so that fragments merge on the final name, the rest of the
+// validation and %-expansion is left to [Config.expandAndValidate], as it
+// needs the merged configuration.
+func parseToml(rdr io.Reader) (*Config, error) {
 	var cfg Config
 	meta, err := toml.NewDecoder(rdr).Decode(&cfg)
 	if err != nil {
@@ -397,38 +412,47 @@ func Parse(rdr io.Reader) (*Config, error) {
 	}
 
 	expander := expand.NewExpansions()
-
-	cfg.CacheDir, err = expander.ExpandString(cfg.CacheDir)
-	if err != nil {
-		return nil, fmt.Errorf("config cache_dir an invalid %%-expansion: %w", err)
-	}
-	if cfg.CacheDir != "" && !filepath.IsAbs(cfg.CacheDir) {
-		return nil, fmt.Errorf("config cache_dir invalid value: %q must be an absolute path", cfg.CacheDir)
-	}
-
-	repos := make(map[string]*Repository)
+	repos := make(map[string]*Repository, len(cfg.Repos))
 	for oldName, repo := range cfg.Repos {
-		var err error
 		repo.Name, err = expander.ExpandString(oldName)
 		if err != nil {
 			return nil, fmt.Errorf("repository %s has invalid %%-expansion: %w", oldName, err)
 		}
-		// Save with the updated repo name.
 		if _, ok := repos[repo.Name]; ok {
 			return nil, fmt.Errorf("repository %s clobbers existing repository %s", oldName, repo.Name)
 		}
 		repos[repo.Name] = repo
+	}
+	cfg.Repos = repos
+	return &cfg, nil
+}
 
+// expandAndValidate applies the %-expansions, fills in the URL fields derived
+// from the repository name, and validates the result.
+func (cfg *Config) expandAndValidate() error {
+	var err error
+
+	expander := expand.NewExpansions()
+
+	cfg.CacheDir, err = expander.ExpandString(cfg.CacheDir)
+	if err != nil {
+		return fmt.Errorf("config cache_dir an invalid %%-expansion: %w", err)
+	}
+	if cfg.CacheDir != "" && !filepath.IsAbs(cfg.CacheDir) {
+		return fmt.Errorf("config cache_dir invalid value: %q must be an absolute path", cfg.CacheDir)
+	}
+
+	for _, repo := range cfg.Repos {
 		// Add repo name expansion for repo config options URLs.
 		subExpander := expander.Clone().WithSource('R', func(_ *[]any) (string, error) {
 			return repo.Name, nil
 		})
 
 		if repo.RootTrust == nil {
-			return nil, fmt.Errorf("repository %s is missing root_trust specification", oldName)
+			return fmt.Errorf("repository %s is missing root_trust specification", repo.Name)
 		}
 		if err := repo.RootTrust.Expand(subExpander); err != nil {
-			return nil, fmt.Errorf("repository %s has invalid root_trust value: %w", oldName, err)
+			return fmt.Errorf("repository %s has invalid root_trust value: %w", repo.Name, err)
 		}
 
 		if repo.MetaRootURL == nil {
@@ -437,7 +461,7 @@ func Parse(rdr io.Reader) (*Config, error) {
 			repo.MetaRootURL = &tomlURL{rawString: "https://" + repo.Name}
 		}
 		if err := repo.MetaRootURL.Expand(subExpander); err != nil {
-			return nil, fmt.Errorf("repository %s has invalid meta_root_url value: %w", oldName, err)
+			return fmt.Errorf("repository %s has invalid meta_root_url value: %w", repo.Name, err)
 		}
 
 		if repo.DataRootURL == nil {
@@ -448,9 +472,8 @@ func Parse(rdr io.Reader) (*Config, error) {
 			repo.DataRootURL = &tomlURL{rawString: rootURL.String()}
 		}
 		if err := repo.DataRootURL.Expand(subExpander); err != nil {
-			return nil, fmt.Errorf("repository %s has invalid data_root_url value: %w", oldName, err)
+			return fmt.Errorf("repository %s has invalid data_root_url value: %w", repo.Name, err)
 		}
 	}
-	cfg.Repos = repos
-	return &cfg, nil
+	return nil
 }
