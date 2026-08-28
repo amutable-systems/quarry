@@ -132,6 +132,7 @@ func (t *tomlRootTrust) UnmarshalTOML(data any) error {
 	for _, parser := range []func(any) (RootTrustSource, error){
 		parseTomlRootTrust[tofuRootTrust],
 		parseTomlRootTrust[bundledRootTrust],
+		parseTomlRootTrust[inlineRootTrust],
 	} {
 		rootTrust, err := parser(data)
 		if errors.Is(err, errWrongType) {
@@ -154,7 +155,7 @@ func (t *tomlRootTrust) UnmarshalTOML(data any) error {
 func (t *tomlRootTrust) Expand(exp *expand.Expansions) error {
 	var newRootTrust RootTrustSource
 	switch rootTrust := t.RootTrustSource.(type) {
-	case tofuRootTrust:
+	case tofuRootTrust, inlineRootTrust:
 		// nothing to expand
 		newRootTrust = rootTrust
 	case bundledRootTrust:
@@ -261,6 +262,33 @@ func (t bundledRootTrust) fromTomlMap(data map[string]any) (RootTrustSource, err
 
 func (t bundledRootTrust) FetchRoot(_ context.Context, _ *Repository) ([]byte, error) {
 	return os.ReadFile(t.Path) //nolint:forbidigo // user-controlled host path
+}
+
+// inlineRootTrust is like [bundledRootTrust] except the root.json is embedded
+// directly into the configuration file as a string, which is much easier to
+// manage than [bundledRootTrust] when dealing with drop-in files.
+type inlineRootTrust struct {
+	RootJSON string `toml:"root.json"`
+}
+
+var _ RootTrustSource = inlineRootTrust{}
+
+func (t inlineRootTrust) Type() string { return "inline" }
+
+func (t inlineRootTrust) String() string { return fmt.Sprintf("%s:%q", t.Type(), t.RootJSON) }
+
+func (t inlineRootTrust) fromTomlMap(data map[string]any) (RootTrustSource, error) {
+	if err := parseTomlKey[string](data, "root.json", &t.RootJSON); err != nil {
+		return nil, err
+	}
+	if len(data) > 0 {
+		return nil, fmt.Errorf("unsupported fields: %v", slices.Collect(maps.Keys(data)))
+	}
+	return t, nil
+}
+
+func (t inlineRootTrust) FetchRoot(_ context.Context, _ *Repository) ([]byte, error) {
+	return []byte(t.RootJSON), nil
 }
 
 // tomlURL provides a wrapper around [url.URL] which can be parsed and
