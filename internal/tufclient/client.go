@@ -396,7 +396,7 @@ func NewClient(ctx context.Context, config *config.Config) (_ *Client, Err error
 	if err != nil {
 		return nil, fmt.Errorf("open cache directory: %w", err)
 	}
-	defer funchelpers.CloseOnError(Err, cacheDir)
+	defer funchelpers.CloseOnError(&Err, cacheDir)
 
 	updaters := make(map[string]*tufupdater.Updater, len(config.Repos))
 	for _, repo := range config.Repos {
