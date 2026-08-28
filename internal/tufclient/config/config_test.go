@@ -52,6 +52,23 @@ func TestParseConfig_RootTrust_Valid(t *testing.T) {
 			rootTrust: `root_trust = { type = "bundled", path = "" }`,
 			want:      bundledRootTrust{Path: ""},
 		},
+		{
+			name:      "InlineInlineTable",
+			rootTrust: `root_trust = { type = "inline", "root.json" = '{"signed": {}}' }`,
+			want:      inlineRootTrust{RootJSON: `{"signed": {}}`},
+		},
+		{
+			name:      "InlineEmptyRootJSON",
+			rootTrust: `root_trust = { type = "inline", "root.json" = "" }`,
+			want:      inlineRootTrust{RootJSON: ""},
+		},
+		{
+			// Unlike bundled paths, inline root.json data is exempt from
+			// %-expansion, so % sequences must be preserved verbatim.
+			name:      "InlinePercentNotExpanded",
+			rootTrust: `root_trust = { type = "inline", "root.json" = '{"pct": "100%Z"}' }`,
+			want:      inlineRootTrust{RootJSON: `{"pct": "100%Z"}`},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conf, err := Parse(strings.NewReader(repoBlock(tc.rootTrust)))
@@ -107,7 +124,7 @@ func TestParseConfig_RootTrust_Invalid(t *testing.T) {
 		{
 			name:      "BundledNonStringPath",
 			rootTrust: `root_trust = { type = "bundled", path = 7 }`,
-			wantErr:   `"path" has unsupported value type`,
+			wantErr:   `"path" has incorrect value type`,
 		},
 		{
 			name:      "BundledExtraField",
@@ -118,6 +135,33 @@ func TestParseConfig_RootTrust_Invalid(t *testing.T) {
 			name:      "TofuExtraField",
 			rootTrust: `root_trust = { type = "insecure-tofu", path = "/x" }`,
 			wantErr:   `unsupported fields: [path]`,
+		},
+		{
+			name:      "InlinePlainString",
+			rootTrust: `root_trust = "inline"`,
+			wantErr:   `cannot be instantiated using a plain string`,
+		},
+		{
+			name:      "InlineMissingRootJSON",
+			rootTrust: `root_trust = { type = "inline" }`,
+			wantErr:   `missing required field "root.json"`,
+		},
+		{
+			// An unquoted root.json key is a TOML dotted key (a nested
+			// "root" table), not the literal "root.json" key inline needs.
+			name:      "InlineUnquotedRootJSONKey",
+			rootTrust: `root_trust = { type = "inline", root.json = "{}" }`,
+			wantErr:   `missing required field "root.json"`,
+		},
+		{
+			name:      "InlineNonStringRootJSON",
+			rootTrust: `root_trust = { type = "inline", "root.json" = 42 }`,
+			wantErr:   `"root.json" has incorrect value type`,
+		},
+		{
+			name:      "InlineExtraField",
+			rootTrust: `root_trust = { type = "inline", "root.json" = "{}", extra = "y" }`,
+			wantErr:   `unsupported fields: [extra]`,
 		},
 		{
 			name:      "Integer",
@@ -136,6 +180,28 @@ func TestParseConfig_RootTrust_Invalid(t *testing.T) {
 			assert.ErrorContains(t, err, tc.wantErr)
 		})
 	}
+}
+
+// The typical way to embed a root.json is a multi-line literal string in a
+// dedicated sub-table, so make sure that form survives parsing verbatim.
+func TestParseConfig_RootTrust_InlineMultiline(t *testing.T) {
+	conf, err := Parse(strings.NewReader(`
+config_version = 1
+[repo.example]
+meta_root_url = "https://example.com/repo"
+
+[repo.example.root_trust]
+type = "inline"
+"root.json" = '''
+{"signed": {"_type": "root", "version": 1}}
+'''
+`))
+	require.NoError(t, err)
+	require.Contains(t, conf.Repos, "example")
+	require.NotNil(t, conf.Repos["example"].RootTrust)
+	assert.Equal(t,
+		inlineRootTrust{RootJSON: "{\"signed\": {\"_type\": \"root\", \"version\": 1}}\n"},
+		conf.Repos["example"].RootTrust.RootTrustSource)
 }
 
 func TestParseConfig_OnlyVersion(t *testing.T) {
@@ -334,12 +400,23 @@ func TestParseTomlRootTrust_WrongType(t *testing.T) {
 		{"TofuParser_BundledTable", parseTomlRootTrust[tofuRootTrust], map[string]any{"type": "bundled", "path": "/x"}},
 		{"BundledParser_TofuString", parseTomlRootTrust[bundledRootTrust], "insecure-tofu"},
 		{"BundledParser_TofuTable", parseTomlRootTrust[bundledRootTrust], map[string]any{"type": "insecure-tofu"}},
+		{"TofuParser_InlineTable", parseTomlRootTrust[tofuRootTrust], map[string]any{"type": "inline", "root.json": "{}"}},
+		{"BundledParser_InlineTable", parseTomlRootTrust[bundledRootTrust], map[string]any{"type": "inline", "root.json": "{}"}},
+		{"InlineParser_TofuString", parseTomlRootTrust[inlineRootTrust], "insecure-tofu"},
+		{"InlineParser_BundledTable", parseTomlRootTrust[inlineRootTrust], map[string]any{"type": "bundled", "path": "/x"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := tc.fn(tc.data)
 			assert.ErrorIs(t, err, errWrongType)
 		})
 	}
+}
+
+func TestInlineRootTrust_FetchRoot(t *testing.T) {
+	const rootJSON = `{"signed": {"_type": "root"}}`
+	data, err := inlineRootTrust{RootJSON: rootJSON}.FetchRoot(t.Context(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, []byte(rootJSON), data) //nolint:testifylint // we are doing a direct byte-for-byte comparison here
 }
 
 func TestParseConfig_Expand_RepoName(t *testing.T) {
@@ -723,6 +800,8 @@ func TestRootTrustSource_String(t *testing.T) {
 		{"Tofu", tofuRootTrust{}, "insecure-tofu"},
 		{"Bundled", bundledRootTrust{Path: "/etc/root.json"}, "bundled:/etc/root.json"},
 		{"BundledEmptyPath", bundledRootTrust{}, "bundled:"},
+		{"Inline", inlineRootTrust{RootJSON: `{"a": 1}`}, `inline:"{\"a\": 1}"`},
+		{"InlineEmpty", inlineRootTrust{}, `inline:""`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, tc.src.String())
