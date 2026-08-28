@@ -107,7 +107,7 @@ func TestParseConfig_RootTrust_Invalid(t *testing.T) {
 		{
 			name:      "BundledNonStringPath",
 			rootTrust: `root_trust = { type = "bundled", path = 7 }`,
-			wantErr:   `"path" has unsupported value type`,
+			wantErr:   `"path" has incorrect value type`,
 		},
 		{
 			name:      "BundledExtraField",

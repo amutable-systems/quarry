@@ -174,6 +174,18 @@ func (t *tomlRootTrust) Expand(exp *expand.Expansions) error {
 	return nil
 }
 
+func parseTomlKey[T any](data map[string]any, key string, slot *T) error {
+	if valAny, ok := data[key]; !ok {
+		return fmt.Errorf("missing required field %q", key)
+	} else if val, ok := valAny.(T); !ok {
+		return fmt.Errorf("field %q has incorrect value type: %v (%T) is not a %T", key, valAny, valAny, *new(T))
+	} else { //nolint:revive // variable chaining makes this uglier vis-a-vis indent-error-flow
+		*slot = val
+		delete(data, key)
+		return nil
+	}
+}
+
 // tofuRootTrust indicates that makeUpdater should fetch the root.json
 // directly from the repository with a trust-on-first-use policy.
 // *This is inherently insecure*.
@@ -238,13 +250,8 @@ func (t bundledRootTrust) Type() string { return "bundled" }
 func (t bundledRootTrust) String() string { return t.Type() + ":" + t.Path }
 
 func (t bundledRootTrust) fromTomlMap(data map[string]any) (RootTrustSource, error) {
-	if pathVal, ok := data["path"]; !ok {
-		return nil, fmt.Errorf(`missing required field "path"`)
-	} else if path, ok := pathVal.(string); !ok {
-		return nil, fmt.Errorf(`field "path" has unsupported value type: %v (%T)`, pathVal, pathVal)
-	} else { //nolint:revive // variable chaining makes this uglier vis-a-vis indent-error-flow
-		t.Path = path
-		delete(data, "path")
+	if err := parseTomlKey(data, "path", &t.Path); err != nil {
+		return nil, err
 	}
 	if len(data) > 0 {
 		return nil, fmt.Errorf("unsupported fields: %v", slices.Collect(maps.Keys(data)))
