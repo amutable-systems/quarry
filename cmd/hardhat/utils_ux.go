@@ -78,13 +78,13 @@ func withRepoFlag(cmd *cli.Command) *cli.Command {
 		if err != nil {
 			return nil, fmt.Errorf("open repo metadata store: %w", err)
 		}
-		defer funchelpers.CloseOnError(Err, repoStore)
+		defer funchelpers.CloseOnError(&Err, repoStore)
 
 		repo, err := tufrepo.Open(repoStore)
 		if err != nil {
 			return nil, fmt.Errorf("wrap repo metadata store: %w", err)
 		}
-		defer funchelpers.CloseOnError(Err, repo)
+		defer funchelpers.CloseOnError(&Err, repo)
 
 		ctx = context.WithValue(ctx, repoCtxKey, repo)
 		return ctx, err

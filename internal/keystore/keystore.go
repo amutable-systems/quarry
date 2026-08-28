@@ -291,7 +291,7 @@ func OpenStore(dirPath string) (_ *Store, Err error) {
 		return nil, fmt.Errorf("failed to open store %q: %w", dirPath, err)
 	}
 	// TODO: Should we actually do this...?
-	defer funchelpers.CloseOnError(Err, storeDir)
+	defer funchelpers.CloseOnError(&Err, storeDir)
 
 	return &Store{storeDir: storeDir}, nil
 }
@@ -305,7 +305,7 @@ func StoreFromFd(dirFd *os.File) (_ *Store, Err error) {
 		return nil, fmt.Errorf("failed to convert store dirfd to pathrs root: %w", err)
 	}
 	// TODO: Should we actually do this...?
-	defer funchelpers.CloseOnError(Err, clonedFd)
+	defer funchelpers.CloseOnError(&Err, clonedFd)
 
 	return &Store{storeDir: clonedFd}, nil
 }

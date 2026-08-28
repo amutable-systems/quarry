@@ -56,7 +56,7 @@ func (repo *localRepository) GetBlob(_ context.Context, filename string, opts ..
 	if err != nil {
 		return nil, nil, err
 	}
-	defer funchelpers.CloseOnError(Err, file)
+	defer funchelpers.CloseOnError(&Err, file)
 
 	meta, err := fileMeta(file)
 	if err != nil {

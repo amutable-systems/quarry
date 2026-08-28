@@ -23,6 +23,7 @@ package funchelpers
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 
@@ -50,8 +51,8 @@ import (
 //			return err
 //		}
 //		defer func() {
-//			if err := f.Close(); err != nil && Err == nil {
-//				Err = err
+//			if err := f.Close(); err != nil {
+//				Err = errors.Join(Err, err)
 //			}
 //		}
 //		return nil
@@ -59,8 +60,11 @@ import (
 func VerifyError(Err *error, fn func() error) {
 	assert.Assert(Err != nil,
 		"VerifyError must be called with non-nil Err slot") // programmer error
-	if err := fn(); err != nil && *Err == nil {
-		*Err = err
+	if err := fn(); err != nil {
+		// If *Err == nil, errors.Join(*Err, err) is still indistinguishable
+		// from err itself because it's special-cased in (*joinError).Error().
+		*Err = errors.Join(*Err,
+			fmt.Errorf("deferred error verification failed: %w", err))
 	}
 }
 
