@@ -104,12 +104,12 @@ func TestParseConfig_RootTrust_Invalid(t *testing.T) {
 		{
 			name:      "InlineTableMissingType",
 			rootTrust: `root_trust = { path = "/etc/root.json" }`,
-			wantErr:   `must contain "type" field`,
+			wantErr:   `missing required field "type"`,
 		},
 		{
 			name:      "InlineTableNonStringType",
 			rootTrust: `root_trust = { type = 42 }`,
-			wantErr:   `"type" must be string`,
+			wantErr:   `"type" has incorrect value type`,
 		},
 		{
 			name:      "InlineTableUnknownType",

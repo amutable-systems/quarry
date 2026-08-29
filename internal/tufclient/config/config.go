@@ -76,6 +76,21 @@ type tomlRootTrust struct {
 	RootTrustSource
 }
 
+// parseTomlKey takes the value from the map with the given key, parses it into
+// the given slot, and drops it from the original map. This is quite handy for
+// detecting unsupported fields in an ergonomic way when parsing TOML maps.
+func parseTomlKey[T any](data map[string]any, key string, slot *T) error {
+	if valAny, ok := data[key]; !ok {
+		return fmt.Errorf("missing required field %q", key)
+	} else if val, ok := valAny.(T); !ok {
+		return fmt.Errorf("field %q has incorrect value type: %v (%T) is not a %T", key, valAny, valAny, *new(T))
+	} else { //nolint:revive // variable chaining makes this uglier vis-a-vis indent-error-flow
+		*slot = val
+		delete(data, key)
+		return nil
+	}
+}
+
 // errWrongType is a sentinel error returned from [parseTomlRootTrust] if the
 // generic type does not match the type of the TOML object.
 var errWrongType = errors.New("[internal error] wrong type")
@@ -101,23 +116,22 @@ func parseTomlRootTrust[T RootTrustSource](data any) (RootTrustSource, error) {
 	}
 
 	if table, ok := data.(map[string]any); ok {
-		if nameVal, ok := table["type"]; !ok {
-			return nil, fmt.Errorf(`invalid table value: must contain "type" field`)
-		} else if name, ok := nameVal.(string); !ok {
-			return nil, fmt.Errorf(`invalid table value: "type" must be string not %v (%T)`, nameVal, nameVal)
-		} else if name != trustType {
-			// Not valid for this type.
-			return nil, errWrongType
-		}
-
 		// We need to make a shallow copy of the table because toml.Decoder
 		// internally will loop through the map after UnmarshalTOML is called
 		// to decide which keys were undecoded and so modifying the key will
 		// result in those keys being left marked as undecoded.
 		table = maps.Clone(table)
 
+		var gotType string
+		if err := parseTomlKey(table, "type", &gotType); err != nil {
+			return nil, err
+		}
+		if gotType != trustType {
+			// Not valid for this type.
+			return nil, errWrongType
+		}
+
 		// Let the RootTrustSource parse the rest of the options.
-		delete(table, "type") // strip to avoid errors in fromTomlMap
 		rootTrust, err := rootTrust.fromTomlMap(table)
 		if err != nil {
 			return nil, fmt.Errorf("root trust %q could not be parsed: %w", trustType, err)
@@ -173,18 +187,6 @@ func (t *tomlRootTrust) Expand(exp *expand.Expansions) error {
 	// pointer (and cannot be).
 	t.RootTrustSource = newRootTrust
 	return nil
-}
-
-func parseTomlKey[T any](data map[string]any, key string, slot *T) error {
-	if valAny, ok := data[key]; !ok {
-		return fmt.Errorf("missing required field %q", key)
-	} else if val, ok := valAny.(T); !ok {
-		return fmt.Errorf("field %q has incorrect value type: %v (%T) is not a %T", key, valAny, valAny, *new(T))
-	} else { //nolint:revive // variable chaining makes this uglier vis-a-vis indent-error-flow
-		*slot = val
-		delete(data, key)
-		return nil
-	}
 }
 
 // tofuRootTrust indicates that makeUpdater should fetch the root.json
