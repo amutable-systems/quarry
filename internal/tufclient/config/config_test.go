@@ -212,9 +212,64 @@ func TestParseConfig_OnlyVersion(t *testing.T) {
 }
 
 func TestParseConfig_VersionMissing(t *testing.T) {
-	_, err := Parse(strings.NewReader(""))
+	_, err := Parse(strings.NewReader(`
+[repo.example]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com"
+`))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUnsupportedVersion)
+}
+
+// Files with no toml content at all (such as a symlink to /dev/null used to
+// mask a drop-in, or a file containing only comments) are valid configurations
+// and are exempt from the config_version requirement.
+func TestParseConfig_Empty(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"NoBytes", ""},
+		{"Newlines", "\n\n\n"},
+		// Only toml-legal whitespace can appear here -- other whitespace
+		// characters (\v, \f) are control characters rejected by the decoder.
+		{"SpacesAndTabs", " \t \t"},
+		{"WindowsLineEndings", "\r\n\r\n"},
+		{"CommentOnly", "# this drop-in was disabled\n"},
+		{"CommentsAndWhitespace", " \t# c1\n\n# c2\r\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conf, err := Parse(strings.NewReader(tc.input))
+			require.NoError(t, err)
+			assert.Equal(t, int64(ConfigVersion), conf.Version)
+			assert.Empty(t, conf.Repos)
+		})
+	}
+}
+
+// Any toml content is enough to disqualify a file from the empty exemption,
+// so it must declare a config_version like any other non-empty fragment. The
+// Undecoded* cases assert that [toml.MetaData.Keys] also counts keys that
+// nothing decodes into (i.e., ones [toml.MetaData.Undecoded] would report) --
+// if it didn't, these files would be misdetected as empty and parse without
+// any error at all.
+func TestParseConfig_ContentIsNotEmpty(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"BareTable", "[repo.example]\n"},
+		{"UndecodedKey", "no_such_key = 1\n"},
+		{"UndecodedBareTable", "[no_such_table]\n"},
+		{"UndecodedTableKey", "[no_such_table]\nno_such_key = \"x\"\n"},
+		{"CommentAndUndecodedKey", "# comment\nno_such_key = 1\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse(strings.NewReader(tc.input))
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrUnsupportedVersion)
+		})
+	}
 }
 
 func TestParseConfig_VersionUnsupported(t *testing.T) {
@@ -478,7 +533,7 @@ func mergeFragments(t *testing.T, fragments ...string) *Config {
 	for _, fragment := range fragments {
 		parsed, err := parseToml(strings.NewReader(fragment))
 		require.NoError(t, err)
-		cfg.merge(parsed)
+		require.NoError(t, cfg.merge(parsed))
 	}
 	require.NoError(t, cfg.expandAndValidate())
 	return cfg
@@ -535,6 +590,23 @@ data_root_url = "https://data.example"
 	assert.Equal(t, "https://data.example", repo.DataRootURL.String())
 }
 
+// Empty fragments (a drop-in masked with a /dev/null symlink, or one
+// containing only comments) must merge as no-ops regardless of where they
+// appear in the merge order.
+func TestMerge_EmptyFragmentIsNoop(t *testing.T) {
+	cfg := mergeFragments(t, "", `
+config_version = 1
+[repo."example.com/base-os"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://mirror.example"
+`, "\n \t\n", "# this drop-in was disabled\n")
+
+	require.Len(t, cfg.Repos, 1)
+	repo := cfg.Repos["example.com/base-os"]
+	require.NotNil(t, repo)
+	assert.Equal(t, "https://mirror.example", repo.MetaRootURL.String())
+}
+
 func TestParseToml_RepoNameExpandedBeforeMerge(t *testing.T) {
 	main, err := parseToml(strings.NewReader(`
 config_version = 1
@@ -559,8 +631,8 @@ meta_root_url = "https://dropin.example"
 	require.NoError(t, err)
 
 	cfg := &Config{Version: ConfigVersion, Repos: make(map[string]*Repository)}
-	cfg.merge(main)
-	cfg.merge(dropIn)
+	require.NoError(t, cfg.merge(main))
+	require.NoError(t, cfg.merge(dropIn))
 	require.NoError(t, cfg.expandAndValidate())
 
 	require.Len(t, cfg.Repos, 1, "a drop-in naming the expanded repo must not add a second one")

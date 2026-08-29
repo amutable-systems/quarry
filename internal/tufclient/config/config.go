@@ -385,7 +385,16 @@ func parseToml(rdr io.Reader) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
-	// Every fragment declares its own version, so each can be upgraded on its own.
+	// Files with no TOML content at all (blank or comment-only, such as a
+	// drop-in masked with a /dev/null symlink in a higher-priority prefix) are
+	// exempt from the config_version requirement.
+	if len(meta.Keys()) == 0 {
+		// Pretend it was an empty config with just config_version.
+		return &Config{Version: ConfigVersion}, nil
+	}
+	// Because drop-ins have different lifecycles and are managed by different
+	// entities, every non-empty fragment declares its own version, so each can
+	// be upgraded on its own.
 	if v := cfg.Version; v != ConfigVersion {
 		return nil, fmt.Errorf("%w %d: only version %d is supported", ErrUnsupportedVersion, v, ConfigVersion)
 	}
