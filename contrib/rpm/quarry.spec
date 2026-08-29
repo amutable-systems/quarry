@@ -141,8 +141,10 @@ just install-sysupdate
 %{_bindir}/%{name}-client
 %{_unitdir}/%{name}-client*
 %dir %{_datarootdir}/amutable/%{name}
+%dir %{_prefix}/lib/%{name}-client
+%{_prefix}/lib/%{name}-client/config.toml
+%dir %{_prefix}/lib/%{name}-client/config.toml.d
 %dir %{_sysconfdir}/%{name}-client
-%config(noreplace) %{_sysconfdir}/%{name}-client/config.toml
 %dir %{_sysconfdir}/%{name}-client/config.toml.d
 %if %{without http}
 %attr(-,quarry,quarry) %dir %{_sharedstatedir}/%{name}-client
