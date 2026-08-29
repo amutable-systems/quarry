@@ -1,0 +1,78 @@
+# Copyright (C) 2026 Amutable GmbH
+
+# The quarry-client configuration file is <prefix>/quarry-client/config.toml,
+# looked up in the UAPI.6 prefixes /usr/lib, /usr/local/lib, /run and /etc in
+# that order of increasing priority. Only the copy in the highest-priority
+# prefix that has one is read.
+#
+# Drop-ins in <prefix>/quarry-client/config.toml.d/*.toml are then applied on
+# top of it in file name order, regardless of the prefix they come from,
+# replacing only the settings they specify. Each drop-in has to declare its own
+# config_version. An empty meta_root_url or data_root_url resets it to the
+# value derived from the repository name.
+
+# Defines the version of this config fragment. Every non-empty drop-in must
+# specify its own version, and currently the only supported value is 1.
+config_version = 1
+
+# Indicates where the latest metadata cache for quarry-client should be stored.
+# This should be on non-volatile media as TUF relies on previously-fetched
+# metadata to implement rollback attack prevention.
+cache_dir = "/var/lib/quarry-client/latest-metadata"
+
+## Repositories are defined as follows. Each repository has a unique name,
+## which need not be related to the URLs used to fetch the repository.
+##
+## Most fields support expansion of the following %-style expandos:
+##
+##  %m   expands to the per-machine repo (blinded by the Amutable app-specific
+##       UUID a-la "systemd-id128 machine-id -a ...").
+##  %R   expands to the repository name in a [repo."<name>"] definition.
+##  %eX  expands %X but the resulting value is then escaped in the same manner
+##       as "systemd-escape -p ...".
+##
+#[repo."repo.example.com/foo-bar/%m"]
+
+## When fetching target files or iterating over all target files, repositories
+## are iterated over in lexicographic order and the first instance of a target
+## file with a given name is always returned (meaning any later repository
+## entries for the same-named file are essentially clobbered).
+##
+## This can lead to unfavourable behaviour, and so order_index allows you to
+## control the iteration order in a slightly crude way. All repositories have a
+## default order_index of 100, and smaller values are sorted earlier and thus
+## will be iterated over earlier. order_index <= 0 values are also valid.
+##
+#order_index = 100
+
+## This is the initial source of the "root.json", which is trusted absolutely
+## and all later operations base their trust on this key information. This
+## value is only used for the initial fetch of the repository, after which only
+## the "root.json" stored in cache_dir is trusted (and key rotation is handled
+## via TUF-specified mechanisms).
+##
+## The following types are supported:
+##
+##  "insecure-tofu"  fetches 1.root.json from the TUF repository and trusts it
+##                   implicitly. This is the least secure mode and is *NOT
+##                   RECOMMENDED* outside of testing purposes.
+##  "bundled"        takes a "path" key which points to a file on disk that
+##                   contains the contents of "root.json". This is recommended
+##                   for repo definitions shipped as part of an OS image.
+##  "inline"         takes a "root.json" key that contains the literal string
+##                   value of the "root.json" to use. This is recommended for
+##                   repo definitions generated dynamically and stored as
+##                   drop-ins in /etc.
+##
+## This is a required field for all repo.* entries.
+##
+#root_trust = "insecure-tofu" # shorthand for { type = "insecure-tofu" }
+#root_trust = { type = "bundled", path = "/usr/lib/path-to-key/%eR.root.json" }
+#root_trust = { type = "inline", "root.json" = "{...}" }
+
+## By default the repository is assumed to be hosted at the web address given by
+## the repository name (with the TUF metadata being stored at the root and all
+## target files stored in a "targets" subdirectory). However, this can be
+## overridden by setting the following two settings.
+#meta_root_url = "https://tufmetadata.example.com/tuf/%m"
+#data_root_url = "https://cloud-storage.example.com/repo/%m/foobar"

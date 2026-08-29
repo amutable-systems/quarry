@@ -144,6 +144,7 @@ just install-sysupdate
 %dir %{_prefix}/lib/%{name}-client
 %{_prefix}/lib/%{name}-client/config.toml
 %dir %{_prefix}/lib/%{name}-client/config.toml.d
+%{_prefix}/lib/%{name}-client/config.toml.d/*.toml
 %dir %{_sysconfdir}/%{name}-client
 %dir %{_sysconfdir}/%{name}-client/config.toml.d
 %if %{without http}

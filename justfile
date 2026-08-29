@@ -79,7 +79,12 @@ install-client-config:
 	install -dm0755 \
 		{{destdir}}{{vendorconfdir}}/quarry-client{,/config.toml.d} \
 		{{destdir}}{{sysconfdir}}/quarry-client{,/config.toml.d}
-	install -m0644 ./contrib/quarry-client.toml {{destdir}}{{vendorconfdir}}/quarry-client/config.toml
+	cp -rv ./contrib/quarry-client/* \
+		-t {{destdir}}{{vendorconfdir}}/quarry-client/
+	find {{destdir}}{{vendorconfdir}}/quarry-client -type d -print0 | \
+		xargs -0 chmod 0755
+	find {{destdir}}{{vendorconfdir}}/quarry-client -type f -print0 | \
+		xargs -0 chmod 0644
 
 [private]
 build cmd tags="":
