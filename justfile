@@ -76,6 +76,7 @@ install-client-http-service:
 
 install-client-config:
 	install -Dm0644 ./contrib/quarry-client.toml {{destdir}}{{sysconfdir}}/quarry-client/config.toml
+	install -dm0755 {{destdir}}{{sysconfdir}}/quarry-client/config.toml.d
 
 [private]
 build cmd tags="":

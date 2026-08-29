@@ -3,6 +3,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -104,12 +105,12 @@ func TestParseConfig_RootTrust_Invalid(t *testing.T) {
 		{
 			name:      "InlineTableMissingType",
 			rootTrust: `root_trust = { path = "/etc/root.json" }`,
-			wantErr:   `must contain "type" field`,
+			wantErr:   `missing required field "type"`,
 		},
 		{
 			name:      "InlineTableNonStringType",
 			rootTrust: `root_trust = { type = 42 }`,
-			wantErr:   `"type" must be string`,
+			wantErr:   `"type" has incorrect value type`,
 		},
 		{
 			name:      "InlineTableUnknownType",
@@ -211,9 +212,64 @@ func TestParseConfig_OnlyVersion(t *testing.T) {
 }
 
 func TestParseConfig_VersionMissing(t *testing.T) {
-	_, err := Parse(strings.NewReader(""))
+	_, err := Parse(strings.NewReader(`
+[repo.example]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com"
+`))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUnsupportedVersion)
+}
+
+// Files with no toml content at all (such as a symlink to /dev/null used to
+// mask a drop-in, or a file containing only comments) are valid configurations
+// and are exempt from the config_version requirement.
+func TestParseConfig_Empty(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"NoBytes", ""},
+		{"Newlines", "\n\n\n"},
+		// Only toml-legal whitespace can appear here -- other whitespace
+		// characters (\v, \f) are control characters rejected by the decoder.
+		{"SpacesAndTabs", " \t \t"},
+		{"WindowsLineEndings", "\r\n\r\n"},
+		{"CommentOnly", "# this drop-in was disabled\n"},
+		{"CommentsAndWhitespace", " \t# c1\n\n# c2\r\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conf, err := Parse(strings.NewReader(tc.input))
+			require.NoError(t, err)
+			assert.Equal(t, int64(ConfigVersion), conf.Version)
+			assert.Empty(t, conf.Repos)
+		})
+	}
+}
+
+// Any toml content is enough to disqualify a file from the empty exemption,
+// so it must declare a config_version like any other non-empty fragment. The
+// Undecoded* cases assert that [toml.MetaData.Keys] also counts keys that
+// nothing decodes into (i.e., ones [toml.MetaData.Undecoded] would report) --
+// if it didn't, these files would be misdetected as empty and parse without
+// any error at all.
+func TestParseConfig_ContentIsNotEmpty(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"BareTable", "[repo.example]\n"},
+		{"UndecodedKey", "no_such_key = 1\n"},
+		{"UndecodedBareTable", "[no_such_table]\n"},
+		{"UndecodedTableKey", "[no_such_table]\nno_such_key = \"x\"\n"},
+		{"CommentAndUndecodedKey", "# comment\nno_such_key = 1\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse(strings.NewReader(tc.input))
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrUnsupportedVersion)
+		})
+	}
 }
 
 func TestParseConfig_VersionUnsupported(t *testing.T) {
@@ -469,6 +525,121 @@ data_root_url = "https://example.com/%m/data"
 
 	assert.Equal(t, "https://example.com/"+id, repo.MetaRootURL.String())
 	assert.Equal(t, "https://example.com/"+id+"/data", repo.DataRootURL.String())
+}
+
+func mergeFragments(t *testing.T, fragments ...string) *Config {
+	t.Helper()
+	cfg := &Config{Version: ConfigVersion, Repos: make(map[string]*Repository)}
+	for _, fragment := range fragments {
+		parsed, err := parseToml(strings.NewReader(fragment))
+		require.NoError(t, err)
+		require.NoError(t, cfg.merge(parsed))
+	}
+	require.NoError(t, cfg.expandAndValidate())
+	return cfg
+}
+
+func TestMerge_EmptyURLResetsToDefault(t *testing.T) {
+	cfg := mergeFragments(t, `
+config_version = 1
+[repo."example.com/base-os"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://mirror.example"
+data_root_url = "https://mirror.example/data"
+`, `
+config_version = 1
+[repo."example.com/base-os"]
+meta_root_url = ""
+data_root_url = ""
+`)
+
+	repo := cfg.Repos["example.com/base-os"]
+	require.NotNil(t, repo)
+	assert.Equal(t, "https://example.com/base-os", repo.MetaRootURL.String())
+	assert.Equal(t, "https://example.com/base-os/targets", repo.DataRootURL.String())
+}
+
+func TestMerge_EmptyURLResetsOnFirstDefinition(t *testing.T) {
+	cfg := mergeFragments(t, `
+config_version = 1
+[repo."example.com/base-os"]
+root_trust = "insecure-tofu"
+meta_root_url = ""
+`)
+
+	repo := cfg.Repos["example.com/base-os"]
+	require.NotNil(t, repo)
+	assert.Equal(t, "https://example.com/base-os", repo.MetaRootURL.String())
+}
+
+func TestMerge_UnsetURLKeepsOverride(t *testing.T) {
+	cfg := mergeFragments(t, `
+config_version = 1
+[repo."example.com/base-os"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://mirror.example"
+`, `
+config_version = 1
+[repo."example.com/base-os"]
+data_root_url = "https://data.example"
+`)
+
+	repo := cfg.Repos["example.com/base-os"]
+	require.NotNil(t, repo)
+	assert.Equal(t, "https://mirror.example", repo.MetaRootURL.String())
+	assert.Equal(t, "https://data.example", repo.DataRootURL.String())
+}
+
+// Empty fragments (a drop-in masked with a /dev/null symlink, or one
+// containing only comments) must merge as no-ops regardless of where they
+// appear in the merge order.
+func TestMerge_EmptyFragmentIsNoop(t *testing.T) {
+	cfg := mergeFragments(t, "", `
+config_version = 1
+[repo."example.com/base-os"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://mirror.example"
+`, "\n \t\n", "# this drop-in was disabled\n")
+
+	require.Len(t, cfg.Repos, 1)
+	repo := cfg.Repos["example.com/base-os"]
+	require.NotNil(t, repo)
+	assert.Equal(t, "https://mirror.example", repo.MetaRootURL.String())
+}
+
+func TestParseToml_RepoNameExpandedBeforeMerge(t *testing.T) {
+	main, err := parseToml(strings.NewReader(`
+config_version = 1
+[repo."a/%m"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://main.example"
+`))
+	require.NoError(t, err)
+	require.Len(t, main.Repos, 1)
+
+	var name string
+	for n := range main.Repos {
+		name = n
+	}
+	require.NotContains(t, name, "%")
+
+	dropIn, err := parseToml(strings.NewReader(fmt.Sprintf(`
+config_version = 1
+[repo.%q]
+meta_root_url = "https://dropin.example"
+`, name)))
+	require.NoError(t, err)
+
+	cfg := &Config{Version: ConfigVersion, Repos: make(map[string]*Repository)}
+	require.NoError(t, cfg.merge(main))
+	require.NoError(t, cfg.merge(dropIn))
+	require.NoError(t, cfg.expandAndValidate())
+
+	require.Len(t, cfg.Repos, 1, "a drop-in naming the expanded repo must not add a second one")
+	repo := cfg.Repos[name]
+	require.NotNil(t, repo)
+	assert.Equal(t, "https://dropin.example", repo.MetaRootURL.String())
+	assert.Equal(t, "insecure-tofu", repo.RootTrust.Type())
 }
 
 func TestParseConfig_Expand_URL(t *testing.T) {

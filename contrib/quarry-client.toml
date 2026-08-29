@@ -1,9 +1,18 @@
 # Copyright (C) 2026 Amutable GmbH
 
+# The quarry-client configuration file is <prefix>/quarry-client/config.toml,
+# looked up in the UAPI.6 prefixes /usr/lib, /usr/local/lib, /run and /etc in
+# that order of increasing priority. Only the copy in the highest-priority
+# prefix that has one is read.
+#
+# Drop-ins in <prefix>/quarry-client/config.toml.d/*.toml are then applied on
+# top of it in file name order, regardless of the prefix they come from,
+# replacing only the settings they specify. Each drop-in has to declare its own
+# config_version. An empty meta_root_url or data_root_url resets it to the
+# value derived from the repository name.
+
 config_version = 1
 cache_dir = "/var/lib/quarry-client/latest-metadata"
-# TODO: Implement drop-ins (<prefix>/quarry-client/config.toml.d/*.toml).
-
 # Official AmutableOS update repository (nightly stream).
 [repo."updates.example.com/base-os/nightly"]
 # Use the bundled root.json in the base OS image as the root of trust.

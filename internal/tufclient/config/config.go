@@ -18,7 +18,6 @@ import (
 	"slices"
 
 	"github.com/BurntSushi/toml"
-	"golang.org/x/sys/unix"
 
 	"go.amutable.dev/quarry/internal/expand"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
@@ -28,24 +27,6 @@ import (
 const (
 	MaxRootBytes = 512_000 // 512k
 )
-
-var defaultConfigCandidates = [...]string{
-	"/etc/quarry-client/config.toml",
-	"/run/quarry-client/config.toml",
-	"/usr/local/lib/quarry-client/config.toml",
-	"/usr/lib/quarry-client/config.toml",
-}
-
-// DefaultConfigPath returns the recommended default config path.
-func DefaultConfigPath() string {
-	for _, path := range defaultConfigCandidates {
-		if err := unix.Access(path, unix.F_OK); err == nil {
-			return path
-		}
-	}
-	// If none of the candidates are available, just show the first one.
-	return defaultConfigCandidates[0]
-}
 
 // RootTrustSource represents a source of trust for the initial state of a
 // client's locally cached root.json.
@@ -76,6 +57,21 @@ type tomlRootTrust struct {
 	RootTrustSource
 }
 
+// parseTomlKey takes the value from the map with the given key, parses it into
+// the given slot, and drops it from the original map. This is quite handy for
+// detecting unsupported fields in an ergonomic way when parsing TOML maps.
+func parseTomlKey[T any](data map[string]any, key string, slot *T) error {
+	if valAny, ok := data[key]; !ok {
+		return fmt.Errorf("missing required field %q", key)
+	} else if val, ok := valAny.(T); !ok {
+		return fmt.Errorf("field %q has incorrect value type: %v (%T) is not a %T", key, valAny, valAny, *new(T))
+	} else { //nolint:revive // variable chaining makes this uglier vis-a-vis indent-error-flow
+		*slot = val
+		delete(data, key)
+		return nil
+	}
+}
+
 // errWrongType is a sentinel error returned from [parseTomlRootTrust] if the
 // generic type does not match the type of the TOML object.
 var errWrongType = errors.New("[internal error] wrong type")
@@ -101,23 +97,22 @@ func parseTomlRootTrust[T RootTrustSource](data any) (RootTrustSource, error) {
 	}
 
 	if table, ok := data.(map[string]any); ok {
-		if nameVal, ok := table["type"]; !ok {
-			return nil, fmt.Errorf(`invalid table value: must contain "type" field`)
-		} else if name, ok := nameVal.(string); !ok {
-			return nil, fmt.Errorf(`invalid table value: "type" must be string not %v (%T)`, nameVal, nameVal)
-		} else if name != trustType {
-			// Not valid for this type.
-			return nil, errWrongType
-		}
-
 		// We need to make a shallow copy of the table because toml.Decoder
 		// internally will loop through the map after UnmarshalTOML is called
 		// to decide which keys were undecoded and so modifying the key will
 		// result in those keys being left marked as undecoded.
 		table = maps.Clone(table)
 
+		var gotType string
+		if err := parseTomlKey(table, "type", &gotType); err != nil {
+			return nil, err
+		}
+		if gotType != trustType {
+			// Not valid for this type.
+			return nil, errWrongType
+		}
+
 		// Let the RootTrustSource parse the rest of the options.
-		delete(table, "type") // strip to avoid errors in fromTomlMap
 		rootTrust, err := rootTrust.fromTomlMap(table)
 		if err != nil {
 			return nil, fmt.Errorf("root trust %q could not be parsed: %w", trustType, err)
@@ -173,18 +168,6 @@ func (t *tomlRootTrust) Expand(exp *expand.Expansions) error {
 	// pointer (and cannot be).
 	t.RootTrustSource = newRootTrust
 	return nil
-}
-
-func parseTomlKey[T any](data map[string]any, key string, slot *T) error {
-	if valAny, ok := data[key]; !ok {
-		return fmt.Errorf("missing required field %q", key)
-	} else if val, ok := valAny.(T); !ok {
-		return fmt.Errorf("field %q has incorrect value type: %v (%T) is not a %T", key, valAny, valAny, *new(T))
-	} else { //nolint:revive // variable chaining makes this uglier vis-a-vis indent-error-flow
-		*slot = val
-		delete(data, key)
-		return nil
-	}
 }
 
 // tofuRootTrust indicates that makeUpdater should fetch the root.json
@@ -382,11 +365,36 @@ var ErrUnsupportedVersion = errors.New("unsupported config_version")
 
 // Parse parses the TOML form of [Config].
 func Parse(rdr io.Reader) (*Config, error) {
+	cfg, err := parseToml(rdr)
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.expandAndValidate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// parseToml parses a single configuration fragment. The repository names are
+// expanded here so that fragments merge on the final name, the rest of the
+// validation and %-expansion is left to [Config.expandAndValidate], as it
+// needs the merged configuration.
+func parseToml(rdr io.Reader) (*Config, error) {
 	var cfg Config
 	meta, err := toml.NewDecoder(rdr).Decode(&cfg)
 	if err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
+	// Files with no TOML content at all (blank or comment-only, such as a
+	// drop-in masked with a /dev/null symlink in a higher-priority prefix) are
+	// exempt from the config_version requirement.
+	if len(meta.Keys()) == 0 {
+		// Pretend it was an empty config with just config_version.
+		return &Config{Version: ConfigVersion}, nil
+	}
+	// Because drop-ins have different lifecycles and are managed by different
+	// entities, every non-empty fragment declares its own version, so each can
+	// be upgraded on its own.
 	if v := cfg.Version; v != ConfigVersion {
 		return nil, fmt.Errorf("%w %d: only version %d is supported", ErrUnsupportedVersion, v, ConfigVersion)
 	}
@@ -395,38 +403,47 @@ func Parse(rdr io.Reader) (*Config, error) {
 	}
 
 	expander := expand.NewExpansions()
-
-	cfg.CacheDir, err = expander.ExpandString(cfg.CacheDir)
-	if err != nil {
-		return nil, fmt.Errorf("config cache_dir an invalid %%-expansion: %w", err)
-	}
-	if cfg.CacheDir != "" && !filepath.IsAbs(cfg.CacheDir) {
-		return nil, fmt.Errorf("config cache_dir invalid value: %q must be an absolute path", cfg.CacheDir)
-	}
-
-	repos := make(map[string]*Repository)
+	repos := make(map[string]*Repository, len(cfg.Repos))
 	for oldName, repo := range cfg.Repos {
-		var err error
 		repo.Name, err = expander.ExpandString(oldName)
 		if err != nil {
 			return nil, fmt.Errorf("repository %s has invalid %%-expansion: %w", oldName, err)
 		}
-		// Save with the updated repo name.
 		if _, ok := repos[repo.Name]; ok {
 			return nil, fmt.Errorf("repository %s clobbers existing repository %s", oldName, repo.Name)
 		}
 		repos[repo.Name] = repo
+	}
+	cfg.Repos = repos
+	return &cfg, nil
+}
 
+// expandAndValidate applies the %-expansions, fills in the URL fields derived
+// from the repository name, and validates the merged configuration.
+func (cfg *Config) expandAndValidate() error {
+	var err error
+
+	expander := expand.NewExpansions()
+
+	cfg.CacheDir, err = expander.ExpandString(cfg.CacheDir)
+	if err != nil {
+		return fmt.Errorf("config cache_dir an invalid %%-expansion: %w", err)
+	}
+	if cfg.CacheDir != "" && !filepath.IsAbs(cfg.CacheDir) {
+		return fmt.Errorf("config cache_dir invalid value: %q must be an absolute path", cfg.CacheDir)
+	}
+
+	for _, repo := range cfg.Repos {
 		// Add repo name expansion for repo config options URLs.
 		subExpander := expander.Clone().WithSource('R', func(_ *[]any) (string, error) {
 			return repo.Name, nil
 		})
 
 		if repo.RootTrust == nil {
-			return nil, fmt.Errorf("repository %s is missing root_trust specification", oldName)
+			return fmt.Errorf("repository %s is missing root_trust specification", repo.Name)
 		}
 		if err := repo.RootTrust.Expand(subExpander); err != nil {
-			return nil, fmt.Errorf("repository %s has invalid root_trust value: %w", oldName, err)
+			return fmt.Errorf("repository %s has invalid root_trust value: %w", repo.Name, err)
 		}
 
 		if repo.MetaRootURL == nil {
@@ -435,7 +452,7 @@ func Parse(rdr io.Reader) (*Config, error) {
 			repo.MetaRootURL = &tomlURL{rawString: "https://" + repo.Name}
 		}
 		if err := repo.MetaRootURL.Expand(subExpander); err != nil {
-			return nil, fmt.Errorf("repository %s has invalid meta_root_url value: %w", oldName, err)
+			return fmt.Errorf("repository %s has invalid meta_root_url value: %w", repo.Name, err)
 		}
 
 		if repo.DataRootURL == nil {
@@ -446,9 +463,8 @@ func Parse(rdr io.Reader) (*Config, error) {
 			repo.DataRootURL = &tomlURL{rawString: rootURL.String()}
 		}
 		if err := repo.DataRootURL.Expand(subExpander); err != nil {
-			return nil, fmt.Errorf("repository %s has invalid data_root_url value: %w", oldName, err)
+			return fmt.Errorf("repository %s has invalid data_root_url value: %w", repo.Name, err)
 		}
 	}
-	cfg.Repos = repos
-	return &cfg, nil
+	return nil
 }
