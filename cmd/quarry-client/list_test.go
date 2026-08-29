@@ -58,7 +58,8 @@ func testClient(t *testing.T) *tufclient.Client {
 	// name -- which for our subtests contains things like "%n".
 	cacheDir := strings.ReplaceAll(t.TempDir(), "%", "%%")
 	cfg, err := config.Parse(strings.NewReader(
-		"config_version = 1\ncache_dir = \"" + cacheDir + "\"\n"))
+		"config_version = 1\ncache_dir = \"" + cacheDir + "\"\n",
+	))
 	require.NoError(t, err)
 	client, err := tufclient.NewClient(t.Context(), cfg)
 	require.NoError(t, err)

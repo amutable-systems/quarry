@@ -168,7 +168,8 @@ func ensureBinary() {
 	}
 	sharedBinary.skip = fmt.Sprintf(
 		"no way to get a real systemd-hostnamed binary (set $%s or install docker/podman): %v",
-		BinaryEnv, errors.Join(errs...))
+		BinaryEnv, errors.Join(errs...),
+	)
 }
 
 // realBinary returns the path to a real systemd-hostnamed binary to test
