@@ -1,3 +1,5 @@
+//go:build insecure
+
 // Copyright (C) 2026 Amutable GmbH
 
 package xsysupdate
@@ -5,12 +7,9 @@ package xsysupdate
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +23,7 @@ import (
 	"gopkg.in/ini.v1"
 
 	"go.amutable.dev/quarry/internal/ctxext"
+	"go.amutable.dev/quarry/internal/testrepo"
 	"go.amutable.dev/quarry/internal/tufclient"
 	"go.amutable.dev/quarry/internal/tufclient/config"
 )
@@ -98,21 +98,13 @@ func initExt(ctx context.Context, t *testing.T) *TransferFileExtension {
 	return ext
 }
 
-// makeRepo goes through config.Parse because tomlURL is unexported.
-func makeRepo(t *testing.T, srv *httptest.Server, name string) *config.Repository {
+// makeRepo returns the [config.Repository] backed by the given test
+// repository server.
+func makeRepo(t *testing.T, srv *testrepo.Server, name string) *config.Repository {
 	t.Helper()
-	tomlText := fmt.Sprintf(`
-config_version = 1
-
-[repo.%[1]s]
-root_trust = "insecure-tofu"
-meta_root_url = "%[2]s/meta/"
-data_root_url = "%[2]s/data/"
-`, name, srv.URL)
-	cfg, err := config.Parse(strings.NewReader(tomlText))
-	require.NoError(t, err)
+	cfg := testrepo.Config(t, srv.ConfigBlock(name))
 	repo, ok := cfg.Repos[name]
-	require.True(t, ok, "config.Parse did not yield repository %q", name)
+	require.True(t, ok, "testrepo config did not yield repository %q", name)
 	return repo
 }
 
@@ -584,21 +576,6 @@ func TestApplyTarget_NotForUs(t *testing.T) {
 	assert.False(t, applied)
 }
 
-func applyTargetServer(t *testing.T, suffix string, body []byte) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, suffix) {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 func TestApplyTarget_FullFlow(t *testing.T) {
 	env, ctx := setupTestEnv(t)
 
@@ -612,10 +589,10 @@ MatchPattern=foo_@v.raw
 Type=partition
 MatchPattern=foo_@v
 `) + "\n")
-	sum := sha256.Sum256(body)
 
 	const targetPath = ".zzz-quarry-special/sysupdate.d/foo.transfer"
-	srv := applyTargetServer(t, "/"+targetPath, body)
+	srv := testrepo.New(t)
+	target := srv.WriteTarget(t, targetPath, bytes.NewReader(body))
 
 	proxyURL := "http://localhost:9999/"
 	ext := &TransferFileExtension{OverrideSourcePathURL: &proxyURL}
@@ -623,14 +600,9 @@ MatchPattern=foo_@v
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ext.Close() })
 
-	repo := makeRepo(t, srv, "testrepo")
 	info := &tufclient.TargetInfo{
-		TargetFiles: &tufmetadata.TargetFiles{
-			Path:   targetPath,
-			Length: int64(len(body)),
-			Hashes: tufmetadata.Hashes{"sha256": sum[:]},
-		},
-		Repo: repo,
+		TargetFiles: target,
+		Repo:        makeRepo(t, srv, "testrepo"),
 	}
 	applied, err := ext.ApplyTarget(ctx, info)
 	require.NoError(t, err)
@@ -652,24 +624,19 @@ func TestApplyTarget_NestedPath(t *testing.T) {
 	env, ctx := setupTestEnv(t)
 
 	body := []byte("dummy=value\n")
-	sum := sha256.Sum256(body)
 
 	const targetPath = ".zzz-quarry-special/sysupdate.d/foo.transfer.d/x.conf"
-	srv := applyTargetServer(t, "/"+targetPath, body)
+	srv := testrepo.New(t)
+	target := srv.WriteTarget(t, targetPath, bytes.NewReader(body))
 
 	ext := &TransferFileExtension{}
 	_, err := ext.Init(ctx)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ext.Close() })
 
-	repo := makeRepo(t, srv, "testrepo")
 	info := &tufclient.TargetInfo{
-		TargetFiles: &tufmetadata.TargetFiles{
-			Path:   targetPath,
-			Length: int64(len(body)),
-			Hashes: tufmetadata.Hashes{"sha256": sum[:]},
-		},
-		Repo: repo,
+		TargetFiles: target,
+		Repo:        makeRepo(t, srv, "testrepo"),
 	}
 	applied, err := ext.ApplyTarget(ctx, info)
 	require.NoError(t, err)

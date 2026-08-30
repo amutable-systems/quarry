@@ -1,14 +1,15 @@
+//go:build insecure
+
 // Copyright (C) 2026 Amutable GmbH
 
 package tufclient_test
 
 import (
+	"bytes"
 	"crypto/sha256"
-	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
+	"go.amutable.dev/quarry/internal/testrepo"
 	"go.amutable.dev/quarry/internal/tufclient"
 	"go.amutable.dev/quarry/internal/tufclient/config"
 	"go.amutable.dev/quarry/internal/tufext"
@@ -24,18 +26,37 @@ import (
 
 const targetPath = "foo/target.txt"
 
-// testRepo returns a [config.Repository] whose data_root_url is the given base
-// URL.
-func testRepo(t *testing.T, dataRootURL string) *config.Repository {
+// serverRepo returns the [config.Repository] for the given server.
+func serverRepo(t *testing.T, srv *testrepo.Server) *config.Repository {
 	t.Helper()
-	conf, err := config.Parse(strings.NewReader(fmt.Sprintf(`
-config_version = 1
-[repo.testrepo]
-root_trust = "insecure-tofu"
-data_root_url = %q
-`, dataRootURL)))
-	require.NoError(t, err)
-	return conf.Repos["testrepo"]
+	cfg := testrepo.Config(t, srv.ConfigBlock("testrepo"))
+	repo, ok := cfg.Repos["testrepo"]
+	require.True(t, ok, "config did not yield repository testrepo")
+	return repo
+}
+
+// targetURLPath returns the URL path the test target is fetched from.
+func targetURLPath(srv *testrepo.Server) string {
+	return strings.TrimPrefix(srv.DataRootURL(), srv.URL) + "/" + targetPath
+}
+
+// failOnFetch registers a handler for the test target's fetch URL that fails
+// the test if it receives any request at all. The exact-path pattern takes
+// precedence over the server's target file serving.
+func failOnFetch(t *testing.T, srv *testrepo.Server) {
+	t.Helper()
+	srv.Handle(targetURLPath(srv), http.HandlerFunc(func(wtr http.ResponseWriter, req *http.Request) {
+		t.Errorf("unexpected request to %s", req.URL)
+		http.NotFound(wtr, req)
+	}))
+}
+
+// serveStatus registers a handler for the given mux pattern that responds
+// with an empty body and the given status code.
+func serveStatus(srv *testrepo.Server, pattern string, status int) {
+	srv.Handle(pattern, http.HandlerFunc(func(wtr http.ResponseWriter, _ *http.Request) {
+		wtr.WriteHeader(status)
+	}))
 }
 
 // newTargetInfo returns a [tufclient.TargetInfo] whose length and hashes match
@@ -58,31 +79,6 @@ func newTargetInfo(repo *config.Repository, data []byte, ext func(*tufmetadata.T
 	}
 }
 
-// targetServer returns the base URL of an HTTP server that responds with the
-// given status and body for requests to the test target's path.
-func targetServer(t *testing.T, status int, body []byte) string {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/"+targetPath, r.URL.Path)
-		w.WriteHeader(status)
-		_, _ = w.Write(body)
-	}))
-	t.Cleanup(srv.Close)
-	return srv.URL
-}
-
-// unusedServer returns the base URL of an HTTP server that fails the test if
-// it receives any request at all.
-func unusedServer(t *testing.T) string {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("unexpected request to %s", r.URL)
-		http.NotFound(w, r)
-	}))
-	t.Cleanup(srv.Close)
-	return srv.URL
-}
-
 // fetchAll fetches the target and reads the entire stream, verifying the
 // Close error as required for [hardening.VerifiedReadCloser]-backed streams.
 func fetchAll(t *testing.T, info *tufclient.TargetInfo) []byte {
@@ -99,8 +95,9 @@ func fetchAll(t *testing.T, info *tufclient.TargetInfo) []byte {
 // the metadata itself without any network access.
 func TestTargetInfoFetchInlineData(t *testing.T) {
 	data := []byte("inline target file contents")
-	repo := testRepo(t, unusedServer(t))
-	info := newTargetInfo(repo, data, func(target *tufmetadata.TargetFiles) {
+	srv := testrepo.New(t)
+	failOnFetch(t, srv)
+	info := newTargetInfo(serverRepo(t, srv), data, func(target *tufmetadata.TargetFiles) {
 		tufext.TargetFilesExt(target).WithInlineData(data)
 	})
 
@@ -111,20 +108,22 @@ func TestTargetInfoFetchInlineData(t *testing.T) {
 // from the candidate URLs.
 func TestTargetInfoFetchInlineDataCorruptFallback(t *testing.T) {
 	data := []byte("the genuine data")
-	repo := testRepo(t, targetServer(t, http.StatusOK, data))
-	info := newTargetInfo(repo, data, func(target *tufmetadata.TargetFiles) {
+	srv := testrepo.New(t)
+	srv.WriteTarget(t, targetPath, bytes.NewReader(data))
+	info := newTargetInfo(serverRepo(t, srv), data, func(target *tufmetadata.TargetFiles) {
 		tufext.TargetFilesExt(target).WithInlineData([]byte("the corrupt data"))
 	})
 
 	assert.Equal(t, data, fetchAll(t, info))
 }
 
-// If the inline data is invalid and no candidate URL has the target either, a
-// wrapped [fs.ErrNotExist] is returned.
+// If the inline data is invalid and no candidate URL has the target either
+// (the target file was never written, so all fetches 404), a wrapped
+// [fs.ErrNotExist] is returned.
 func TestTargetInfoFetchInlineDataCorruptNotFound(t *testing.T) {
 	data := []byte("the genuine data")
-	repo := testRepo(t, targetServer(t, http.StatusNotFound, nil))
-	info := newTargetInfo(repo, data, func(target *tufmetadata.TargetFiles) {
+	srv := testrepo.New(t)
+	info := newTargetInfo(serverRepo(t, srv), data, func(target *tufmetadata.TargetFiles) {
 		tufext.TargetFilesExt(target).WithInlineData([]byte("the corrupt data"))
 	})
 
@@ -136,10 +135,12 @@ func TestTargetInfoFetchInlineDataCorruptNotFound(t *testing.T) {
 // URL before giving up.
 func TestTargetInfoFetchBadURLFallback(t *testing.T) {
 	data := []byte("the genuine data")
-	repo := testRepo(t, targetServer(t, http.StatusOK, data))
-	overrideURL, err := url.Parse(targetServer(t, http.StatusInternalServerError, nil) + "/" + targetPath)
+	srv := testrepo.New(t)
+	srv.WriteTarget(t, targetPath, bytes.NewReader(data))
+	serveStatus(srv, "/error/", http.StatusInternalServerError)
+	overrideURL, err := url.Parse(srv.URL + "/error/" + targetPath)
 	require.NoError(t, err)
-	info := newTargetInfo(repo, data, func(target *tufmetadata.TargetFiles) {
+	info := newTargetInfo(serverRepo(t, srv), data, func(target *tufmetadata.TargetFiles) {
 		tufext.TargetFilesExt(target).WithOverrideURL(overrideURL)
 	})
 
@@ -150,8 +151,11 @@ func TestTargetInfoFetchBadURLFallback(t *testing.T) {
 // [fs.ErrNotExist] is returned.
 func TestTargetInfoFetchAllURLsFail(t *testing.T) {
 	data := []byte("the genuine data")
-	repo := testRepo(t, targetServer(t, http.StatusInternalServerError, nil))
-	info := newTargetInfo(repo, data, nil)
+	srv := testrepo.New(t)
+	// The exact-path pattern overrides the target file serving for the test
+	// target, so the data root fails with a non-404 error.
+	serveStatus(srv, targetURLPath(srv), http.StatusInternalServerError)
+	info := newTargetInfo(serverRepo(t, srv), data, nil)
 
 	_, err := info.Fetch(t.Context())
 	require.ErrorIs(t, err, fs.ErrNotExist)
