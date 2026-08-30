@@ -1,13 +1,15 @@
+//go:build insecure
+
 // Copyright (C) 2026 Amutable GmbH
 
 package xsysupdate
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -18,6 +20,7 @@ import (
 	service "snai.pe/go-varlink/org.varlink.service"
 
 	"go.amutable.dev/quarry/internal/hostnamed/hostnamedtest"
+	"go.amutable.dev/quarry/internal/testrepo"
 	"go.amutable.dev/quarry/internal/tufclient"
 	"go.amutable.dev/quarry/internal/tufext"
 )
@@ -69,35 +72,36 @@ func TestTagsAllowedTagName(t *testing.T) {
 	}
 }
 
+// targetURLPath returns the URL path the given target is fetched from.
+func targetURLPath(srv *testrepo.Server, targetPath string) string {
+	return strings.TrimPrefix(srv.DataRootURL(), srv.URL) + "/" + targetPath
+}
+
 // makeTagTargetInfo builds a fetchable TargetInfo for a machine tag target
 // file with the given contents.
 func makeTagTargetInfo(t *testing.T, repoName, tagName string, content []byte) *tufclient.TargetInfo {
 	t.Helper()
-	targetPath := TagsPrefix + tagName
-	srv := applyTargetServer(t, "/"+targetPath, content)
-	sum := sha256.Sum256(content)
+	srv := testrepo.New(t)
 	return &tufclient.TargetInfo{
-		TargetFiles: &tufmetadata.TargetFiles{
-			Path:   targetPath,
-			Length: int64(len(content)),
-			Hashes: tufmetadata.Hashes{"sha256": sum[:]},
-		},
-		Repo: makeRepo(t, srv, repoName),
+		TargetFiles: srv.WriteTarget(t, TagsPrefix+tagName, bytes.NewReader(content)),
+		Repo:        makeRepo(t, srv, repoName),
 	}
 }
 
 // makeInlineTagTargetInfo builds a TargetInfo for a machine tag target file
 // whose contents are embedded in the target metadata itself with
 // x-quarry-inline-data. Machine tags are the canonical use-case for inline
-// data, so the repository's server fails the test if it sees any request at
-// all -- inlined tags must never cost a fetch round-trip.
+// data, so the repository fails the test if the tag is fetched at all --
+// inlined tags must never cost a fetch round-trip.
 func makeInlineTagTargetInfo(t *testing.T, repoName, tagName string, content []byte) *tufclient.TargetInfo {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testrepo.New(t)
+	// The exact-path pattern takes precedence over the server's target file
+	// serving.
+	srv.Handle(targetURLPath(srv, TagsPrefix+tagName), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("inlined machine tag %q must be read from the metadata, not fetched (got request for %s)", tagName, r.URL)
 		http.NotFound(w, r)
 	}))
-	t.Cleanup(srv.Close)
 
 	// A sentinel tag file is empty, not absent: nil content must be inlined
 	// as present-but-empty data ("") rather than as a JSON null (which
@@ -133,14 +137,14 @@ func applyTagInfo(ctx context.Context, t *testing.T, ext *TagsExtension, info *t
 // repository like any other target file.
 func applyTag(ctx context.Context, t *testing.T, ext *TagsExtension, repoName, tagName string, content []byte) error {
 	t.Helper()
-	return applyTagInfo(ctx, t, ext, makeTagTargetInfo(t, repoName, tagName, content))
+	return applyTagInfo(ctx, t, ext, makeTagTargetInfo(t, repoName, tagName, content)) //nolint:contextcheck // testrepo.New uses t.Context internally
 }
 
 // applyInlineTag collects a machine tag whose contents are inlined into the
 // target metadata.
 func applyInlineTag(ctx context.Context, t *testing.T, ext *TagsExtension, repoName, tagName string, content []byte) error {
 	t.Helper()
-	return applyTagInfo(ctx, t, ext, makeInlineTagTargetInfo(t, repoName, tagName, content))
+	return applyTagInfo(ctx, t, ext, makeInlineTagTargetInfo(t, repoName, tagName, content)) //nolint:contextcheck // testrepo.New uses t.Context internally
 }
 
 // tagDeliveryModes are the ways a repository can deliver tag file contents:
@@ -192,6 +196,10 @@ func TestTagsApplyTarget_CollectsTags(t *testing.T) {
 func TestTagsApplyTarget_InvalidNamesSkipped(t *testing.T) {
 	ext, ctx := initTagsExt(t, hostnamedtest.Start(t).URI())
 
+	// Name validation fails before any fetch, so the repository never needs
+	// to serve anything.
+	repo := makeRepo(t, testrepo.New(t), "repo1")
+
 	for _, test := range []struct {
 		name    string
 		tagName string
@@ -204,11 +212,9 @@ func TestTagsApplyTarget_InvalidNamesSkipped(t *testing.T) {
 		{"SubdirectoryOutsideNamespaces", "acp/foo"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			// Name validation fails before any fetch, so the server is never
-			// actually contacted.
 			info := &tufclient.TargetInfo{
 				TargetFiles: &tufmetadata.TargetFiles{Path: TagsPrefix + test.tagName},
-				Repo:        makeRepo(t, applyTargetServer(t, "/unused", nil), "repo1"),
+				Repo:        repo,
 			}
 			applied, err := ext.ApplyTarget(ctx, info)
 			require.NoError(t, err, "invalid tag names must be skipped, not fatal")
@@ -291,7 +297,7 @@ func TestTagsApplyTarget_FileTooLargeSkipped(t *testing.T) {
 			Path:   TagsPrefix + "acp.foo",
 			Length: maxTagFileSize + 1,
 		},
-		Repo: makeRepo(t, applyTargetServer(t, "/unused", nil), "repo1"),
+		Repo: makeRepo(t, testrepo.New(t), "repo1"),
 	}
 	applied, err := ext.ApplyTarget(ctx, info)
 	require.NoError(t, err, "oversized tag files must be skipped, not fatal")
@@ -313,8 +319,9 @@ func TestTagsApplyTarget_FetchErrorFatal(t *testing.T) {
 			Length: int64(len(content)),
 			Hashes: tufmetadata.Hashes{"sha256": sum[:]},
 		},
-		// The server does not serve the tag's path, so every fetch fails.
-		Repo: makeRepo(t, applyTargetServer(t, "/unrelated", nil), "repo1"),
+		// The tag's file was never written to the repository, so every fetch
+		// fails.
+		Repo: makeRepo(t, testrepo.New(t), "repo1"),
 	}
 	_, err := ext.ApplyTarget(ctx, info)
 	require.Error(t, err, "fetch failures must abort the update")
@@ -331,13 +338,15 @@ func TestTagsApplyTarget_CorruptDataFatal(t *testing.T) {
 	genuine := []byte("good-value\n")
 	sum := sha256.Sum256(genuine)
 	const targetPath = TagsPrefix + "acp.foo"
+	srv := testrepo.New(t)
+	srv.WriteTarget(t, targetPath, bytes.NewReader([]byte("evil-value\n")))
 	info := &tufclient.TargetInfo{
 		TargetFiles: &tufmetadata.TargetFiles{
 			Path:   targetPath,
 			Length: int64(len(genuine)),
 			Hashes: tufmetadata.Hashes{"sha256": sum[:]},
 		},
-		Repo: makeRepo(t, applyTargetServer(t, "/"+targetPath, []byte("evil-value\n")), "repo1"),
+		Repo: makeRepo(t, srv, "repo1"),
 	}
 	_, err := ext.ApplyTarget(ctx, info)
 	require.Error(t, err, "corrupt tag file contents must abort the update")
@@ -353,18 +362,15 @@ func TestTagsApplyTarget_CorruptInlineDataFallback(t *testing.T) {
 
 	genuine := []byte("good-value\n")
 	const targetPath = TagsPrefix + "acp.foo"
-	sum := sha256.Sum256(genuine)
-	target := &tufmetadata.TargetFiles{
-		Length: int64(len(genuine)),
-		Hashes: tufmetadata.Hashes{"sha256": sum[:]},
-	}
+	srv := testrepo.New(t)
+	target := srv.WriteTarget(t, targetPath, bytes.NewReader(genuine))
 	tufext.TargetFilesExt(target).WithInlineData([]byte("evil-value\n"))
 	// NOTE: Path must be set after WithInlineData -- SetExtensionJSON
 	// round-trips the struct through JSON, which drops non-JSON fields.
 	target.Path = targetPath
 	info := &tufclient.TargetInfo{
 		TargetFiles: target,
-		Repo:        makeRepo(t, applyTargetServer(t, "/"+targetPath, genuine), "repo1"),
+		Repo:        makeRepo(t, srv, "repo1"),
 	}
 
 	require.NoError(t, applyTagInfo(ctx, t, ext, info))
