@@ -353,6 +353,61 @@ data_root_url = "https://data.example.com/blobs"
 	assert.Equal(t, "https://data.example.com/blobs", repo.DataRootURL.String())
 }
 
+func TestParseConfig_OrderIndex(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		orderIndex string
+		want       int64
+	}{
+		{"Default", ``, 100},
+		{"Explicit", `order_index = 500`, 500},
+		{"SameAsDefault", `order_index = 100`, 100},
+		{"Zero", `order_index = 0`, 0},
+		{"Negative", `order_index = -10`, -10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conf, err := Parse(strings.NewReader(`
+config_version = 1
+[repo.example]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com"
+` + tc.orderIndex + "\n"))
+			require.NoError(t, err)
+			repo := conf.Repos["example"]
+			require.NotNil(t, repo)
+			if tc.orderIndex == "" {
+				assert.Nil(t, repo.RawOrderIndex, "unset order_index must stay nil after parsing")
+			} else {
+				require.NotNil(t, repo.RawOrderIndex)
+				assert.Equal(t, tc.want, *repo.RawOrderIndex)
+			}
+			assert.Equal(t, tc.want, repo.OrderIndex())
+		})
+	}
+}
+
+func TestParseConfig_OrderIndex_InvalidType(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		orderIndex string
+	}{
+		{"String", `order_index = "first"`},
+		{"Float", `order_index = 1.5`},
+		{"Array", `order_index = [100]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse(strings.NewReader(`
+config_version = 1
+[repo.example]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com"
+` + tc.orderIndex + "\n"))
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "order_index")
+		})
+	}
+}
+
 func TestParseConfig_MultipleRepos(t *testing.T) {
 	conf, err := Parse(strings.NewReader(`
 config_version = 1
@@ -436,6 +491,8 @@ func TestParseConfig_ExampleFile(t *testing.T) {
 	repo := conf.Repos[repoName]
 
 	assert.Equal(t, repoName, repo.Name)
+	require.NotNil(t, repo.RawOrderIndex)
+	assert.Equal(t, int64(100), *repo.RawOrderIndex)
 	assert.Equal(t,
 		bundledRootTrust{Path: `/usr/share/amutable/quarry/trusted/updates.example.com-base\x2dos-nightly-root.json`},
 		repo.RootTrust.RootTrustSource)
@@ -588,6 +645,78 @@ data_root_url = "https://data.example"
 	require.NotNil(t, repo)
 	assert.Equal(t, "https://mirror.example", repo.MetaRootURL.String())
 	assert.Equal(t, "https://data.example", repo.DataRootURL.String())
+}
+
+func TestMerge_OrderIndexOverride(t *testing.T) {
+	cfg := mergeFragments(t, `
+config_version = 1
+[repo."example.com/base-os"]
+root_trust = "insecure-tofu"
+order_index = 500
+`, `
+config_version = 1
+[repo."example.com/base-os"]
+order_index = 10
+`)
+
+	repo := cfg.Repos["example.com/base-os"]
+	require.NotNil(t, repo)
+	require.NotNil(t, repo.RawOrderIndex)
+	assert.Equal(t, int64(10), *repo.RawOrderIndex)
+}
+
+func TestMerge_UnsetOrderIndexKeepsOverride(t *testing.T) {
+	cfg := mergeFragments(t, `
+config_version = 1
+[repo."example.com/base-os"]
+root_trust = "insecure-tofu"
+order_index = 500
+`, `
+config_version = 1
+[repo."example.com/base-os"]
+meta_root_url = "https://mirror.example"
+`)
+
+	repo := cfg.Repos["example.com/base-os"]
+	require.NotNil(t, repo)
+	require.NotNil(t, repo.RawOrderIndex)
+	assert.Equal(t, int64(500), *repo.RawOrderIndex)
+}
+
+func TestMerge_OrderIndexAddedByDropIn(t *testing.T) {
+	cfg := mergeFragments(t, `
+config_version = 1
+[repo."example.com/base-os"]
+root_trust = "insecure-tofu"
+`, `
+config_version = 1
+[repo."example.com/base-os"]
+order_index = 42
+`)
+
+	repo := cfg.Repos["example.com/base-os"]
+	require.NotNil(t, repo)
+	require.NotNil(t, repo.RawOrderIndex)
+	assert.Equal(t, int64(42), *repo.RawOrderIndex)
+}
+
+// A repository whose order index is never set by any fragment stays unset
+// (nil) and reports the default order index.
+func TestMerge_OrderIndexDefault(t *testing.T) {
+	cfg := mergeFragments(t, `
+config_version = 1
+[repo."example.com/base-os"]
+root_trust = "insecure-tofu"
+`, `
+config_version = 1
+[repo."example.com/base-os"]
+meta_root_url = "https://mirror.example"
+`)
+
+	repo := cfg.Repos["example.com/base-os"]
+	require.NotNil(t, repo)
+	assert.Nil(t, repo.RawOrderIndex)
+	assert.Equal(t, int64(100), repo.OrderIndex())
 }
 
 // Empty fragments (a drop-in masked with a /dev/null symlink, or one

@@ -204,17 +204,22 @@ func (client *Client) WithRepos(repoNames ...string) error {
 }
 
 // IterRepos returns an iterator over the set of repositories in the [Client],
-// the order is always consistent for a given configuration (ordering is based
-// on name). Note that use of this operation directly is very rarely necessary,
-// most of the time [GetTargetInfo] and [FetchTargetFile] are more ergonomic.
+// the order is always consistent for a given configuration and is based on the
+// repository order index (and name as a tie-breaker). Note that use of this
+// operation directly is very rarely necessary, most of the time
+// [GetTargetInfo] and [FetchTargetFile] are more ergonomic.
 //
 // TODO: Return some custom type?
 func (client *Client) IterRepos(_ context.Context) iter.Seq2[string, *tufupdater.Updater] {
 	return func(yield func(string, *tufupdater.Updater) bool) {
+		repoIndex := func(name string) int64 {
+			return client.Config.Repos[name].OrderIndex()
+		}
 		order := slices.SortedFunc(maps.Keys(client.updaters), func(repoA, repoB string) int {
-			// TODO: Implement repo priorities so that this ordering can be
-			// controlled by users in a sane way.
-			return cmp.Compare(repoA, repoB)
+			return cmp.Or(
+				cmp.Compare(repoIndex(repoA), repoIndex(repoB)), // *ascending* order
+				cmp.Compare(repoA, repoB),                       // name is for tie-breaks
+			)
 		})
 		for _, name := range order {
 			if _, ok := client.activeRepos[name]; !ok {
@@ -305,7 +310,8 @@ func (client *Client) GetTargetInfo(ctx context.Context, targetPath string) (*Ta
 			return nil, fmt.Errorf("bad repo %s: %w", repoName, err)
 		}
 		// As soon as we find a target file we return -- IterRepos provides a
-		// consistent order so any later entries need to be masked anyway.
+		// consistent order based on order indexes so any later entries need to
+		// be masked anyway.
 		return &TargetInfo{
 			TargetFiles: info,
 			Repo:        client.Config.Repos[repoName],
@@ -415,9 +421,9 @@ func (client *Client) IterTargetFiles(ctx context.Context) iter.Seq2[*TargetInfo
 					return err
 				}
 				if _, ok := seen[target.Path]; ok {
-					// IterRepos provides a consistent ordering so if we have
-					// already seen this entry then any later examples must be
-					// masked.
+					// IterRepos provides a consistent ordering based on
+					// order indexes so if we have already seen this entry
+					// then any later examples must be masked.
 					continue
 				}
 				seen[target.Path] = struct{}{}

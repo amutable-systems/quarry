@@ -324,6 +324,12 @@ type Repository struct {
 	// map[string]... key in the top-level configuration.
 	Name string `toml:"-"`
 
+	// RawOrderIndex is an integer value that is used to consistently sort
+	// repositories when iterating over them. Smaller values sort earlier, the
+	// default value (if unset) is 100, and repositories with the same order
+	// index are sorted lexicographically.
+	RawOrderIndex *int64 `toml:"order_index"`
+
 	// RootTrust indicates the source of trust for the initial root.json of
 	// this repository (if the local cache already has a root.json, this source
 	// is ignored).
@@ -335,6 +341,18 @@ type Repository struct {
 	// DataRootURL is the base URL for the directory containing target data
 	// files.
 	DataRootURL *tomlURL `toml:"data_root_url"`
+}
+
+const defaultOrderIndex = 100
+
+// OrderIndex returns [RawOrderIndex] or the default order index if it was not
+// configured in [Config]. Users should prefer to use this instead of accessing
+// [RawOrderIndex] directly.
+func (repo Repository) OrderIndex() int64 {
+	if r := repo.RawOrderIndex; r != nil {
+		return *r
+	}
+	return defaultOrderIndex
 }
 
 // ConfigVersion is the current version of the configuration file format.
@@ -513,6 +531,9 @@ func (cfg *Config) merge(fragment *Config) error {
 		}
 		if repo.RootTrust != nil {
 			old.RootTrust = repo.RootTrust
+		}
+		if repo.RawOrderIndex != nil {
+			old.RawOrderIndex = repo.RawOrderIndex
 		}
 		old.MetaRootURL = mergeURL(old.MetaRootURL, repo.MetaRootURL)
 		old.DataRootURL = mergeURL(old.DataRootURL, repo.DataRootURL)
