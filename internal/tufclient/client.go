@@ -6,6 +6,7 @@ package tufclient
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -201,14 +203,20 @@ func (client *Client) WithRepos(repoNames ...string) error {
 	return nil
 }
 
-// IterRepos returns an iterator over the ste of repositories in the [Client].
-// Note that this operation is very rarely necessary, most of the time
-// [GetTargetInfo] and [FetchTargetFile] are more ergonomic.
+// IterRepos returns an iterator over the set of repositories in the [Client],
+// the order is always consistent for a given configuration (ordering is based
+// on name). Note that use of this operation directly is very rarely necessary,
+// most of the time [GetTargetInfo] and [FetchTargetFile] are more ergonomic.
 //
 // TODO: Return some custom type?
 func (client *Client) IterRepos(_ context.Context) iter.Seq2[string, *tufupdater.Updater] {
 	return func(yield func(string, *tufupdater.Updater) bool) {
-		for name := range client.updaters {
+		order := slices.SortedFunc(maps.Keys(client.updaters), func(repoA, repoB string) int {
+			// TODO: Implement repo priorities so that this ordering can be
+			// controlled by users in a sane way.
+			return cmp.Compare(repoA, repoB)
+		})
+		for _, name := range order {
 			if _, ok := client.activeRepos[name]; !ok {
 				continue
 			}
@@ -287,7 +295,6 @@ func (info *TargetInfo) Fetch(ctx context.Context) (io.ReadCloser, error) {
 // A wrapped [fs.ErrNotExist] error is returned if the target file could not be
 // found.
 func (client *Client) GetTargetInfo(ctx context.Context, targetPath string) (*TargetInfo, error) {
-	var got *TargetInfo
 	for repoName, updater := range client.IterRepos(ctx) {
 		info, err := updater.GetTargetInfo(targetPath)
 		if err != nil {
@@ -297,29 +304,14 @@ func (client *Client) GetTargetInfo(ctx context.Context, targetPath string) (*Ta
 			}
 			return nil, fmt.Errorf("bad repo %s: %w", repoName, err)
 		}
-		// We've found the target file, but continue iterating through the rest
-		// of the repositories -- because map iteration order is randomised, we
-		// can't be sure if subsequent calls to GetTargetInfo will return the
-		// same file, which is *very bad*. The temporary solution here is to
-		// make sure there are no duplicate targets.
-		// TODO: We need to come up with an order to these updaters, as
-		// blocking updates because of a clashing name is really quite drastic.
-		// Maybe we should just do it in the order they were defined in the
-		// config...?
-		// TODO(links): This problem will only get worse once we have links...
-		if got != nil {
-			return nil, fmt.Errorf("ambiguous repository state: target %s defined in multiple repositories (%s and %s)", targetPath, got.Repo.Name, repoName)
-		}
-		got = &TargetInfo{
+		// As soon as we find a target file we return -- IterRepos provides a
+		// consistent order so any later entries need to be masked anyway.
+		return &TargetInfo{
 			TargetFiles: info,
 			Repo:        client.Config.Repos[repoName],
-		}
+		}, nil
 	}
-	var err error
-	if got == nil {
-		err = fmt.Errorf("target %s not found: %w", targetPath, fs.ErrNotExist)
-	}
-	return got, err
+	return nil, fmt.Errorf("target %s not found: %w", targetPath, fs.ErrNotExist)
 }
 
 // FetchTargetFile is shorthand for [ClientGetTargetInfo] followed by
@@ -423,15 +415,9 @@ func (client *Client) IterTargetFiles(ctx context.Context) iter.Seq2[*TargetInfo
 					return err
 				}
 				if _, ok := seen[target.Path]; ok {
-					// As with GetTargetInfo, we need to check and reject
-					// duplicate entries.
-					// TODO: We need to come up with an order to these
-					// updaters, as blocking updates because of a clashing name
-					// is really quite drastic. Maybe we should just do it in
-					// the order they were defined in the config...? Then we
-					// can just drop later entries.
-					// TODO(links): This problem will only get worse once we
-					// have links...
+					// IterRepos provides a consistent ordering so if we have
+					// already seen this entry then any later examples must be
+					// masked.
 					continue
 				}
 				seen[target.Path] = struct{}{}
