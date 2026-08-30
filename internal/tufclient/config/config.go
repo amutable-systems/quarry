@@ -479,3 +479,43 @@ func (cfg *Config) expandAndValidate() error {
 	}
 	return nil
 }
+
+// mergeURL is a helper of [merge] to implement the override semantics of URLs
+// -- an unset one keeps the old value, an explicit value overrides it, and an
+// empty string clears it to trigger the default URL derivation behaviour.
+func mergeURL(old, fragment *tomlURL) *tomlURL {
+	switch {
+	case fragment == nil:
+		return old
+	case fragment.rawString == "":
+		return nil
+	default:
+		return fragment
+	}
+}
+
+// merge applies the fragment on top of cfg with systemd drop-in semantics --
+// only the settings the fragment specifies are replaced. This lets a drop-in
+// override one setting of a repository without repeating the rest of its
+// definition.
+func (cfg *Config) merge(fragment *Config) error {
+	if v := fragment.Version; v != cfg.Version || v != ConfigVersion {
+		return fmt.Errorf("%w %d: only version %d (%d) is supported", ErrUnsupportedVersion, v, cfg.Version, ConfigVersion)
+	}
+	if fragment.CacheDir != "" {
+		cfg.CacheDir = fragment.CacheDir
+	}
+	for name, repo := range fragment.Repos {
+		old, ok := cfg.Repos[name]
+		if !ok {
+			old = &Repository{Name: repo.Name}
+			cfg.Repos[name] = old
+		}
+		if repo.RootTrust != nil {
+			old.RootTrust = repo.RootTrust
+		}
+		old.MetaRootURL = mergeURL(old.MetaRootURL, repo.MetaRootURL)
+		old.DataRootURL = mergeURL(old.DataRootURL, repo.DataRootURL)
+	}
+	return nil
+}
