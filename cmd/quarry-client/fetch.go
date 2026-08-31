@@ -23,10 +23,12 @@ var fetchCommand = &cli.Command{
 	Usage: "fetch a specific file from the repos",
 	Flags: []cli.Flag{
 		&cli.StringFlag{
-			Name:     "repo",
-			Aliases:  []string{"r"},
-			Usage:    "specify the repository to look for",
-			Required: true,
+			Name:    "repo",
+			Aliases: []string{"r"},
+			Usage:   "specify the repository to fetch from (if unspecified, the default repository lookup order is used)",
+			// TODO: Maybe we should expose this again as a StringSliceFlag
+			// like the other quarry-client subcommands?
+			Hidden: true,
 		},
 		&cli.StringFlag{
 			Name:  "output",
@@ -71,10 +73,18 @@ var fetchCommand = &cli.Command{
 			output = os.Stdout
 		}
 
-		repoName := cmd.String("repo")
-		client, err := getClient(ctx, repoName)
+		var repos []string
+		if cmd.IsSet("repo") {
+			// TODO: Should we make --repo a StringSliceFlag?
+			repos = append(repos, cmd.String("repo"))
+		}
+		client, err := getClient(ctx, repos...)
 		if err != nil {
-			return fmt.Errorf("get tuf client for repo %s: %w", repoName, err)
+			var repoStr string
+			if len(repos) > 0 {
+				repoStr = fmt.Sprintf(" (with repos %v)", repos)
+			}
+			return fmt.Errorf("get tuf client%s: %w", repoStr, err)
 		}
 		defer funchelpers.VerifyClose(&Err, client)
 

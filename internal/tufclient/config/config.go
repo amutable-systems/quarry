@@ -324,6 +324,12 @@ type Repository struct {
 	// map[string]... key in the top-level configuration.
 	Name string `toml:"-"`
 
+	// RawOrderIndex is an integer value that is used to consistently sort
+	// repositories when iterating over them. Smaller values sort earlier, the
+	// default value (if unset) is 100, and repositories with the same order
+	// index are sorted lexicographically.
+	RawOrderIndex *int64 `toml:"order_index"`
+
 	// RootTrust indicates the source of trust for the initial root.json of
 	// this repository (if the local cache already has a root.json, this source
 	// is ignored).
@@ -335,6 +341,18 @@ type Repository struct {
 	// DataRootURL is the base URL for the directory containing target data
 	// files.
 	DataRootURL *tomlURL `toml:"data_root_url"`
+}
+
+const defaultOrderIndex = 100
+
+// OrderIndex returns [RawOrderIndex] or the default order index if it was not
+// configured in [Config]. Users should prefer to use this instead of accessing
+// [RawOrderIndex] directly.
+func (repo Repository) OrderIndex() int64 {
+	if r := repo.RawOrderIndex; r != nil {
+		return *r
+	}
+	return defaultOrderIndex
 }
 
 // ConfigVersion is the current version of the configuration file format.
@@ -476,6 +494,49 @@ func (cfg *Config) expandAndValidate() error {
 		if err := repo.DataRootURL.Expand(subExpander); err != nil {
 			return fmt.Errorf("repository %s has invalid data_root_url value: %w", repo.Name, err)
 		}
+	}
+	return nil
+}
+
+// mergeURL is a helper of [merge] to implement the override semantics of URLs
+// -- an unset one keeps the old value, an explicit value overrides it, and an
+// empty string clears it to trigger the default URL derivation behaviour.
+func mergeURL(old, fragment *tomlURL) *tomlURL {
+	switch {
+	case fragment == nil:
+		return old
+	case fragment.rawString == "":
+		return nil
+	default:
+		return fragment
+	}
+}
+
+// merge applies the fragment on top of cfg with systemd drop-in semantics --
+// only the settings the fragment specifies are replaced. This lets a drop-in
+// override one setting of a repository without repeating the rest of its
+// definition.
+func (cfg *Config) merge(fragment *Config) error {
+	if v := fragment.Version; v != cfg.Version || v != ConfigVersion {
+		return fmt.Errorf("%w %d: only version %d (%d) is supported", ErrUnsupportedVersion, v, cfg.Version, ConfigVersion)
+	}
+	if fragment.CacheDir != "" {
+		cfg.CacheDir = fragment.CacheDir
+	}
+	for name, repo := range fragment.Repos {
+		old, ok := cfg.Repos[name]
+		if !ok {
+			old = &Repository{Name: repo.Name}
+			cfg.Repos[name] = old
+		}
+		if repo.RootTrust != nil {
+			old.RootTrust = repo.RootTrust
+		}
+		if repo.RawOrderIndex != nil {
+			old.RawOrderIndex = repo.RawOrderIndex
+		}
+		old.MetaRootURL = mergeURL(old.MetaRootURL, repo.MetaRootURL)
+		old.DataRootURL = mergeURL(old.DataRootURL, repo.DataRootURL)
 	}
 	return nil
 }
