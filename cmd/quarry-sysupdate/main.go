@@ -1,13 +1,13 @@
 // Copyright (C) 2026 Amutable GmbH
 
-// quarry-sysupdate is a wrapper around systemd-sysupdate that implements some
-// Quarry-specific extensions we plan to upstream at some point.
-package main
+// Package sysupdate implements quarry-sysupdate, a wrapper around
+// systemd-sysupdate that implements some Quarry-specific extensions we plan
+// to upstream at some point. It is an applet of the quarry multi-call binary
+// (cmd/quarry).
+package sysupdate
 
 import (
 	"context"
-	"fmt"
-	"os"
 
 	"github.com/urfave/cli/v3"
 
@@ -26,13 +26,7 @@ var app = cliext.WithRefTimeFlag(cliext.WithConfigFlag(&cli.Command{
 	},
 }))
 
+// Main is the entrypoint for the quarry-sysupdate applet.
 func Main(args []string) error {
 	return app.Run(context.Background(), args)
-}
-
-func main() {
-	if err := Main(os.Args); err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
-	}
 }

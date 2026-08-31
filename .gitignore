@@ -1,4 +1,6 @@
 /hardhat
+/quarry
+# Old binary names.
 /quarry-client
 /quarry-sysupdate
 # In mkosi we do a raw rpmbuild which outputs a bunch of these *.list files.

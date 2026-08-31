@@ -138,6 +138,9 @@ just install-sysupdate
 %{_sysusersdir}/%{name}-hardhat.conf
 
 %files client
+# quarry is the multi-call binary containing all of the quarry-* commands.
+# It lives in -client because -sysupdate requires -client.
+%{_bindir}/%{name}
 %{_bindir}/%{name}-client
 %{_unitdir}/%{name}-client*
 %dir %{_datarootdir}/amutable/%{name}
