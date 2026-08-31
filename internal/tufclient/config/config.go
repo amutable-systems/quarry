@@ -46,6 +46,11 @@ type RootTrustSource interface {
 	// unmarshal [tomlRootTrust] for this to work generically.
 	fromTomlMap(table map[string]any) (RootTrustSource, error)
 
+	// IsRemote indicates whether the root source is to be fetched from a
+	// remote resource. Callers can use this as a hint for whether some errors
+	// from [FetchRoot] should be skipped.
+	IsRemote() bool
+
 	// FetchRoot fetches the initial root.json for the given [Repository],
 	// based on the internal policy of this [RootTrustSource].
 	FetchRoot(ctx context.Context, repo *Repository) ([]byte, error)
@@ -188,6 +193,8 @@ func (t tofuRootTrust) fromTomlMap(data map[string]any) (RootTrustSource, error)
 	return t, nil
 }
 
+func (tofuRootTrust) IsRemote() bool { return true }
+
 func (tofuRootTrust) FetchRoot(ctx context.Context, repo *Repository) (_ []byte, Err error) {
 	// The updater will bump the root.json to the latest version afterwards.
 	rootURL := repo.MetaRootURL.JoinPath("1.root.json")
@@ -243,6 +250,8 @@ func (t bundledRootTrust) fromTomlMap(data map[string]any) (RootTrustSource, err
 	return t, nil
 }
 
+func (bundledRootTrust) IsRemote() bool { return false }
+
 func (t bundledRootTrust) FetchRoot(_ context.Context, _ *Repository) ([]byte, error) {
 	return os.ReadFile(t.Path) //nolint:forbidigo // user-controlled host path
 }
@@ -259,6 +268,8 @@ var _ RootTrustSource = inlineRootTrust{}
 func (t inlineRootTrust) Type() string { return "inline" }
 
 func (t inlineRootTrust) String() string { return fmt.Sprintf("%s:%q", t.Type(), t.RootJSON) }
+
+func (inlineRootTrust) IsRemote() bool { return false }
 
 func (t inlineRootTrust) fromTomlMap(data map[string]any) (RootTrustSource, error) {
 	if err := parseTomlKey[string](data, "root.json", &t.RootJSON); err != nil {

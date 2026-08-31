@@ -60,10 +60,22 @@ func RepoClient(ctx context.Context, cacheDir *pathrs.Root, repo *config.Reposit
 
 	rootFile, err := repoCacheDir.OpenFile("root.json", unix.O_RDONLY|unix.O_NOFOLLOW)
 	if errors.Is(err, fs.ErrNotExist) {
+		// Only tag the following root.json fetch errors with ErrSkippableRepo
+		// if the root trust source is actually remote -- local sources are
+		// meant to always exist and be valid and so we should return errors if
+		// they were misconfigured.
+		skippableErr := func(err error) error {
+			return err
+		}
+		if repo.RootTrust.IsRemote() {
+			skippableErr = func(err error) error {
+				return fmt.Errorf("(%w) %w", ErrSkippableRepo, err)
+			}
+		}
 		// Fallback to fetch from the trusted root source.
 		rootData, err := repo.RootTrust.FetchRoot(ctx, repo)
 		if err != nil {
-			return nil, fmt.Errorf("(%w) fetch trusted root.json: %w", ErrSkippableRepo, err)
+			return nil, skippableErr(fmt.Errorf("fetch trusted root.json: %w", err))
 		}
 		rootFile, err = repoCacheDir.Create(".", unix.O_TMPFILE|unix.O_RDWR|unix.O_NOFOLLOW, 0o644)
 		if err != nil {
@@ -84,12 +96,12 @@ func RepoClient(ctx context.Context, cacheDir *pathrs.Root, repo *config.Reposit
 		// the root.json data to the cache, but that's okay -- the bundled data
 		// is static anyway.
 		if root, err := jsonutils.Parse[*tufext.SignedRoot](rootData); err != nil {
-			return nil, fmt.Errorf("(%w) root_trust root.json is invalid JSON: %w", ErrSkippableRepo, err)
+			return nil, skippableErr(fmt.Errorf("root_trust root.json is invalid JSON: %w", err))
 		} else if err := tufext.CheckMetadataType(tufmetadata.ROOT, root); err != nil {
-			return nil, fmt.Errorf("(%w) root_trust root.json is invalid tuf JSON: %w", ErrSkippableRepo, err)
+			return nil, skippableErr(fmt.Errorf("root_trust root.json is invalid tuf JSON: %w", err))
 		} else if err := root.VerifyDelegate(tufmetadata.ROOT, root); err != nil {
 			// root.json must be self-signed.
-			return nil, fmt.Errorf("(%w) root_trust root.json is not self-signed: %w", ErrSkippableRepo, err)
+			return nil, skippableErr(fmt.Errorf("root_trust root.json is not self-signed: %w", err))
 		}
 		// Attach as cached root.json.
 		if err := pathrsext.AttachIntoRoot(repoCacheDir, "root.json", rootFile); err != nil {
@@ -461,12 +473,14 @@ func NewClient(ctx context.Context, config *config.Config) (_ *Client, Err error
 	)
 	for _, repo := range config.Repos {
 		updater, err := RepoClient(ctx, cacheDir, repo)
-		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, ErrSkippableRepo) {
-			// If the root.json could not be fetched from the trust source,
-			// skip it (the repository doesn't exist). This is not an issue for
-			// repositories where we have already cached root.json. The error
-			// is retained so that [Client.WithRepos] can surface it if
-			// the repository is requested explicitly.
+		if errors.Is(err, ErrSkippableRepo) {
+			// If the root.json could not be fetched from the trust source (and
+			// RepoClient determines it is reasonable to skip this repo), skip
+			// it as the repository presumably doesn't exist.
+			//
+			// This is not an issue for repositories where we have already
+			// cached root.json. Save the error so that [Client.WithRepos] can
+			// return it if the repository is requested explicitly.
 			slog.Info("Cannot fetch repository root.json from root_trust -- skipping.", "error", err.Error(), "repository", repo.Name)
 			skippedRepos[repo.Name] = err
 			continue
