@@ -34,7 +34,7 @@ func WithConfigFlag(cmd *cli.Command) *cli.Command {
 			Name:      "cache-dir",
 			Usage:     "local cache directory for TUF metadata",
 			TakesFile: true,
-			Value:     "/var/lib/quarry-client/latest-metadata",
+			Value:     config.DefaultCacheDir,
 			Sources:   cli.EnvVars("QUARRY_CLIENT_CACHEDIR"),
 		})
 
@@ -51,9 +51,9 @@ func WithConfigFlag(cmd *cli.Command) *cli.Command {
 		if err != nil {
 			return nil, err
 		}
-		// Replace the in-memory config option with --cache-dir if it was unset
-		// in the config or the user explicitly requested it.
-		if cfg.CacheDir == "" || cmd.IsSet("cache-dir") {
+		// Replace the in-memory config option with --cache-dir if the user
+		// explicitly requested it.
+		if cmd.IsSet("cache-dir") {
 			cfg.CacheDir = cmd.String("cache-dir")
 		}
 		ctx = context.WithValue(ctx, configCtxKey, cfg)

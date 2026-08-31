@@ -447,6 +447,9 @@ func parseToml(rdr io.Reader) (*Config, error) {
 	return &cfg, nil
 }
 
+// DefaultCacheDir is the default value of [Config.CacheDir] if unspecified.
+const DefaultCacheDir = "/var/lib/quarry-client/latest-metadata"
+
 // expandAndValidate applies the %-expansions, fills in the URL fields derived
 // from the repository name, and validates the merged configuration.
 func (cfg *Config) expandAndValidate() error {
@@ -458,7 +461,10 @@ func (cfg *Config) expandAndValidate() error {
 	if err != nil {
 		return fmt.Errorf("config cache_dir an invalid %%-expansion: %w", err)
 	}
-	if cfg.CacheDir != "" && !filepath.IsAbs(cfg.CacheDir) {
+	if cfg.CacheDir == "" {
+		cfg.CacheDir = DefaultCacheDir
+	}
+	if !filepath.IsAbs(cfg.CacheDir) {
 		return fmt.Errorf("config cache_dir invalid value: %q must be an absolute path", cfg.CacheDir)
 	}
 

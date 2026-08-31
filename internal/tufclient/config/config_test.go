@@ -479,7 +479,7 @@ meta_root_url = "https://example.com/%zz"
 }
 
 func TestParseConfig_ExampleFile(t *testing.T) {
-	f, err := os.Open("../../../contrib/quarry-client.toml") //nolint:forbidigo // test code
+	f, err := os.Open("../../../contrib/quarry-client/config.toml.d/10-AmutableOS.toml") //nolint:forbidigo // test code
 	require.NoError(t, err)
 	defer f.Close() //nolint:errcheck // test code
 
@@ -491,8 +491,8 @@ func TestParseConfig_ExampleFile(t *testing.T) {
 	repo := conf.Repos[repoName]
 
 	assert.Equal(t, repoName, repo.Name)
-	require.NotNil(t, repo.RawOrderIndex)
-	assert.Equal(t, int64(100), *repo.RawOrderIndex)
+	assert.Nil(t, repo.RawOrderIndex) // not specified
+	assert.Equal(t, int64(100), repo.OrderIndex())
 	assert.Equal(t,
 		bundledRootTrust{Path: `/usr/share/amutable/quarry/trusted/updates.example.com-base\x2dos-nightly-root.json`},
 		repo.RootTrust.RootTrustSource)
@@ -915,7 +915,7 @@ func TestParseConfig_Expand_CacheDir(t *testing.T) {
 		{
 			name:     "Empty",
 			cacheDir: ``,
-			wantDir:  ``,
+			wantDir:  DefaultCacheDir,
 		},
 		{
 			name:     "Literal",
