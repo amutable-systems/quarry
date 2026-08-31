@@ -50,3 +50,16 @@ func SeqRight[T1, T2 any](seq iter.Seq2[T1, T2]) iter.Seq[T2] {
 		})
 	}
 }
+
+// Set is an alias for map[T]struct{} (an idiomatic Go map).
+type Set[T comparable] = map[T]struct{}
+
+// SeqSet takes an [iter.Seq] and returns a [Set] containing the sequence
+// values.
+func SeqSet[T comparable](seq iter.Seq[T]) Set[T] {
+	m := make(Set[T], 64)
+	for k := range seq {
+		m[k] = struct{}{}
+	}
+	return m
+}
