@@ -915,7 +915,7 @@ func TestParseConfig_Expand_CacheDir(t *testing.T) {
 		{
 			name:     "Empty",
 			cacheDir: ``,
-			wantDir:  ``,
+			wantDir:  DefaultCacheDir,
 		},
 		{
 			name:     "Literal",
