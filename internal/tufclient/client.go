@@ -35,10 +35,12 @@ import (
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
-// ErrSkippableRepo is retuned as part of a wrapped error by [MakeUpdater] if
-// the repository is could not be loaded but the error should not necessarily
-// be seen as a fatal error condition (i.e., the repository has never been seen
-// before and so may not be created yet).
+// ErrSkippableRepo is returned as part of a wrapped error by [RepoClient] if
+// the repository could not be loaded but the error should not necessarily be
+// seen as a fatal error condition (i.e., the repository has never been seen
+// before and so may not be created yet). [NewClient] skips such repositories,
+// though [Client.WithRepos] will return the errors if said repositories are
+// requested explicitly.
 var ErrSkippableRepo = errors.New("skippable repository error")
 
 // RepoClient constructs a [tufupdater.Updater] for a single TUF repository,
@@ -132,13 +134,59 @@ type Client struct {
 	// Config is a copy of the configuration file used to instantiate this
 	// client instance.
 	Config *config.Config
+
 	// CacheDir is a handle to the cache directory where all TUF metadata files
 	// are stored. You should only operate on this if you are absolutely sure
 	// that you know what you're doing (it includes the primary copy of trusted
 	// local metadata).
 	CacheDir *pathrs.Root
 
+	// updaters contains the TUF updaters for every repository that was
+	// successfully loaded by [NewClient], regardless of the subset currently
+	// selected with [Client.WithRepos] (activeRepos).
 	updaters map[string]*tufupdater.Updater
+
+	// activeRepos contains the TUF updaters for the active set of repositories
+	// that all operations act on. By default this is every loaded repository
+	// (updaters), but [Client.WithRepos] can swap in a subset.
+	activeRepos generics.Set[string]
+
+	// skippedRepos records the (skippable) error that stopped each unloadable
+	// repository from being included in updaters by [NewClient].
+	skippedRepos map[string]error
+}
+
+// WithRepos restricts the [Client] to the given subset of configured
+// repositories. Unknown repository names result in an error, as does a
+// requested repository that could not be loaded when the [Client] was created
+// (even if the failure was tagged as skippable with [ErrSkippableRepo]).
+//
+// Calling WithRepos with no arguments re-enables all configured repositories.
+// If an error is returned, the active set of repositories is unchanged.
+func (client *Client) WithRepos(repoNames ...string) error {
+	if len(repoNames) == 0 {
+		// Reset activeRepos and ignore any client.skippedRepos errors.
+		client.activeRepos = generics.SeqSet(maps.Keys(client.updaters))
+		return nil
+	}
+	var (
+		active = make(generics.Set[string], len(repoNames))
+		errs   []error
+	)
+	for _, name := range repoNames {
+		if _, ok := client.updaters[name]; ok {
+			active[name] = struct{}{}
+		} else if err, ok := client.skippedRepos[name]; ok {
+			errs = append(errs, fmt.Errorf("bad repo %s: %w", name, err))
+		} else {
+			errs = append(errs, fmt.Errorf("unknown repository %s requested", name))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	client.activeRepos = active
+	return nil
 }
 
 // IterRepos returns an iterator over the ste of repositories in the [Client].
@@ -147,7 +195,16 @@ type Client struct {
 //
 // TODO: Return some custom type?
 func (client *Client) IterRepos(_ context.Context) iter.Seq2[string, *tufupdater.Updater] {
-	return maps.All(client.updaters)
+	return func(yield func(string, *tufupdater.Updater) bool) {
+		for name := range client.updaters {
+			if _, ok := client.activeRepos[name]; !ok {
+				continue
+			}
+			if !yield(name, client.updaters[name]) {
+				break
+			}
+		}
+	}
 }
 
 // Close closes all resources associated with the client.
@@ -398,14 +455,20 @@ func NewClient(ctx context.Context, config *config.Config) (_ *Client, Err error
 	}
 	defer funchelpers.CloseOnError(&Err, cacheDir)
 
-	updaters := make(map[string]*tufupdater.Updater, len(config.Repos))
+	var (
+		updaters     = make(map[string]*tufupdater.Updater, len(config.Repos))
+		skippedRepos = make(map[string]error)
+	)
 	for _, repo := range config.Repos {
 		updater, err := RepoClient(ctx, cacheDir, repo)
 		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, ErrSkippableRepo) {
 			// If the root.json could not be fetched from the trust source,
 			// skip it (the repository doesn't exist). This is not an issue for
-			// repositories where we have already cached root.json.
+			// repositories where we have already cached root.json. The error
+			// is retained so that [Client.WithRepos] can surface it if
+			// the repository is requested explicitly.
 			slog.Info("Cannot fetch repository root.json from root_trust -- skipping.", "error", err.Error(), "repository", repo.Name)
+			skippedRepos[repo.Name] = err
 			continue
 		}
 		if err != nil {
@@ -417,8 +480,10 @@ func NewClient(ctx context.Context, config *config.Config) (_ *Client, Err error
 		slog.Warn("No repositories defined -- all operations are a no-op!")
 	}
 	return &Client{
-		Config:   config,
-		CacheDir: cacheDir,
-		updaters: updaters,
+		Config:       config,
+		CacheDir:     cacheDir,
+		updaters:     updaters,
+		activeRepos:  generics.SeqSet(maps.Keys(updaters)), // enable all repos
+		skippedRepos: skippedRepos,
 	}, nil
 }

@@ -13,30 +13,23 @@ import (
 	"go.amutable.dev/quarry/internal/runas"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufclient"
-	"go.amutable.dev/quarry/internal/tufclient/config"
 )
 
-// getClient constructs a [tufclient.Client] from the configuration state.
+// getClient constructs a [tufclient.Client] from the configuration state,
+// optionally restricted to the given subset of repositories. Any error
+// loading an explicitly-requested repository is fatal rather than causing the
+// repository to be silently skipped.
 // TODO: Unify this with quarry-client helper...
-func getClient(ctx context.Context, repoNames ...string) (*tufclient.Client, error) {
+func getClient(ctx context.Context, repoNames ...string) (_ *tufclient.Client, Err error) {
 	cfg := cliext.CtxConfig(ctx)
-
-	// If the user asked for a specific set of repositories, strip out the rest
-	// from the in-memory config.
-	if len(repoNames) > 0 {
-		filtered := make(map[string]*config.Repository, len(repoNames))
-		for _, name := range repoNames {
-			repo, ok := cfg.Repos[name]
-			if !ok {
-				return nil, fmt.Errorf("unknown repository %s requested", name)
-			}
-			filtered[name] = repo
-		}
-		cfg.Repos = filtered
-	}
 
 	client, err := tufclient.NewClient(ctx, cfg)
 	if err != nil {
+		return nil, err
+	}
+	defer funchelpers.CloseOnError(&Err, client)
+
+	if err := client.WithRepos(repoNames...); err != nil {
 		return nil, err
 	}
 	if refTime, ok := ctxext.RefTime(ctx); ok {
