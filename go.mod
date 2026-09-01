@@ -8,7 +8,7 @@ require (
 	cyphar.com/go-pathrs v0.2.5
 	github.com/BurntSushi/toml v1.6.0
 	github.com/coreos/go-systemd/v22 v22.7.0
-	github.com/google/uuid v1.1.1
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/handlers v1.5.2
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/umoci v0.6.0
