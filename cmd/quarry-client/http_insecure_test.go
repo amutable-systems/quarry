@@ -38,8 +38,11 @@ import (
 )
 
 // releaseFile is one file of a release, split into the image name and the rest
-// of the file name so that the version can be slotted in between.
+// of the file name so that a [releaseLayout] can decide where the version goes.
 type releaseFile struct{ name, suffix string }
+
+// releaseLayout maps a release file (of the given version) to its target path.
+type releaseLayout func(version string, file releaseFile) string
 
 // The target names are modelled on the nightly AmutableOS update repository: a
 // UKI, the /usr partition image with its verity data and signature, the SBOM
@@ -61,8 +64,24 @@ func flatLayout(version string, file releaseFile) string {
 	return file.name + "_" + version + "_" + file.suffix
 }
 
-// nightlyVersion is the release most tests publish, with the *Target names
-// below.
+// subdirLayout is the proposed layout: each release in its own versioned
+// directory, so the sysext lives next to the OS version it was built against.
+func subdirLayout(version string, file releaseFile) string {
+	return "nightly-" + version + "/" + file.name + "_" + file.suffix
+}
+
+// releaseLayouts are the release layouts the server must handle, each paired
+// with the other one (whose names for the same files must not exist).
+var releaseLayouts = []struct {
+	name          string
+	layout, other releaseLayout
+}{
+	{"Flat", flatLayout, subdirLayout},
+	{"Subdir", subdirLayout, flatLayout},
+}
+
+// nightlyVersion is the release most tests publish (in the flat layout, with
+// the *Target names below), as they do not care about the layout.
 const nightlyVersion = "26.08.25-0502"
 
 var (
@@ -180,19 +199,19 @@ func newTargetFiles(data []byte) *tufmetadata.TargetFiles {
 }
 
 // publishRelease publishes one release (every one of releaseFiles) of the
-// given version to srv, and returns the contents keyed by target path along
-// with the new timestamp. Like the real repository, the /usr image carries the
-// "supplemented-by" custom metadata linking it to its SBOM.
-func publishRelease(t *testing.T, srv *testrepo.Server, version string) (map[string][]byte, *tufext.SignedTimestamp) {
+// given version to srv using layout, and returns the contents keyed by target
+// path along with the new timestamp. Like the real repository, the /usr image
+// carries the "supplemented-by" custom metadata linking it to its SBOM.
+func publishRelease(t *testing.T, srv *testrepo.Server, layout releaseLayout, version string) (map[string][]byte, *tufext.SignedTimestamp) {
 	t.Helper()
 	files := make(map[string][]byte, len(releaseFiles))
 	ops := make([]tufrepo.TxnOp, 0, len(releaseFiles))
 	for _, file := range releaseFiles {
-		path := flatLayout(version, file)
+		path := layout(version, file)
 		data := []byte(file.name + " " + file.suffix + " " + version)
 		target := srv.WriteTarget(t, path, bytes.NewReader(data))
 		if file == usrFile {
-			custom := json.RawMessage(`{"quarry":{"supplemented-by":{"` + flatLayout(version, sbomFile) + `":{"type":"application/vnd.cyclonedx+json"}}}}`)
+			custom := json.RawMessage(`{"quarry":{"supplemented-by":{"` + layout(version, sbomFile) + `":{"type":"application/vnd.cyclonedx+json"}}}}`)
 			target.Custom = &custom
 		}
 		files[path] = data
@@ -201,10 +220,11 @@ func publishRelease(t *testing.T, srv *testrepo.Server, version string) (map[str
 	return files, srv.Publish(t, ops...)
 }
 
-// publishNightlyImage publishes the nightlyVersion release.
+// publishNightlyImage publishes the nightlyVersion release in the flat layout,
+// for tests that do not care about the layout.
 func publishNightlyImage(t *testing.T, srv *testrepo.Server) (map[string][]byte, *tufext.SignedTimestamp) {
 	t.Helper()
-	return publishRelease(t, srv, nightlyVersion)
+	return publishRelease(t, srv, flatLayout, nightlyVersion)
 }
 
 // waitForNextVersion makes sure a subsequent publish gets a distinct metadata
@@ -564,23 +584,29 @@ func TestHTTPSHA256SUMS(t *testing.T) {
 	assert.Equal(t, expectedSums(files), entries)
 }
 
-// systemd-sysupdate only understands flat file names, so any target with a
-// slash in its path is dropped from SHA256SUMS: quarry's own extension targets
-// (transfer definitions, machine tags), targets in subdirectories, and absolute
-// or parent-relative paths.
+// Targets that systemd-sysupdate cannot consume are left out of SHA256SUMS:
+// quarry's own extension targets (transfer definitions, machine tags) and
+// paths that sysupdate would reject or misinterpret. Targets in subdirectories
+// are fine.
 func TestHTTPSHA256SUMS_Filtered(t *testing.T) {
 	srv := testrepo.New(t)
 	files, _ := publishNightlyImage(t, srv)
 	waitForNextVersion()
+	nestedSysext := []byte("sysext in a subdirectory")
 	timestamp := srv.Publish(t,
+		srv.AddTarget(t, "sysexts/"+sysextTarget, bytes.NewReader(nestedSysext)),
 		// Consumed by quarry-sysupdate itself.
 		testrepo.AddTargetOp(xsysupdate.TransferFilePrefix+"AmutableOS.transfer", newTargetFiles([]byte("[Transfer]\n"))),
 		testrepo.AddTargetOp(xsysupdate.TagsPrefix+"channel", newTargetFiles([]byte("nightly\n"))),
-		// Subdirectories of any kind should not be visible.
-		srv.AddTarget(t, "sysexts/"+sysextTarget, strings.NewReader("sysext in a subdirectory")),
+		// Paths sysupdate must never see.
 		testrepo.AddTargetOp("/"+efiTarget, newTargetFiles([]byte("absolute path"))),
 		testrepo.AddTargetOp("../"+efiTarget, newTargetFiles([]byte("parent directory"))),
+		testrepo.AddTargetOp("sysexts/../"+efiTarget, newTargetFiles([]byte("interior parent directory"))),
+		testrepo.AddTargetOp("sysexts/./"+sysextTarget, newTargetFiles([]byte("interior current directory"))),
+		testrepo.AddTargetOp("sysexts//"+sysextTarget, newTargetFiles([]byte("empty component"))),
+		testrepo.AddTargetOp("sysexts/", newTargetFiles([]byte("trailing slash"))),
 	)
+	files["sysexts/"+sysextTarget] = nestedSysext
 	server := newServer(t, srv.ConfigBlock("nightly"))
 
 	resp, body := serverGet(t, server, "/SHA256SUMS")
@@ -643,7 +669,7 @@ func TestHTTP_RefreshPerRequest(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 
 	waitForNextVersion()
-	nextFiles, timestamp := publishRelease(t, srv, nextVersion)
+	nextFiles, timestamp := publishRelease(t, srv, flatLayout, nextVersion)
 	maps.Copy(files, nextFiles)
 
 	_, body = serverGet(t, server, "/SHA256SUMS")
@@ -694,4 +720,69 @@ func TestHTTP_MetadataFetchError(t *testing.T) {
 	assert.Equal(t, "Internal Server Error\n", string(body))
 	resp, _ = serverGet(t, server, "/"+efiTarget)
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
+// A release is forwarded wherever its layout puts the files: in the repository
+// root with the version in every file name (the current nightly layout), or in
+// a versioned directory (the proposed layout). SHA256SUMS lists the paths
+// verbatim and every redirect points at the same path under the data root. The
+// full path is the target name, so the same file under the other layout (or an
+// unversioned name, or a directory) does not exist.
+func TestHTTP_ReleaseLayouts(t *testing.T) {
+	const oldVersion, newVersion = "26.08.24-0000", "26.08.25-0502"
+
+	for _, rl := range releaseLayouts {
+		t.Run(rl.name, func(t *testing.T) {
+			for _, layout := range layouts {
+				t.Run(layout.name, func(t *testing.T) {
+					srv := testrepo.New(t, layout.opts...)
+					files, _ := publishRelease(t, srv, rl.layout, oldVersion)
+					waitForNextVersion()
+					newFiles, timestamp := publishRelease(t, srv, rl.layout, newVersion)
+					maps.Copy(files, newFiles)
+					server := newServer(t, srv.ConfigBlock("nightly"))
+
+					resp, body := serverGet(t, server, "/SHA256SUMS")
+					require.Equal(t, http.StatusOK, resp.StatusCode)
+					bestBefore, entries := parseSums(t, body)
+					assert.Equal(t, bestBeforeLine(timestamp.Signed.Expires), bestBefore)
+					assert.Equal(t, expectedSums(files), entries)
+
+					// Following the redirect has to yield the contents of the
+					// requested release, not the other one's.
+					for name, data := range files {
+						t.Run(name, func(t *testing.T) {
+							resp, _ := serverGet(t, server, "/"+name)
+							require.Equal(t, http.StatusFound, resp.StatusCode)
+							assert.Equal(t, dataURL(srv, name), resp.Header.Get("Location"))
+							assert.Equal(t, strconv.Itoa(len(data)), resp.Header.Get("X-Quarry-Content-Length"))
+							assert.Equal(t, sha256Digest(data), resp.Header.Get("Repr-Digest"))
+
+							resp, body := serverGetFollow(t, server, "/"+name)
+							assert.Equal(t, http.StatusOK, resp.StatusCode)
+							assert.Equal(t, data, body)
+						})
+					}
+
+					assertNotFound := func(name string) {
+						t.Run(name, func(t *testing.T) {
+							resp, _ := serverGet(t, server, "/"+name)
+							assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+						})
+					}
+					for _, name := range []string{
+						rl.layout("26.08.26-0000", efiFile), // never published
+						"nightly-" + newVersion,             // directories are not targets
+						"nightly-" + newVersion + "/",
+						efiFile.name + "_" + efiFile.suffix, // no layout has unversioned names
+					} {
+						assertNotFound(name)
+					}
+					for _, file := range releaseFiles {
+						assertNotFound(rl.other(newVersion, file))
+					}
+				})
+			}
+		})
+	}
 }
