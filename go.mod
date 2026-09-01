@@ -19,7 +19,7 @@ require (
 	github.com/tiendc/go-deepcopy v1.7.2
 	github.com/urfave/cli/v3 v3.8.0
 	golang.org/x/sys v0.42.0
-	gopkg.in/ini.v1 v1.67.2
+	gopkg.in/ini.v1 v1.67.3
 	snai.pe/go-varlink v0.0.0-20260218093529-c14cc4939572
 )
 
