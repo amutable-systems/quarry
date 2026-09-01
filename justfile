@@ -16,8 +16,7 @@ default: build-all
 
 build-all: \
 		(build "hardhat" buildtags) \
-		(build "quarry-client" buildtags) \
-		(build "quarry-sysupdate" buildtags)
+		(build "quarry" buildtags)
 
 build-all-in-container:
 	{{container_engine}} buildx build -f Dockerfile --target export \
@@ -63,12 +62,16 @@ install: install-hardhat install-client install-client-config
 install-hardhat:
 	install -Dm0755 {{outdir}}/hardhat {{destdir}}{{bindir}}/quarry-hardhat
 
-install-client:
-	install -Dm0755 {{outdir}}/quarry-client {{destdir}}{{bindir}}/quarry-client
+[private]
+install-multicall:
+	install -Dm0755 {{outdir}}/quarry {{destdir}}{{bindir}}/quarry
+
+install-client: install-multicall
+	ln -sf quarry {{destdir}}{{bindir}}/quarry-client
 	install -dm0755 {{destdir}}{{unitdir}}
 
-install-sysupdate:
-	install -Dm0755 {{outdir}}/quarry-sysupdate {{destdir}}{{bindir}}/quarry-sysupdate
+install-sysupdate: install-multicall
+	ln -sf quarry {{destdir}}{{bindir}}/quarry-sysupdate
 	install -Dm0644 -t {{destdir}}{{unitdir}} ./contrib/systemd/quarry-sysupdate*
 
 install-client-http-service:

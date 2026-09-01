@@ -1,13 +1,12 @@
 // Copyright (C) 2026 Amutable GmbH
 
-// quarry-client is a TUF client that is primarily designed to act as a bridge
-// between quarry repositories and systemd's sysupdate.
-package main
+// Package client implements quarry-client, a TUF client that is primarily
+// designed to act as a bridge between quarry repositories and systemd's
+// sysupdate. It is an applet of the quarry multi-call binary (cmd/quarry).
+package client
 
 import (
 	"context"
-	"fmt"
-	"os"
 
 	"github.com/urfave/cli/v3"
 
@@ -27,13 +26,7 @@ var app = cliext.WithRefTimeFlag(cliext.WithConfigFlag(&cli.Command{
 	},
 }))
 
+// Main is the entrypoint for the quarry-client applet.
 func Main(args []string) error {
 	return app.Run(context.Background(), args)
-}
-
-func main() {
-	if err := Main(os.Args); err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
-	}
 }

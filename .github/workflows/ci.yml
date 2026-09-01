@@ -61,6 +61,44 @@ jobs:
       - name: build in container
         run: just build-all-in-container
 
+  rpm-build:
+    name: rpmbuild (--${{ matrix.sysupdate }} sysupdate, --${{ matrix.insecure }} insecure)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    container:
+      # Track the current stable Fedora release, which should have new enough
+      # go and libpathrs packages to satisfy the BuildRequires of our spec.
+      image: registry.fedoraproject.org/fedora:latest@sha256:b013b98e4f4c43b46fb59b71b9d3d1f4f33df503ff84b1ea3415cafc32ead87c
+    strategy:
+      fail-fast: false
+      matrix:
+        sysupdate: [ with, without ]
+        insecure: [ with, without ]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: install build dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False rpm-build dnf5-plugins
+          dnf builddep -y contrib/rpm/quarry.spec
+      - name: rpmbuild (--${{ matrix.sysupdate }} sysupdate, --${{ matrix.insecure }} insecure)
+        env:
+          SYSUPDATE: ${{ matrix.sysupdate }}
+          INSECURE: ${{ matrix.insecure }}
+        run: |
+          topdir="$(mktemp -d)"
+          version="$(rpmspec --srpm -q --qf '%{version}' contrib/rpm/quarry.spec)"
+          mkdir -p "$topdir/SOURCES"
+          tar --exclude-vcs -czf "$topdir/SOURCES/quarry-${version}.tar.gz" .
+          rpmbuild -ba \
+              --define "_topdir $topdir" \
+              "--$SYSUPDATE" sysupdate \
+              "--$INSECURE" insecure \
+              contrib/rpm/quarry.spec
+
   go-test:
     name: go test
     runs-on: ubuntu-latest
@@ -201,6 +239,7 @@ jobs:
     needs:
       - build
       - build-container
+      - rpm-build
       - go-test
       - go-vuln
       - go-modcheck

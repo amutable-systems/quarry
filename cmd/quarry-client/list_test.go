@@ -1,6 +1,6 @@
 // Copyright (C) 2026 Amutable GmbH
 
-package main
+package client
 
 import (
 	"bytes"
