@@ -1,0 +1,32 @@
+# Copyright (C) 2026 Amutable GmbH
+
+version: 2
+updates:
+  # Go module dependencies.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  # Action pins.
+  - package-ecosystem: github-actions
+    directories:
+      - /  # This means ".github/workflows/*".
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  # Container image pins in our workflows. Note that dependabot cannot bump the
+  # images in our Dockerfile because the tags and digests are passed through
+  # build args -- those need to bumped by hand for now (or possibly via
+  # renovate?).
+  - package-ecosystem: docker
+    directory: /.github/workflows
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
