@@ -18,8 +18,7 @@ URL:            https://github.com/amutable-systems/quarry
 Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  go >= 1.25
-# This is currently installed on the host machine in a somewhat dodgy way.
-#BuildRequires:  libpathrs-devel >= 0.2.4
+BuildRequires:  libpathrs-devel >= 0.2.5
 BuildRequires:  just
 BuildRequires:  systemd-rpm-macros
 BuildRequires:  systemd-sysusers
