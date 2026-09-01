@@ -1,5 +1,0 @@
-# Copyright (C) 2026 Amutable GmbH
-
-#Type Name   ID  GECOS                        Home directory  Shell
-u     quarry -   "quarry-client http server"  -               -
-g     quarry -   -                            -               -

@@ -1,11 +1,11 @@
 # Copyright (C) 2026 Amutable GmbH
 
-%bcond http     1
-%bcond insecure 0
+%bcond sysupdate 1
+%bcond insecure  0
 
-%define buildtags %{?with_http:http} %{?with_insecure:insecure} %{nil}
+%define buildtags %{?with_sysupdate:http} %{?with_insecure:insecure} %{nil}
 
-%if %{with http}
+%if %{with sysupdate}
 %{!?client_http_port: %global client_http_port 555}
 %endif
 
@@ -17,15 +17,23 @@ License:        Proprietary
 URL:            https://github.com/amutable-systems/quarry
 Source0:        %{name}-%{version}.tar.gz
 
-BuildRequires:  go >= 1.25
+BuildRequires:  go >= 1.26.4
 BuildRequires:  libpathrs-devel >= 0.2.5
 BuildRequires:  just
 BuildRequires:  systemd-rpm-macros
 BuildRequires:  systemd-sysusers
 
 %description
-A TUF-based [1] update system that is solid as bedrock but produces updates
-using a protocol that is as dumb as rocks.
+A custom TUF [1] client that supports extensions used by Amutable OS for
+distributing updates and provisioning nodes.
+%if %{with sysupdate}
+
+This build of the quarry client includes support for driving system updates
+through sysupdate, making use of a HTTP-based bridge. If the system has
+compatible transfer files with (a [Source] with Path=http://localhost:%{client_http_port}/)
+then sysupdate can natively pull from TUF repositories. However for complete
+Quarry support, updates should be driven using the quarry-sysupdate helper.
+%endif
 
 [1]: https://theupdateframework.io/
 
@@ -37,46 +45,6 @@ A fairly minimal CLI management tool for Quarry repositories. It provides the
 low-level primitives necessary to manage (i.e., create and publish) a TUF
 repository containing arbitrary package contents.
 
-%package client
-Summary:        Client for Quarry Repositories
-
-%description client
-A custom TUF client that supports Quarry-specific extensions. In addition to
-working as a very minimal downloader for data stored in TUF repositories, it
-also provides a "source" of updates for sysupdate.
-%if %{with http}
-
-At the moment this is done via a HTTP-based "bridge" that translates TUF
-metadata to a sysupdate-compatible SHA256SUMS-based local HTTP server. By
-modifying the necessary transfer files to point to the local quarry-client-http
-server, sysupdate can pull from TUF repositories completely transparently
-without needing any changes to sysupdate.
-%endif
-
-%if %{with http}
-%package client-http
-Summary:        sysupdate-compatible HTTP Server Frontend for Quarry Repositories
-Requires:       %{name}-client = %{version}
-
-%description client-http
-This is a HTTP-based "bridge" that translates TUF metadata to a
-sysupdate-compatible SHA256SUMS-based local HTTP server using %{name}-client as
-a backend. By modifying the necessary transfer files to point to the local
-quarry-client-http server, sysupdate can pull from TUF repositories completely
-transparently without needing any changes to sysupdate.
-%endif
-
-%package sysupdate
-Summary:        Quarry-based sysupdate Runner
-Requires:       %{name}-client = %{version}
-%if %{with http}
-Requires:       %{name}-client-http = %{version}
-%endif
-
-%description sysupdate
-This is a wrapper around systemd-sysupdate to permit more flexible update
-schemes than are currently supported by upstream systemd.
-
 %prep
 %autosetup -C
 
@@ -87,13 +55,14 @@ just build-all
 %install
 export DESTDIR=%{buildroot}
 export SYSCONFDIR=%{_sysconfdir}
-%if %{with http}
+%if %{with sysupdate}
 export CLIENT_HTTP_PORT=%{client_http_port}
 %endif
 
 just install
 
-%if %{with http}
+%if %{with sysupdate}
+just install-sysupdate
 just install-client-http-service
 %endif
 
@@ -102,70 +71,60 @@ just install-client-http-service
 install -Dm0644 ./contrib/systemd/hardhat.sysusers %{buildroot}%{_sysusersdir}/%{name}-hardhat.conf
 install -Dm0644 ./contrib/systemd/hardhat.tmpfiles %{buildroot}%{_tmpfilesdir}/%{name}-hardhat.conf
 
-install -dm0755 %{buildroot}%{_sharedstatedir}/%{name}-client/latest-metadata
+install -dm0750 %{buildroot}%{_sharedstatedir}/%{name}-client/latest-metadata
+install -Dm0644 ./contrib/systemd/quarry-client.sysusers %{buildroot}%{_sysusersdir}/%{name}-client.conf
 install -Dm0644 ./contrib/systemd/quarry-client.tmpfiles %{buildroot}%{_tmpfilesdir}/%{name}-client.conf
-install -Dm0644 ./contrib/systemd/quarry-client-http.sysusers %{buildroot}%{_sysusersdir}/%{name}-client-http.conf
 # Directory for bundled trust roots.
 install -dm0755 %{buildroot}%{_datarootdir}/amutable/%{name}/bundled
 
-just install-sysupdate
-
-%if %{with http}
-%post client
+%if %{with sysupdate}
+%post
 %systemd_post %{name}-client-http.socket %{name}-client-http.service
-
-%preun client
-%systemd_preun %{name}-client-http.socket %{name}-client-http.service
-
-%postun client
-%systemd_postun_with_restart %{name}-client-http.socket %{name}-client-http.service
-%endif
-
-%post sysupdate
 %systemd_post %{name}-sysupdate.timer %{name}-sysupdate.service
 
-%preun sysupdate
+%preun
+%systemd_preun %{name}-client-http.socket %{name}-client-http.service
 %systemd_preun %{name}-sysupdate.timer %{name}-sysupdate.service
 
-%postun sysupdate
+%postun
+%systemd_postun_with_restart %{name}-client-http.socket %{name}-client-http.service
 %systemd_postun_with_restart %{name}-sysupdate.timer %{name}-sysupdate.service
+%endif
+
+%files
+# quarry is the multi-call binary containing all of the quarry-* commands. We
+# currently build the sysupdate applet regardless of the conditional here, so
+# disabling it only skips installing the symlink and units.
+%{_bindir}/%{name}
+%{_bindir}/%{name}-client
+%if %{with sysupdate}
+# quarry-sysupdate
+%{_bindir}/%{name}-sysupdate
+%{_unitdir}/%{name}-sysupdate*
+# quarry-client http
+%{_unitdir}/%{name}-client-http*
+%endif
+# For Amutable-bundled root.jsons.
+%dir %{_datarootdir}/amutable/%{name}
+%dir %{_datarootdir}/amutable/%{name}/bundled
+# Vendor configs.
+%dir %{_prefix}/lib/%{name}-client
+%{_prefix}/lib/%{name}-client/config.toml
+%dir %{_prefix}/lib/%{name}-client/config.toml.d
+%{_prefix}/lib/%{name}-client/config.toml.d/*.toml
+# User configs.
+%dir %{_sysconfdir}/%{name}-client
+%dir %{_sysconfdir}/%{name}-client/config.toml.d
+# Metadata cache directory.
+%attr(0750,quarry,quarry) %dir %{_sharedstatedir}/%{name}-client
+%{_tmpfilesdir}/%{name}-client.conf
+%{_sysusersdir}/%{name}-client.conf
 
 %files hardhat
 %{_bindir}/%{name}-hardhat
 #%%dir %%{_rundir}/%{name}
 %{_tmpfilesdir}/%{name}-hardhat.conf
 %{_sysusersdir}/%{name}-hardhat.conf
-
-%files client
-# quarry is the multi-call binary containing all of the quarry-* commands.
-# It lives in -client because -sysupdate requires -client.
-%{_bindir}/%{name}
-%{_bindir}/%{name}-client
-%{_unitdir}/%{name}-client*
-%dir %{_datarootdir}/amutable/%{name}
-%dir %{_prefix}/lib/%{name}-client
-%{_prefix}/lib/%{name}-client/config.toml
-%dir %{_prefix}/lib/%{name}-client/config.toml.d
-%{_prefix}/lib/%{name}-client/config.toml.d/*.toml
-%dir %{_sysconfdir}/%{name}-client
-%dir %{_sysconfdir}/%{name}-client/config.toml.d
-%if %{without http}
-%attr(-,quarry,quarry) %dir %{_sharedstatedir}/%{name}-client
-%{_tmpfilesdir}/%{name}-client.conf
-%{_sysusersdir}/%{name}-client-http.conf
-%endif
-
-%if %{with http}
-%files client-http
-%{_unitdir}/%{name}-client-http.*
-%attr(-,quarry,quarry) %dir %{_sharedstatedir}/%{name}-client
-%{_tmpfilesdir}/%{name}-client.conf
-%{_sysusersdir}/%{name}-client-http.conf
-%endif
-
-%files sysupdate
-%{_bindir}/%{name}-sysupdate
-%{_unitdir}/%{name}-sysupdate*
 
 %changelog
 %autochangelog
