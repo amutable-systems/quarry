@@ -56,9 +56,7 @@ func WithConfigFlag(cmd *cli.Command) *cli.Command {
 		if cmd.IsSet("cache-dir") {
 			cfg.CacheDir = cmd.String("cache-dir")
 		}
-		ctx = context.WithValue(ctx, configCtxKey, cfg)
-
-		return ctx, nil
+		return WithCtxConfig(ctx, cfg), nil
 	})
 
 	return cmd
@@ -68,4 +66,10 @@ func WithConfigFlag(cmd *cli.Command) *cli.Command {
 // configured using [WithConfigFlag].
 func CtxConfig(ctx context.Context) *config.Config {
 	return ctxext.Value[*config.Config](ctx, configCtxKey)
+}
+
+// WithCtxConfig manually sets the configuration that would be parsed with
+// [WithConfigFlag]. This is primarily intended for use by tests.
+func WithCtxConfig(ctx context.Context, cfg *config.Config) context.Context {
+	return context.WithValue(ctx, configCtxKey, cfg)
 }

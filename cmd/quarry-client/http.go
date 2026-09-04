@@ -239,6 +239,15 @@ func proxyTargetFile(rw http.ResponseWriter, req *http.Request) (Err error) {
 	return errors.New("no fetch urls defined for target")
 }
 
+// newSysupdateHandler returns a [http.Handler] that impements our sysupdate
+// SHA256SUM-based compatibility shim.
+func newSysupdateHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/SHA256SUMS", httpErrHandler(serveSHA256SUMS))
+	mux.HandleFunc("/{target...}", httpErrHandler(proxyTargetFile))
+	return mux
+}
+
 var httpCommand = &cli.Command{
 	Name:  "http",
 	Usage: "spawn a compatibility-shim SHA256SUMS-based sysupdate http server",
@@ -263,11 +272,8 @@ var httpCommand = &cli.Command{
 		proto.SetHTTP2(false) // no TLS
 		proto.SetUnencryptedHTTP2(true)
 
-		mux := http.NewServeMux()
-		mux.HandleFunc("/SHA256SUMS", httpErrHandler(serveSHA256SUMS))
-		mux.HandleFunc("/{target...}", httpErrHandler(proxyTargetFile))
-
-		handler := handlers.CombinedLoggingHandler(os.Stdout, mux)
+		handler := newSysupdateHandler()
+		handler = handlers.CombinedLoggingHandler(os.Stdout, handler)
 
 		server := &http.Server{
 			Addr:        cmd.String("bind-address"),
