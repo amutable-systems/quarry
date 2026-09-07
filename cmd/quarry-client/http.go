@@ -32,6 +32,7 @@ import (
 
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufext"
+	"go.amutable.dev/quarry/internal/xsysupdate"
 )
 
 func init() {
@@ -53,10 +54,17 @@ func httpErrHandler(fn func(http.ResponseWriter, *http.Request) error) func(http
 // value for BEST-BEFORE-YYYY-MM-DD).
 const sha256Empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
-func validSystemdFilename(path string) bool {
+func validSysupdatePath(path string) bool {
 	const _PATH_MAX = 4096 //nolint:revive // match unix.PAGE_SIZE naming style
-	return path != "" && path != "." && path != ".." &&
-		!strings.Contains(path, "/") && len(path) <= _PATH_MAX
+	if path == "" || len(path) > _PATH_MAX || strings.HasPrefix(path, "/") {
+		return false
+	}
+	for comp := range strings.SplitSeq(path, "/") {
+		if comp == "" || comp == "." || comp == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 func serveSHA256SUMS(rw http.ResponseWriter, req *http.Request) (Err error) {
@@ -120,14 +128,14 @@ func serveSHA256SUMS(rw http.ResponseWriter, req *http.Request) (Err error) {
 		if err != nil {
 			return err
 		}
-		// sysupdate does not permit certain pathnames in repos, while TUF
-		// basically allows everything. Would could path-escape the paths
-		// but then we would need to unescape them on get, so just strip
-		// them for now. Currently this is only planned to be used for
-		// sysupdate.d/ injection (which is handled outside of sysupdate --
-		// specifically, by hack/quarry-sysupdate -- anyway).
-		if !validSystemdFilename(target.Path) {
-			// TODO: Should we encode the path?
+		// Extension targets are consumed by quarry-sysupdate itself, not by
+		// systemd-sysupdate.
+		if strings.HasPrefix(target.Path, xsysupdate.ExtensionTargetPrefix) {
+			slog.Debug("Stripped quarry extension target from generated SHA256SUMS",
+				"target", target.Path)
+			continue
+		}
+		if !validSysupdatePath(target.Path) {
 			slog.Info("Stripped sysupdate-incompatible pathname from generated SHA256SUMS",
 				"target", target.Path)
 			continue
@@ -239,6 +247,15 @@ func proxyTargetFile(rw http.ResponseWriter, req *http.Request) (Err error) {
 	return errors.New("no fetch urls defined for target")
 }
 
+// newSysupdateHandler returns a [http.Handler] that impements our sysupdate
+// SHA256SUM-based compatibility shim.
+func newSysupdateHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/SHA256SUMS", httpErrHandler(serveSHA256SUMS))
+	mux.HandleFunc("/{target...}", httpErrHandler(proxyTargetFile))
+	return mux
+}
+
 var httpCommand = &cli.Command{
 	Name:  "http",
 	Usage: "spawn a compatibility-shim SHA256SUMS-based sysupdate http server",
@@ -263,11 +280,8 @@ var httpCommand = &cli.Command{
 		proto.SetHTTP2(false) // no TLS
 		proto.SetUnencryptedHTTP2(true)
 
-		mux := http.NewServeMux()
-		mux.HandleFunc("/SHA256SUMS", httpErrHandler(serveSHA256SUMS))
-		mux.HandleFunc("/{target...}", httpErrHandler(proxyTargetFile))
-
-		handler := handlers.CombinedLoggingHandler(os.Stdout, mux)
+		handler := newSysupdateHandler()
+		handler = handlers.CombinedLoggingHandler(os.Stdout, handler)
 
 		server := &http.Server{
 			Addr:        cmd.String("bind-address"),
