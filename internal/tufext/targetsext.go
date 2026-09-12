@@ -82,18 +82,28 @@ func (t targetFilesExt) WithInlineData(data []byte) targetFilesExt {
 
 // InlineData returns the inline data embedded in this target file after
 // verifying it against the target file's length and hashes with [VerifyData].
-// If there is no inline data then nil, nil is returned.
+//
+// If there is no inline data then nil, nil is returned. As an optimisation, if
+// the target file is zero-sized, a zero-length byte slice is returned.
 func (t targetFilesExt) InlineData() ([]byte, error) {
-	dataPtr, err := jsonutils.GetExtensionJSON[[]byte](t.TargetFiles, InlineDataField)
-	if err != nil {
-		return nil, err
+	var data []byte
+	if t.Length == 0 {
+		// Sentinel tag files are very often empty and while repos might use
+		// inline data to optimise it, we might as well also optimise for those
+		// that don't use that feature for whatever reason.
+		data = []byte{}
+	} else {
+		dataPtr, err := jsonutils.GetExtensionJSON[[]byte](t.TargetFiles, InlineDataField)
+		if err != nil {
+			return nil, err
+		}
+		if dataPtr == nil || *dataPtr == nil {
+			// An explicit JSON null carries no data -- treat it like an absent
+			// field (in contrast to "", which is a present-but-empty file).
+			return nil, nil
+		}
+		data = *dataPtr
 	}
-	if dataPtr == nil || *dataPtr == nil {
-		// An explicit JSON null carries no data -- treat it like an absent
-		// field (in contrast to "", which is a present-but-empty file).
-		return nil, nil
-	}
-	data := *dataPtr
 	if err := VerifyData(data, t.Length, t.Hashes); err != nil {
 		return nil, fmt.Errorf("verify inline data for target %s: %w", t.Path, err)
 	}

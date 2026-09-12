@@ -381,6 +381,32 @@ func TestHTTPProxyTarget_InlineData(t *testing.T) {
 	assert.Equal(t, sha256Digest(data), resp.Header.Get("Repr-Digest"))
 }
 
+// Empty targets are served directly even when the repository did not inline
+// them -- their contents are known from the metadata alone, so there is
+// nothing worth redirecting to.
+func TestHTTPProxyTarget_ZeroLength(t *testing.T) {
+	const emptyTarget = "an-empty-file.txt"
+	srv := testrepo.New(t)
+	// The target is deliberately never uploaded, so fail if anything tries to
+	// fetch it (the exact-path pattern wins over the data root).
+	srv.Handle(dataURLPath(srv, emptyTarget), http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		t.Errorf("unexpected request for empty target: %s", req.URL)
+		http.NotFound(rw, req)
+	}))
+	srv.Publish(t, testrepo.AddTargetOp(emptyTarget, newTargetFiles([]byte{})))
+	server := newServer(t, srv.ConfigBlock("nightly"))
+
+	resp, body := serverGetFollow(t, server, "/"+emptyTarget)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Empty(t, body)
+	assert.Equal(t, server.URL+"/"+emptyTarget, resp.Request.URL.String())
+	assert.Empty(t, resp.Header.Values("Location"))
+	assert.Equal(t, "application/octet-stream", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "0", resp.Header.Get("Content-Length"))
+	assert.Equal(t, sha256Digest(nil), resp.Header.Get("Content-Digest"))
+	assert.Equal(t, sha256Digest(nil), resp.Header.Get("Repr-Digest"))
+}
+
 // Inline data that does not match the target's hashes is rejected. Unlike
 // [tufclient.TargetInfo.Fetch] (which falls back to the fetch URLs), the server
 // treats this as a server error rather than redirecting to a copy that might

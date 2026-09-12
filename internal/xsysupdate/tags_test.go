@@ -378,6 +378,36 @@ func TestTagsApplyTarget_CorruptInlineDataFallback(t *testing.T) {
 	assert.Equal(t, "acp.foo=good-value", fullTag("acp.foo", ext.toApplyTags["acp.foo"]))
 }
 
+// A sentinel tag file is empty, and an empty target's contents are known from
+// its signed metadata alone -- so even a repository that does not inline its
+// tags never costs a fetch round-trip for a sentinel.
+func TestTagsApplyTarget_EmptyTagNotFetched(t *testing.T) {
+	ext, ctx := initTagsExt(t, hostnamedtest.Start(t).URI())
+
+	const targetPath = TagsPrefix + "acp.sentinel"
+	srv := testrepo.New(t)
+	// The tag is deliberately never written to the repository, and the
+	// exact-path pattern takes precedence over the server's target file
+	// serving.
+	srv.Handle(targetURLPath(srv, targetPath), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("empty machine tag must be read from the metadata, not fetched (got request for %s)", r.URL)
+		http.NotFound(w, r)
+	}))
+	sum := sha256.Sum256(nil)
+	info := &tufclient.TargetInfo{
+		TargetFiles: &tufmetadata.TargetFiles{
+			Path:   targetPath,
+			Length: 0,
+			Hashes: tufmetadata.Hashes{"sha256": sum[:]},
+		},
+		Repo: makeRepo(t, srv, "repo1"),
+	}
+
+	require.NoError(t, applyTagInfo(ctx, t, ext, info))
+	require.Len(t, ext.toApplyTags, 1)
+	assert.Equal(t, "acp.sentinel", fullTag("acp.sentinel", ext.toApplyTags["acp.sentinel"]))
+}
+
 // Duplicate target paths are resolved by repository order before extensions
 // ever see them, so ApplyTarget just takes the last value it was given.
 func TestTagsApplyTarget_LastValueWins(t *testing.T) {

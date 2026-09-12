@@ -104,6 +104,17 @@ func TestTargetInfoFetchInlineData(t *testing.T) {
 	assert.Equal(t, data, fetchAll(t, info))
 }
 
+// A zero-length target (such as a sentinel machine tag) needs no inline data
+// to be short-circuited -- its contents are known from the metadata alone, so
+// it is never fetched even if the repository did not bother to inline it.
+func TestTargetInfoFetchZeroLength(t *testing.T) {
+	srv := testrepo.New(t)
+	failOnFetch(t, srv)
+	info := newTargetInfo(serverRepo(t, srv), []byte{}, nil)
+
+	assert.Empty(t, fetchAll(t, info))
+}
+
 // Invalid inline data is not fatal -- Fetch falls back to fetching the target
 // from the candidate URLs.
 func TestTargetInfoFetchInlineDataCorruptFallback(t *testing.T) {

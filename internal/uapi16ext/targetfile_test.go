@@ -196,10 +196,27 @@ func TestFromTargetFileInlineData(t *testing.T) {
 	file, err := uapi16ext.FromTargetFile(target, testBaseURL(t))
 	require.NoError(t, err)
 	assert.Equal(t, []*uapi16.Contents{
-		{Literal: literal},
+		{Literal: generics.Ptr(literal)},
 		{URL: "https://example.com/data/FooOS.raw"},
 	}, file.Contents)
 	assert.Nil(t, file.UnrecognizedFields, "inline data must not be duplicated into xAmutableTufExt")
+}
+
+// A zero-length target's contents are known from its metadata alone, so it
+// gets an (explicitly empty) literal contents entry even without any inline
+// data -- a consumer need not fetch anything to materialise an empty file.
+func TestFromTargetFileZeroLength(t *testing.T) {
+	sum := sha256.Sum256(nil)
+	target := testTarget(t, "")
+	target.Length = 0
+	target.Hashes = tufmetadata.Hashes{"sha256": sum[:]}
+
+	file, err := uapi16ext.FromTargetFile(target, testBaseURL(t))
+	require.NoError(t, err)
+	assert.Equal(t, []*uapi16.Contents{
+		{Literal: generics.Ptr("")},
+		{URL: "https://example.com/data/FooOS.raw"},
+	}, file.Contents)
 }
 
 // The generated file object round-trips through a manifest unchanged.

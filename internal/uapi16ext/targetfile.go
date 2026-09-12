@@ -144,7 +144,7 @@ func FromTargetFile(target *tufmetadata.TargetFiles, baseURLs ...*url.URL) (*uap
 		return nil, fmt.Errorf("get target inline data: %w", err)
 	} else if data != nil {
 		contents = append(contents, &uapi16.Contents{
-			Literal: base64.StdEncoding.EncodeToString(data),
+			Literal: generics.Ptr(base64.StdEncoding.EncodeToString(data)),
 		})
 	}
 	// All other fetch URLs become UAPI.16 url contents entries.
