@@ -28,6 +28,8 @@ import (
 const (
 	fooHash = "315f3097821c3c2f001c50ab5996543598c819a566d18072f41834169ab827b2"
 	barHash = "4e7267fd5c54130fe83e69920d63e38117957e56f9172965b8db27c75a3c1a96"
+	// emptyHash is the sha256 of an empty file.
+	emptyHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 )
 
 // testRepo returns a [config.Repository] for a dummy repository. The config
@@ -147,6 +149,21 @@ func TestVerboseListFormatterInlineData(t *testing.T) {
 		"\t - sha256:"+hex.EncodeToString(sum[:])+"\n", got)
 }
 
+// An empty target is reported as inline data even when the repository did not
+// inline it, as its contents are known from the metadata alone.
+func TestVerboseListFormatterZeroLength(t *testing.T) {
+	got := outputAll(t,
+		func(wtr io.Writer) listFormatter { return newVerboseListFormatter(wtr) },
+		testTarget(t, "an-empty-file.txt", 0, emptyHash))
+	assert.Equal(t, "an-empty-file.txt:\n"+
+		"\tInline data: 0 bytes\n"+
+		"\tURL(s):\n"+
+		"\t - https://example.com/data/an-empty-file.txt\n"+
+		"\tSize: 0\n"+
+		"\tHashes:\n"+
+		"\t - sha256:"+emptyHash+"\n", got)
+}
+
 // The "custom" target file metadata is pretty-printed inline, which is the one
 // part of the verbose output that does not come from [pprintTargetFile].
 func TestVerboseListFormatterCustom(t *testing.T) {
@@ -192,6 +209,15 @@ func TestFormatListFormatterInlineData(t *testing.T) {
 	assert.Equal(t, "data:;base64,"+base64.StdEncoding.EncodeToString(data)+"\n", got)
 }
 
+// Likewise, %u expands to an (empty) data: URL for empty targets, whether or
+// not they were inlined.
+func TestFormatListFormatterZeroLength(t *testing.T) {
+	got := outputAll(t,
+		func(wtr io.Writer) listFormatter { return newFormatListFormatter(wtr, "%u") },
+		testTarget(t, "an-empty-file.txt", 0, emptyHash))
+	assert.Equal(t, "data:;base64,\n", got)
+}
+
 func TestFormatListFormatterInvalid(t *testing.T) {
 	var buf bytes.Buffer
 	formatter := newFormatListFormatter(&buf, "%Z")
@@ -229,24 +255,35 @@ func TestUAPI16ListFormatter(t *testing.T) {
 	}, parseManifest(t, buf.Bytes()))
 }
 
-// An inlined empty file gets an explicitly empty literal source ahead of the
-// URL. The literal must actually be on the wire -- a source-less {} entry
-// would mean "a file next to the manifest" to consumers.
-func TestUAPI16ListFormatterEmptyInlineData(t *testing.T) {
-	var buf bytes.Buffer
-	formatter := newUAPI16ListFormatter(&buf)
+// Ensure that empty literals are properly encoded (UAPI.16 treats an empty
+// contents object as indicating the file is relative to the manifest). An
+// empty file gets an empty literal whether the repository inlined it or the
+// client worked it out from the zero length alone.
+func TestUAPI16ListFormatterEmptyLiteral(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		target *tufclient.TargetInfo
+	}{
+		{"Inline", testInlineTarget(t, "an-empty-file.txt", []byte{})},
+		{"ZeroLength", testTarget(t, "an-empty-file.txt", 0, emptyHash)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			formatter := newUAPI16ListFormatter(&buf)
 
-	require.NoError(t, formatter.Begin(t.Context(), testClient(t)))
-	require.NoError(t, formatter.Output(t.Context(), testInlineTarget(t, "an-empty-file.txt", []byte{})))
-	require.NoError(t, formatter.Finish(t.Context()))
+			require.NoError(t, formatter.Begin(t.Context(), testClient(t)))
+			require.NoError(t, formatter.Output(t.Context(), test.target))
+			require.NoError(t, formatter.Finish(t.Context()))
 
-	assert.Contains(t, buf.String(), `"contents":[{"literal":""},`)
-	files := parseManifest(t, buf.Bytes())
-	require.Len(t, files, 2)
-	assert.Equal(t, []*uapi16.Contents{
-		{Literal: generics.Ptr("")},
-		{URL: "https://example.com/data/an-empty-file.txt"},
-	}, files[1].Contents)
+			assert.Contains(t, buf.String(), `"contents":[{"literal":""},`)
+			files := parseManifest(t, buf.Bytes())
+			require.Len(t, files, 2)
+			assert.Equal(t, []*uapi16.Contents{
+				{Literal: generics.Ptr("")},
+				{URL: "https://example.com/data/an-empty-file.txt"},
+			}, files[1].Contents)
+		})
+	}
 }
 
 // parseManifest splits a JSON-SEQ manifest into its file objects, verifying
