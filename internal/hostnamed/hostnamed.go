@@ -35,6 +35,9 @@ type Description struct {
 	// MachineInformationData is the full contents of machine-info(5), as an
 	// array of "KEY=VALUE" strings (with the values unescaped).
 	MachineInformationData []string `json:"MachineInformationData"`
+	// OperatingSystemImageVersion is IMAGE_VERSION= of the booted os-release(5)
+	// ("" if unset).
+	OperatingSystemImageVersion string `json:"OperatingSystemImageVersion"`
 }
 
 // Describe calls io.systemd.Hostname.Describe and returns the running
@@ -59,9 +62,17 @@ func CurrentTags(ctx context.Context, uri string) ([]string, error) {
 	if desc == nil {
 		return nil, errors.New("io.systemd.Hostname.Describe returned null data")
 	}
+	return desc.Tags(), nil
+}
+
+// Tags returns the machine tags of the description (from the TAGS= field of
+// machine-info(5)), sorted and deduplicated. The tags are not validated (see
+// [ParseTags]), so hand-edited machine-info files can yield tags that
+// hostnamed itself would reject.
+func (desc *Description) Tags() []string {
 	// MachineTags provides pre-parsed tags, so prefer that if it is available.
 	if desc.MachineTags != nil {
-		return desc.MachineTags, nil
+		return desc.MachineTags
 	}
 	// Fallback to parsing the raw TAGS= line from MachineInformationData if
 	// MachineTags is missing.
@@ -70,10 +81,10 @@ func CurrentTags(ctx context.Context, uri string) ([]string, error) {
 	// time for v262 too?
 	for _, kv := range desc.MachineInformationData {
 		if value, ok := strings.CutPrefix(kv, "TAGS="); ok {
-			return ParseTags(value), nil
+			return ParseTags(value)
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 // SetTagsParams is the input to [SetTags] (io.systemd.Hostname.SetTags) and

@@ -39,7 +39,7 @@ var refreshCommand = &cli.Command{
 			mustFprintf(wtr, "Refreshing %s ...", repoName)
 			_ = wtr.Sync()
 
-			if err := updater.Refresh(); err != nil {
+			if err := updater.Refresh(ctx); err != nil {
 				mustFprintf(wtr, " FAILED: %v\n", err)
 				errs = append(errs, err)
 			} else {

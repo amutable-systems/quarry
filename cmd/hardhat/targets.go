@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
@@ -30,6 +31,7 @@ import (
 	"go.amutable.dev/quarry/internal/keystore"
 	"go.amutable.dev/quarry/internal/linux"
 	"go.amutable.dev/quarry/internal/pathrsext"
+	"go.amutable.dev/quarry/internal/transferlayout"
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
@@ -97,6 +99,81 @@ func hashToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalP
 	if _, err := builder.AddTargetFile(logicalPath, size, digest); err != nil {
 		return fmt.Errorf("add file %s to targets data: %w", logicalPath, err)
 	}
+	return nil
+}
+
+// maxInlineSize bounds the contents the --quarry-* options embed into
+// targets.json. Inline data is meant for tiny metadata files, not payloads.
+const maxInlineSize = 64 << 10
+
+// addInlineBytes adds data as a target file with its contents inlined.
+func addInlineBytes(builder *tufext.TargetsBuilder, logicalPath string, data []byte) (*tufmetadata.TargetFiles, error) {
+	if int64(len(data)) > maxInlineSize {
+		return nil, fmt.Errorf("target %s is too large (%d bytes) to be inlined (limit %d bytes)", logicalPath, len(data), maxInlineSize)
+	}
+	target, err := builder.AddTargetFile(logicalPath, int64(len(data)), hashAlgorithm.FromBytes(data))
+	if err != nil {
+		return nil, fmt.Errorf("add file %s to targets data: %w", logicalPath, err)
+	}
+	tufext.TargetFilesExt(target).WithInlineData(data)
+	return target, nil
+}
+
+// applyCustomFrom merges the per-target "custom" objects from the given JSON
+// file ({"<target path>": {<custom fields>}}) into the targets. Every path
+// must name a target that was already added, so that a typo cannot silently
+// drop metadata. No path may be under .zzz-quarry-special/ because the
+// --quarry-* options own that metadata. Existing custom fields are kept unless
+// overridden by key.
+func applyCustomFrom(builder *tufext.TargetsBuilder, path string) error {
+	data, err := os.ReadFile(path) //nolint:forbidigo // user-controlled host path
+	if err != nil {
+		return fmt.Errorf("--custom-from=%q file is invalid: %w", path, err)
+	}
+	customs, err := jsonutils.Parse[map[string]map[string]json.RawMessage](data)
+	if err != nil {
+		return fmt.Errorf("--custom-from=%q file is invalid json: %w", path, err)
+	}
+	targets := builder.TargetsType().Targets
+	for targetPath, custom := range customs {
+		if strings.HasPrefix(targetPath, transferlayout.Prefix) {
+			return fmt.Errorf("--custom-from=%q: target %q is quarry metadata, which --custom-from must not change", path, targetPath)
+		}
+		target, ok := targets[targetPath]
+		if !ok {
+			return fmt.Errorf("--custom-from=%q: target %q does not exist", path, targetPath)
+		}
+		err := updateCustom(target, func(fields map[string]json.RawMessage) error {
+			maps.Copy(fields, custom)
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("--custom-from=%q: target %q: %w", path, targetPath, err)
+		}
+	}
+	return nil
+}
+
+// updateCustom lets update change the fields of a target's custom object and
+// stores the result. A missing or null custom object is an empty one.
+func updateCustom(target *tufmetadata.TargetFiles, update func(fields map[string]json.RawMessage) error) error {
+	fields := map[string]json.RawMessage{}
+	if target.Custom != nil {
+		if err := json.Unmarshal(*target.Custom, &fields); err != nil {
+			return fmt.Errorf("existing custom data is not an object: %w", err)
+		}
+	}
+	if fields == nil { // "custom": null
+		fields = map[string]json.RawMessage{}
+	}
+	if err := update(fields); err != nil {
+		return err
+	}
+	encoded, err := jsonutils.MarshalNoEscapeHTML(fields)
+	if err != nil {
+		return fmt.Errorf("encode custom data: %w", err)
+	}
+	target.Custom = (*json.RawMessage)(&encoded)
 	return nil
 }
 
@@ -254,7 +331,7 @@ func addPrehashedToTargets(ctx context.Context, builder *tufext.TargetsBuilder, 
 var targetsCommand = withKeystoreFlag(&cli.Command{
 	Name:  "targets",
 	Usage: "generate a TUF targets.json (or delegated target) file",
-	Flags: []cli.Flag{
+	Flags: append([]cli.Flag{
 		&cli.StringFlag{
 			Name:      "output",
 			Aliases:   []string{"o"},
@@ -269,6 +346,11 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		&cli.StringSliceFlag{
 			Name:  "include-from",
 			Usage: "include targets defined in the given targets.json files (later files take precedence, with <files> arguments taking highest precedence)",
+		},
+		&cli.StringSliceFlag{
+			Name:      "custom-from",
+			Usage:     "merge per-target \"custom\" objects from the given JSON file ({\"<target path>\": {...}}), where every path must name a target",
+			TakesFile: true,
 		},
 		&cli.BoolFlag{
 			Name:  "ext-override-url",
@@ -288,7 +370,7 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			Name:  "expire-after",
 			Usage: "configure the expiry of the targets file (duration relative to --ref-time)",
 		},
-	},
+	}, quarryTargetsFlags()...),
 	Arguments: []cli.Argument{
 		// TODO: This doesn't work if you have pre-hashed values.
 		// TODO: This won't work if you have enough files to hit the
@@ -342,6 +424,13 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		store := ctxKeystore(ctx)
+
+		// This happens before creating --output so that bad options leave it
+		// alone.
+		quarry, err := quarrySpecFromFlags(cmd)
+		if err != nil {
+			return err
+		}
 
 		var output io.Writer
 		if outPath := cmd.String("output"); outPath != "-" {
@@ -433,6 +522,30 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			} else {
 				if err := hashToTargets(ctx, builder, logicalFilename, file); err != nil {
 					return fmt.Errorf("failed to add %s (as %s) to targets: %w", filename, logicalFilename, err)
+				}
+			}
+		}
+
+		if err := addQuarryTargets(builder, quarry); err != nil {
+			return err
+		}
+
+		for _, customPath := range cmd.StringSlice("custom-from") {
+			if err := applyCustomFrom(builder, customPath); err != nil {
+				return err
+			}
+		}
+		// This comes after --custom-from because that replaces a target's
+		// whole "quarry" object. The .zzz-quarry-special/ targets are skipped.
+		// Transfer directories carry their transfer version, and machine tags
+		// carry none.
+		if version := cmd.String("custom-version"); version != "" {
+			for path, target := range builder.TargetsType().Targets {
+				if strings.HasPrefix(path, transferlayout.Prefix) {
+					continue
+				}
+				if err := setQuarryCustomVersion(target, version); err != nil {
+					return fmt.Errorf("--custom-version: %s: %w", path, err)
 				}
 			}
 		}

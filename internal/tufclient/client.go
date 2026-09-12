@@ -143,6 +143,125 @@ func RepoClient(ctx context.Context, cacheDir *pathrs.Root, repo *config.Reposit
 	return tufupdater.New(tufConfig)
 }
 
+// Repo is one repository loaded into a [Client]. It is either a full TUF
+// repository driven by a go-tuf updater or a bare signed targets file (see
+// [config.Repository.TargetsURL]). A bare targets repository only uses the
+// updater for its trusted root and reference time.
+type Repo struct {
+	repo     *config.Repository
+	cacheDir *pathrs.Root
+	updater  *tufupdater.Updater
+
+	// targets is the verified targets.json of a bare targets repository. It is
+	// nil until the repository has been refreshed.
+	targets *tufext.SignedTargets
+}
+
+// Refresh loads the repository's trusted metadata from its source. A go-tuf
+// backed repository can only be refreshed once.
+func (r *Repo) Refresh(ctx context.Context) error {
+	var err error
+	if r.repo.IsBareTargets() {
+		err = r.refreshBareTargets(ctx)
+	} else {
+		err = r.updater.Refresh()
+	}
+	if err != nil {
+		return fmt.Errorf("refresh repo %s: %w", r.repo.Name, err)
+	}
+	return nil
+}
+
+// refreshBareTargets fetches the targets.json of a bare targets repository and
+// verifies it against the targets keys of the trusted root. Without snapshot
+// and timestamp there is no protection against freeze, rollback or
+// mix-and-match attacks, which is acceptable for a build's own listing of its
+// artifacts.
+func (r *Repo) refreshBareTargets(ctx context.Context) error {
+	targetsURL := r.repo.TargetsURL.String()
+	data, err := r.repo.FetchTargets(ctx)
+	if err != nil {
+		return err
+	}
+	targets, err := jsonutils.Parse[*tufext.SignedTargets](data)
+	if err != nil {
+		return fmt.Errorf("%s is invalid JSON: %w", targetsURL, err)
+	}
+	if err := tufext.CheckMetadataType(tufmetadata.TARGETS, targets); err != nil {
+		return fmt.Errorf("%s is invalid targets.json: %w", targetsURL, err)
+	}
+	meta := r.updater.GetTrustedMetadataSet()
+	if err := meta.Root.VerifyDelegate(tufmetadata.TARGETS, targets); err != nil {
+		return fmt.Errorf("%s is not signed by the trusted root's targets keys: %w", targetsURL, err)
+	}
+	if targets.Signed.Delegations != nil {
+		return fmt.Errorf("%s has delegations, which bare targets repositories do not support", targetsURL)
+	}
+	if targets.Signed.IsExpired(meta.RefTime) {
+		return fmt.Errorf("%s expired at %s", targetsURL, targets.Signed.Expires.Format(time.RFC3339))
+	}
+	r.targets = targets
+	return nil
+}
+
+// ensure refreshes the repository if it has not been loaded yet.
+func (r *Repo) ensure(ctx context.Context) error {
+	// FIXME: The local client TrustedMetadata state does not get filled until
+	// we do a refresh but go-tuf's client does not allow Refresh on the same
+	// updater more than once(?!). So we do a refresh here opportunistically.
+	// TODO: Add a (*Client).Refresh helper to make this much less fragile.
+	// Check targets like go-tuf's GetTargetInfo, so that a partially failed
+	// refresh is retried instead of leaving Snapshot nil. Only one of the two
+	// is ever set, depending on the kind of repository.
+	if r.targets != nil || r.updater.GetTrustedMetadataSet().Targets[tufmetadata.TARGETS] != nil {
+		return nil
+	}
+	return r.Refresh(ctx)
+}
+
+// Expiry returns when the loaded metadata expires and loads it first if
+// needed. This is the timestamp.json expiry of a full repository or the
+// targets.json expiry of a bare one.
+func (r *Repo) Expiry(ctx context.Context) (time.Time, error) {
+	if err := r.ensure(ctx); err != nil {
+		return time.Time{}, err
+	}
+	if r.repo.IsBareTargets() {
+		return r.targets.Signed.Expires, nil
+	}
+	return r.updater.GetTrustedMetadataSet().Timestamp.Signed.Expires, nil
+}
+
+// targetsFetcher returns the fetcher [tufext.IterTargetFiles] walks the
+// repository with.
+func (r *Repo) targetsFetcher(ctx context.Context) (tufext.TargetMetadataFetchFunc, error) {
+	if err := r.ensure(ctx); err != nil {
+		return nil, err
+	}
+	if r.repo.IsBareTargets() {
+		return tufext.TargetsMapFetcher(map[string]*tufext.SignedTargets{tufmetadata.TARGETS: r.targets}), nil
+	}
+	meta := r.updater.GetTrustedMetadataSet()
+	return trustedMetadataTargetsFetcher(r.cacheDir, r.repo, &meta), nil
+}
+
+// getTargetInfo returns the metadata of one target, or go-tuf's "target
+// <path> not found" error.
+func (r *Repo) getTargetInfo(ctx context.Context, targetPath string) (*tufmetadata.TargetFiles, error) {
+	if !r.repo.IsBareTargets() {
+		return r.updater.GetTargetInfo(targetPath)
+	}
+	if err := r.ensure(ctx); err != nil {
+		return nil, err
+	}
+	target, ok := r.targets.Signed.Targets[targetPath]
+	if !ok {
+		// This is the error go-tuf returns, which GetTargetInfo checks for.
+		return nil, fmt.Errorf("target %s not found", targetPath)
+	}
+	return target, nil
+}
+
 // Client represents a Quarry client.
 type Client struct {
 	// Config is a copy of the configuration file used to instantiate this
@@ -158,7 +277,7 @@ type Client struct {
 	// updaters contains the TUF updaters for every repository that was
 	// successfully loaded by [NewClient], regardless of the subset currently
 	// selected with [Client.WithRepos] (activeRepos).
-	updaters map[string]*tufupdater.Updater
+	updaters map[string]*Repo
 
 	// activeRepos contains the TUF updaters for the active set of repositories
 	// that all operations act on. By default this is every loaded repository
@@ -208,10 +327,8 @@ func (client *Client) WithRepos(repoNames ...string) error {
 // repository order index (and name as a tie-breaker). Note that use of this
 // operation directly is very rarely necessary, most of the time
 // [GetTargetInfo] and [FetchTargetFile] are more ergonomic.
-//
-// TODO: Return some custom type?
-func (client *Client) IterRepos(_ context.Context) iter.Seq2[string, *tufupdater.Updater] {
-	return func(yield func(string, *tufupdater.Updater) bool) {
+func (client *Client) IterRepos(_ context.Context) iter.Seq2[string, *Repo] {
+	return func(yield func(string, *Repo) bool) {
 		repoIndex := func(name string) int64 {
 			return client.Config.Repos[name].OrderIndex()
 		}
@@ -241,8 +358,8 @@ func (client *Client) Close() error {
 // opens you up to freeze attacks, so this should only ever be used for testing
 // purposes.
 func (client *Client) SetRefTime(ctx context.Context, refTime time.Time) {
-	for _, updater := range client.IterRepos(ctx) {
-		updater.UnsafeSetRefTime(refTime)
+	for _, repo := range client.IterRepos(ctx) {
+		repo.updater.UnsafeSetRefTime(refTime)
 	}
 }
 
@@ -301,7 +418,7 @@ func (info *TargetInfo) Fetch(ctx context.Context) (io.ReadCloser, error) {
 // found.
 func (client *Client) GetTargetInfo(ctx context.Context, targetPath string) (*TargetInfo, error) {
 	for repoName, updater := range client.IterRepos(ctx) {
-		info, err := updater.GetTargetInfo(targetPath)
+		info, err := updater.getTargetInfo(ctx, targetPath)
 		if err != nil {
 			// FIXME: Grrr, why don't they use wrapped errors for this?!
 			if err.Error() == fmt.Sprintf("target %s not found", targetPath) {
@@ -335,8 +452,8 @@ func (client *Client) FetchTargetFile(ctx context.Context, targetPath string) (i
 }
 
 // trustedMetadataTargetsFetcher returns a [tufext.TargetMetadataFetchFunc] for
-// the given repository in the client.
-func (client *Client) trustedMetadataTargetsFetcher(repo *config.Repository, metadata *tuftrustedmetadata.TrustedMetadata) tufext.TargetMetadataFetchFunc {
+// the given repository.
+func trustedMetadataTargetsFetcher(cacheDir *pathrs.Root, repo *config.Repository, metadata *tuftrustedmetadata.TrustedMetadata) tufext.TargetMetadataFetchFunc {
 	var mu sync.RWMutex // to serialise access to TrustedMetadata
 
 	return func(ctx context.Context, roleName, delegatorName string) (_ *tufext.SignedTargets, Err error) {
@@ -374,7 +491,7 @@ func (client *Client) trustedMetadataTargetsFetcher(repo *config.Repository, met
 		// Make sure to make a local copy of the file.
 		// TODO: Use a pathrs-backed mktemp to allocate and swap over the file.
 		filePath := filepath.Join(repo.Name, roleName+".json") //nolint:forbidigo // lexical pathname
-		localFile, err := client.CacheDir.Create(filePath, unix.O_TRUNC|unix.O_CREAT|unix.O_WRONLY|unix.O_NOFOLLOW, 0o644)
+		localFile, err := cacheDir.Create(filePath, unix.O_TRUNC|unix.O_CREAT|unix.O_WRONLY|unix.O_NOFOLLOW, 0o644)
 		if err != nil {
 			return nil, fmt.Errorf("write role %s cached json: %w", roleName, err)
 		}
@@ -398,20 +515,10 @@ func (client *Client) IterTargetFiles(ctx context.Context) iter.Seq2[*TargetInfo
 			}
 
 			repo := client.Config.Repos[repoName]
-			meta := updater.GetTrustedMetadataSet()
-			if meta.Timestamp == nil {
-				// FIXME: The local client TrustedMetadata state does not get
-				// filled until we do a refresh but go-tuf's client does not
-				// allow Refresh on the same updater more than once(?!). So we
-				// do a refresh here opportunistically.
-				// TODO: Add a (*Client).Refresh helper to make this much less
-				// fragile.
-				if err := updater.Refresh(); err != nil {
-					return fmt.Errorf("refresh repo %s: %w", repo.Name, err)
-				}
-				meta = updater.GetTrustedMetadataSet()
+			fetchFn, err := updater.targetsFetcher(ctx)
+			if err != nil {
+				return err
 			}
-			fetchFn := client.trustedMetadataTargetsFetcher(repo, &meta)
 
 			for target, err := range tufext.IterTargetFiles(ctx, fetchFn) {
 				if err != nil {
@@ -460,7 +567,7 @@ func NewClient(ctx context.Context, config *config.Config) (_ *Client, Err error
 	defer funchelpers.CloseOnError(&Err, cacheDir)
 
 	var (
-		updaters     = make(map[string]*tufupdater.Updater, len(config.Repos))
+		updaters     = make(map[string]*Repo, len(config.Repos))
 		skippedRepos = make(map[string]error)
 	)
 	for _, repo := range config.Repos {
@@ -480,7 +587,7 @@ func NewClient(ctx context.Context, config *config.Config) (_ *Client, Err error
 		if err != nil {
 			return nil, fmt.Errorf("bad repo %s: %w", repo.Name, err)
 		}
-		updaters[repo.Name] = updater
+		updaters[repo.Name] = &Repo{repo: repo, cacheDir: cacheDir, updater: updater}
 	}
 	if len(updaters) < 1 {
 		slog.Warn("No repositories defined -- all operations are a no-op!")

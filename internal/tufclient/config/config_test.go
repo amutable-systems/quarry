@@ -1109,3 +1109,49 @@ func TestRootTrustSource_String(t *testing.T) {
 		})
 	}
 }
+
+// A targets_url makes the repository a bare targets file. The data root
+// defaults to the file's directory, the URL has to name a file, and a drop-in
+// can turn a repository into a bare targets one and back.
+func TestParseConfig_TargetsURL(t *testing.T) {
+	const (
+		head      = "config_version = 1\n[repo.\"example.com/build\"]\n"
+		tofu      = head + "root_trust = \"insecure-tofu\"\n"
+		nightly   = "targets_url = \"https://example.com/images/nightly-1/targets_x86-64.json\"\n"
+		setBare   = head + "targets_url = \"https://example.com/build/targets.json\"\n"
+		clearBare = head + "targets_url = \"\"\n"
+	)
+	for _, tc := range []struct {
+		name         string
+		fragments    []string
+		wantErr      string
+		wantBare     bool
+		wantDataRoot string
+	}{
+		{name: "Bare", fragments: []string{tofu + nightly}, wantBare: true, wantDataRoot: "https://example.com/images/nightly-1"},
+		{name: "DataRootURL", fragments: []string{tofu + nightly + "data_root_url = \"https://cdn.example.com/nightly-1\"\n"}, wantBare: true, wantDataRoot: "https://cdn.example.com/nightly-1"},
+		{name: "HostRoot", fragments: []string{tofu + "targets_url = \"https://example.com/targets.json\"\n"}, wantBare: true, wantDataRoot: "https://example.com/"},
+		{name: "Directory", fragments: []string{tofu + "targets_url = \"https://example.com/images/nightly-1/\"\n"}, wantErr: "does not name a file"},
+		{name: "Full", fragments: []string{tofu + "meta_root_url = \"https://example.com/repo\"\n"}, wantDataRoot: "https://example.com/repo/targets"},
+		{name: "MergeSet", fragments: []string{tofu, setBare}, wantBare: true, wantDataRoot: "https://example.com/build"},
+		{name: "MergeClear", fragments: []string{tofu, setBare, clearBare}, wantDataRoot: "https://example.com/build/targets"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Version: ConfigVersion, Repos: make(map[string]*Repository)}
+			for _, fragment := range tc.fragments {
+				parsed, err := parseToml(strings.NewReader(fragment))
+				require.NoError(t, err)
+				require.NoError(t, cfg.merge(parsed))
+			}
+			err := cfg.expandAndValidate()
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			repo := cfg.Repos["example.com/build"]
+			assert.Equal(t, tc.wantBare, repo.IsBareTargets())
+			assert.Equal(t, tc.wantDataRoot, repo.DataRootURL.String())
+		})
+	}
+}

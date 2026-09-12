@@ -85,24 +85,14 @@ func serveSHA256SUMS(rw http.ResponseWriter, req *http.Request) (Err error) {
 		errs   []error
 		expiry time.Time
 	)
-	for repoName, updater := range client.IterRepos(ctx) {
+	for _, updater := range client.IterRepos(ctx) {
 		// Construct BEST-BEFORE-YYYY-MM-DD based on the earliest timestamp
 		// expiry in any of the enabled repositories.
-		meta := updater.GetTrustedMetadataSet()
-		if meta.Timestamp == nil {
-			// FIXME: The local client TrustedMetadata state does not get
-			// filled until we do a refresh but go-tuf's client does not
-			// allow Refresh on the same updater more than once(?!). So we
-			// do a refresh here opportunistically.
-			// TODO: Add a (*Client).Refresh helper to make this much less
-			// fragile.
-			if err := updater.Refresh(); err != nil {
-				err := fmt.Errorf("refresh repo %s: %w", repoName, err)
-				errs = append(errs, err)
-			}
-			meta = updater.GetTrustedMetadataSet()
+		timestampExpiry, err := updater.Expiry(ctx)
+		if err != nil {
+			errs = append(errs, err)
+			continue
 		}
-		timestampExpiry := meta.Timestamp.Signed.Expires
 		if expiry.IsZero() || expiry.After(timestampExpiry) {
 			// The BEST-BEFORE-* format only has day-resolution, so round to
 			// the next day so that we never indicate that a repository is

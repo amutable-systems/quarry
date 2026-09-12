@@ -36,9 +36,8 @@ func initTagsExt(t *testing.T, uri string, allowed ...string) (*TagsExtension, c
 	}
 	ctx := context.Background()
 	ext := &TagsExtension{
-		AllowedNamespaces:    allowed,
-		SocketURI:            uri,
-		testingSkipSysupdate: true,
+		AllowedNamespaces: allowed,
+		SocketURI:         uri,
 	}
 	_, err := ext.Init(ctx)
 	require.NoError(t, err)
@@ -48,8 +47,7 @@ func initTagsExt(t *testing.T, uri string, allowed ...string) (*TagsExtension, c
 
 func TestTagsAllowedTagName(t *testing.T) {
 	ext := &TagsExtension{
-		AllowedNamespaces:    []string{"acp.", "special.tag"},
-		testingSkipSysupdate: true,
+		AllowedNamespaces: []string{"acp.", "special.tag"},
 	}
 	for _, test := range []struct {
 		name    string
@@ -546,9 +544,8 @@ func TestTagsBeforeUpdate_SetTagsFails(t *testing.T) {
 
 func TestTagsBeforeUpdate_HostnamedUnavailable(t *testing.T) {
 	ext := &TagsExtension{
-		AllowedNamespaces:    []string{"acp"},
-		SocketURI:            "unix:" + t.TempDir() + "/nonexistent-socket",
-		testingSkipSysupdate: true,
+		AllowedNamespaces: []string{"acp"},
+		SocketURI:         "unix:" + t.TempDir() + "/nonexistent-socket",
 	}
 	ctx := context.Background()
 	_, err := ext.Init(ctx)

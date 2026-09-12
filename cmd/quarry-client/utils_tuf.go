@@ -49,28 +49,19 @@ func getClient(ctx context.Context, repoNames ...string) (_ *tufclient.Client, E
 // earliestTimestampExpiry returns the earliest timestamp.json expiry of any of
 // the repositories in the client, which bounds how long any listing generated
 // from those repositories can be trusted for. The zero time is returned if the
-// client has no repositories.
+// client has no repositories. For bare targets repositories, the targets.json
+// expiry is used instead.
 func earliestTimestampExpiry(ctx context.Context, client *tufclient.Client) (time.Time, error) {
 	var (
 		errs   []error
 		expiry time.Time
 	)
-	for repoName, updater := range client.IterRepos(ctx) {
-		meta := updater.GetTrustedMetadataSet()
-		if meta.Timestamp == nil {
-			// FIXME: The local client TrustedMetadata state does not get filled
-			// until we do a refresh but go-tuf's client does not allow Refresh
-			// on the same updater more than once(?!). So we do a refresh here
-			// opportunistically.
-			// TODO: Add a (*Client).Refresh helper to make this much less
-			// fragile.
-			if err := updater.Refresh(); err != nil {
-				errs = append(errs, fmt.Errorf("refresh repo %s: %w", repoName, err))
-				continue
-			}
-			meta = updater.GetTrustedMetadataSet()
+	for _, updater := range client.IterRepos(ctx) {
+		timestampExpiry, err := updater.Expiry(ctx)
+		if err != nil {
+			errs = append(errs, err)
+			continue
 		}
-		timestampExpiry := meta.Timestamp.Signed.Expires
 		if expiry.IsZero() || expiry.After(timestampExpiry) {
 			expiry = timestampExpiry
 		}
