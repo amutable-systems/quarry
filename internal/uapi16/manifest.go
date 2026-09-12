@@ -28,8 +28,13 @@ type Contents struct {
 	// URL is a full http:// or https:// URL to fetch the data from.
 	URL string `json:"url,omitzero"`
 
-	// Literal is the data itself, in (possibly URL-safe) base64 form.
-	Literal string `json:"literal,omitzero"`
+	// Literal is the data itself, in (possibly URL-safe) base64 form. Unlike
+	// the other sources (where an empty value could never be fetched anyway),
+	// an empty literal is a perfectly good source -- the data of an empty file
+	// -- so it is a pointer to tell "set but empty" apart from "unset", and
+	// has to be emitted as such rather than being dropped and turning the
+	// entry into an implied file next to the manifest.
+	Literal *string `json:"literal,omitzero"`
 
 	// Encoding is the encoding that the source data is stored in, using the
 	// same specifiers as HTTP's Content-Encoding (i.e. "gzip" or "zstd"). If

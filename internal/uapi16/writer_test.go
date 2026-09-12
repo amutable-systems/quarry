@@ -116,6 +116,29 @@ func TestWriterEmptyContents(t *testing.T) {
 	assert.Equal(t, map[string]any{"name": "FooOS.raw", "contents": []any{}}, records[1])
 }
 
+// An empty literal is a real source (the data of an empty file), so it must
+// survive as "literal":"" rather than being omitted -- an entry with no source
+// at all would instead imply a file named [uapi16.File.Name] next to the
+// manifest.
+func TestWriterEmptyLiteral(t *testing.T) {
+	var buf bytes.Buffer
+	writer := uapi16.NewWriter(&buf)
+
+	require.NoError(t, writer.WriteFile(&uapi16.File{
+		Name:     "empty",
+		Size:     generics.Ptr[uint64](0),
+		Contents: []*uapi16.Contents{{Literal: generics.Ptr("")}},
+	}))
+
+	records := parseJSONSeq(t, buf.Bytes())
+	require.Len(t, records, 2)
+	assert.Equal(t, map[string]any{
+		"name":     "empty",
+		"size":     float64(0),
+		"contents": []any{map[string]any{"literal": ""}},
+	}, records[1])
+}
+
 func TestWriterRootMediaType(t *testing.T) {
 	var buf bytes.Buffer
 	writer := uapi16.NewWriter(&buf)

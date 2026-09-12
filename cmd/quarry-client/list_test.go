@@ -229,6 +229,26 @@ func TestUAPI16ListFormatter(t *testing.T) {
 	}, parseManifest(t, buf.Bytes()))
 }
 
+// An inlined empty file gets an explicitly empty literal source ahead of the
+// URL. The literal must actually be on the wire -- a source-less {} entry
+// would mean "a file next to the manifest" to consumers.
+func TestUAPI16ListFormatterEmptyInlineData(t *testing.T) {
+	var buf bytes.Buffer
+	formatter := newUAPI16ListFormatter(&buf)
+
+	require.NoError(t, formatter.Begin(t.Context(), testClient(t)))
+	require.NoError(t, formatter.Output(t.Context(), testInlineTarget(t, "an-empty-file.txt", []byte{})))
+	require.NoError(t, formatter.Finish(t.Context()))
+
+	assert.Contains(t, buf.String(), `"contents":[{"literal":""},`)
+	files := parseManifest(t, buf.Bytes())
+	require.Len(t, files, 2)
+	assert.Equal(t, []*uapi16.Contents{
+		{Literal: generics.Ptr("")},
+		{URL: "https://example.com/data/an-empty-file.txt"},
+	}, files[1].Contents)
+}
+
 // parseManifest splits a JSON-SEQ manifest into its file objects, verifying
 // the record framing as it goes.
 func parseManifest(t *testing.T, data []byte) []*uapi16.File {

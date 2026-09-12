@@ -196,7 +196,7 @@ func TestFromTargetFileInlineData(t *testing.T) {
 	file, err := uapi16ext.FromTargetFile(target, testBaseURL(t))
 	require.NoError(t, err)
 	assert.Equal(t, []*uapi16.Contents{
-		{Literal: literal},
+		{Literal: generics.Ptr(literal)},
 		{URL: "https://example.com/data/FooOS.raw"},
 	}, file.Contents)
 	assert.Nil(t, file.UnrecognizedFields, "inline data must not be duplicated into xAmutableTufExt")
