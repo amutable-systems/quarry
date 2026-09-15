@@ -340,11 +340,68 @@ func (client *Client) trustedMetadataTargetsFetcher(repo *config.Repository, met
 	var mu sync.RWMutex // to serialise access to TrustedMetadata
 
 	return func(ctx context.Context, roleName, delegatorName string) (_ *tufext.SignedTargets, Err error) {
-		mu.RLock() // TODO: Make this cancellable with ctx.
-		metaRef, ok := metadata.Snapshot.Signed.Meta[roleName+".json"]
+		// TODO: Make this critical section cancellable with ctx?
+		mu.RLock()
+		// Fetch the link from the snapshot.
+		metaRef, isKnownRole := metadata.Snapshot.Signed.Meta[roleName+".json"]
+		// Fetch the cached data if we have it already.
+		var (
+			savedTarget, haveFetched = metadata.Targets[roleName]
+			savedDelegator           tufext.TargetDelegatorRole
+			haveDelegator            bool
+		)
+		if delegatorName == tufmetadata.ROOT {
+			savedDelegator, haveDelegator = metadata.Root, true
+		} else {
+			savedDelegator, haveDelegator = metadata.Targets[delegatorName]
+		}
 		mu.RUnlock()
-		if !ok {
+
+		if !isKnownRole {
 			return nil, fmt.Errorf("role %s: %w", roleName, fs.ErrNotExist)
+		}
+		// IterTargetFiles can iterate over the same role more than once, so we
+		// can avoid unneeded fetches by returning the local data if we've
+		// already fetched and validated this role's hashes.
+		//
+		// It is safe to re-use the data because TrustedMetadata explicitly
+		// does not permit the timestamp or snapshot role data to be updated
+		// after targets have been fetched -- if we have the target already
+		// then this must be the exact same thing we would've fetched anyway.
+		if haveFetched {
+			// This really cannot happen, but add a check just in case. Sadly
+			// we cannot assert the hashes because those are not necessarily
+			// recomputable.
+			if savedTarget.Signed.Version != metaRef.Version {
+				return nil, fmt.Errorf(
+					"previously-fetched-and-trusted target role %s has inconsistent version (snapshot says %d but role has %d)",
+					roleName, metaRef.Version, savedTarget.Signed.Version,
+				)
+			}
+			// This cannot happen by construction (in order to reach a
+			// delegatee we must have already parsed the delegator data), but
+			// do it anyway to avoid nil panics.
+			if !haveDelegator {
+				return nil, fmt.Errorf(
+					"target role %s was reached from delegator %s without delegator being fetched (should never happen)",
+					roleName, delegatorName,
+				)
+			}
+			// Make sure that the saved target is actually signed by keys
+			// trusted by *this* delegator as well.
+			// NOTE: go-tuf does not do this because they basically implement
+			// <https://github.com/theupdateframework/specification/issues/321>
+			// incorrectly and never walk the same role twice.
+			// FIXME: This needs to be moved to IterTargetFiles so that the
+			// checking logic is generic -- we might even want to skip over bad
+			// delegations instead of erroring out...?
+			if err := savedDelegator.VerifyDelegate(roleName, savedTarget); err != nil {
+				return nil, fmt.Errorf(
+					"previously-fetched-and-trusted target role %s has bad signature for delegation from role %s: %w",
+					roleName, delegatorName, err,
+				)
+			}
+			return savedTarget, nil
 		}
 		metaPath := fmt.Sprintf("%d.%s.json", metaRef.Version, roleName)
 		metaURL := repo.MetaRootURL.JoinPath(metaPath)

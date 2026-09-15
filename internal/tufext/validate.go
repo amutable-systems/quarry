@@ -59,3 +59,11 @@ func CheckMetadataType[T tufmetadata.Roles](roleName string, data *tufmetadata.M
 	}
 	return nil
 }
+
+// TargetDelegatorRole is implemented by the TUF metadata types which can
+// delegate to other target roles.
+type TargetDelegatorRole interface {
+	// VerifyDelegate verifies that delegatedMetadata is signed with the
+	// required threshold of keys for the delegated role delegatedRole.
+	VerifyDelegate(delegatedRole string, delegatedMetadata any) error
+}

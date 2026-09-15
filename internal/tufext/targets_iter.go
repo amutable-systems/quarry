@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"io/fs"
 	"iter"
-	"slices"
+	"maps"
 
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
 	"go.amutable.dev/quarry/internal/generics"
+	"go.amutable.dev/quarry/internal/third_party/assert"
 )
 
 // TargetFileData is a tuple of (name, *[tufmetadata.TargetFiles]), mainly used
@@ -38,30 +39,49 @@ type TargetFileData struct {
 //
 // TODO: This does not currently handle succinct delegations.
 type DelegationChain struct {
-	links []*tufmetadata.DelegatedRole
+	// NOTE: The order of iteration doesn't matter for IsTargetPermitted.
+	links map[string]*tufmetadata.DelegatedRole
+}
+
+// Length returns the number of entries in the [DelegationChain].
+func (chain DelegationChain) Length() int {
+	return len(chain.links)
 }
 
 // IsEmpty returns whether the [DelegationChain] is empty (this can only be
 // true for the root "targets" role).
 func (chain DelegationChain) IsEmpty() bool {
-	return len(chain.links) == 0
+	return chain.Length() == 0
 }
 
 // clone makes a shallow copy of a [DelegationChain]. Not exported because
 // [DelegationChain]s are immutable in the public API.
 func (chain DelegationChain) clone() DelegationChain {
 	return DelegationChain{
-		links: slices.Clone(chain.links),
+		links: maps.Clone(chain.links),
 	}
+}
+
+// Contains returns true if the given role name was walked through in this
+// delegation chain (these are the same role names passed to
+// [DelegationChain.Extend]).
+func (chain DelegationChain) Contains(roleName string) bool {
+	return generics.MapContains(chain.links, roleName)
 }
 
 // Extend returns a copy of the [DelegationChain] with the given delegation
 // appended, indicating that the delegation came from the given role. The
-// receiver is left untouched.
-func (chain DelegationChain) Extend(delegation *tufmetadata.DelegatedRole) DelegationChain {
+// receiver is left untouched. This function will panic if several delegations
+// from the same role are appended.
+func (chain DelegationChain) Extend(fromRole string, delegation *tufmetadata.DelegatedRole) DelegationChain {
 	clone := chain.clone()
 	if delegation != nil {
-		clone.links = append(clone.links, delegation)
+		assert.Assertf(!chain.Contains(fromRole),
+			"DelegationChain must not have the same role %q inserted multiple times", fromRole)
+		if clone.links == nil {
+			clone.links = make(map[string]*tufmetadata.DelegatedRole, 32)
+		}
+		clone.links[fromRole] = delegation
 	}
 	return clone
 }
@@ -107,7 +127,7 @@ func TargetsMapFetcher(targets map[string]*SignedTargets) TargetMetadataFetchFun
 // algorithm used by TUF to search for the correct target file. Note that the
 // order of files yielded is not stable.
 //
-// The provided [GetTargetMetadataFunc] is called each time a target's role
+// The provided [TargetMetadataFetchFunc] is called each time a target's role
 // metadata needs to be loaded.
 //
 // TODO(links): This will need callbacks and a lot more infrastructure once we
@@ -115,8 +135,12 @@ func TargetsMapFetcher(targets map[string]*SignedTargets) TargetMetadataFetchFun
 // ideal because we need to pre-fetch all of the targets which the default
 // updater doesn't do.)
 func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.Seq2[TargetFileData, error] {
-	const maxDelegations = 128
-
+	// TODO: Pass these in as configuration so that this matches tufclient's
+	// limits exactly and potentially works better with links?
+	const (
+		maxDelegationDepth = 32 // go-tuf default limit
+		maxDelegations     = 4096
+	)
 	return generics.ErrorIter(func(yield func(TargetFileData) bool) error {
 		seenTargets := make(map[string]struct{}, 256)
 
@@ -140,8 +164,8 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 		// forbidden patterns until all child delegations have been processed.
 		type terminationTodo DelegationChain
 
-		// Queue and seen-list to avoid re-iterating on a role.
-		seen := make(map[string]struct{}, maxDelegations)
+		var seenDelegations int
+		// Stack of remaining delegations to visit.
 		todo := []any{roleTodo{
 			name:      tufmetadata.TARGETS,
 			delegator: tufmetadata.ROOT,
@@ -162,24 +186,68 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 				panic(fmt.Sprintf("unexpected type %T", next))
 			}
 
-			if len(seen) >= maxDelegations {
-				// In order to avoid a DoS by some role creating a long chain,
-				// we have a limit but we do not
-				// TODO(log): Add logging...
-				return nil
-			}
-			if _, ok := seen[thisRole.name]; ok {
-				// As per TUF specification s5.6.7.1.
-				// TODO: While the spec implies this is what we should do, in
-				// practice clients do not descend into roles that do not match
-				// so really we would need to collate .
+			// s5.6.7.1 places several restrictions on walking into delegations
+			// to avoid unbounded loops or DoSes:
+			switch {
+			// Skip walking into roles that were already seen in this
+			// delegation chain, to avoid cycles.
+			//
+			// TODO: The current text of the TUF specification (s5.6.7.1)
+			// implies that this needs to be a global seen list but based on
+			// recent upstream discussions, do it this way instead.
+			// See <https://github.com/theupdateframework/specification/issues/321>.
+			case thisRole.chain.Contains(thisRole.name):
 				continue roles
+
+			// When fetching a target file, if you hit too many delegations you
+			// need to stop iterating and just return *without an error* (to
+			// avoid a DoS). This is a global limit for each target file
+			// lookup.
+			//
+			// TODO(links): We must make sure that the delegation iteration
+			// limits here apply to links so links don't reset the delegation
+			// depth restriction.
+			//
+			// Unfortunately, we cannot really guarantee the exact same
+			// behaviour when iterating over delegations because we are
+			// effectively emulating a virtual lookup for *all* target files.
+			// The completely "correct" mechanism would be to track the degree
+			// of overlap between different delegation path patterns (good luck
+			// with hash-based delegations) and restrict iteration based on
+			// that, but that is not really workable. I think we just have to
+			// accept that we will iterate over delegations that are not
+			// reachable when actually fetching. This issue was briefly
+			// mentioned in <https://github.com/theupdateframework/specification/issues/321>.
+			//
+			// So, we have two heuristics to try to have somewhat reasonable
+			// behaviour:
+			case thisRole.chain.Length() > maxDelegationDepth:
+				// 1. Skip delegation chains longer than maxDelegationDepth,
+				// as they would be skipped by clients as per s5.6.7.1.
+				//
+				// TODO(log): Add logging...?
+				continue roles
+			case seenDelegations >= maxDelegations:
+				// 2. Add a hard upper bound on the number of total delegations
+				// in a repository. This might not violate s5.6.7.1 but such a
+				// repository is clearly "wrong". If we didn't do this, a bad
+				// repository could create one 32-deep delegation tree then
+				// delegate to it millions of times.
+				//
+				// TODO: Find a better solution.
+				// TODO(log): Add logging...?
+				break roles
 			}
 			role, err := fetchFn(ctx, thisRole.name, thisRole.delegator)
 			if err != nil {
 				return fmt.Errorf("target file walk aborted: failed to get role %s: %w", thisRole.name, err)
 			}
-			seen[thisRole.name] = struct{}{}
+			// TODO: Validate the delegation signatures here as well (the real
+			// fetchFn used by clients does so implicitly but we should do it
+			// for everything -- though "targets" might be a bit tricky to
+			// validate since we don't have the root here). This might also
+			// allow us to skip bad delegations...?
+			seenDelegations++
 
 			// First, yield all of the immediate target files.
 		targets:
@@ -206,6 +274,11 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 					// TODO(log): Add logging.
 					continue targets
 				}
+				// TODO: We probably should check if this target file would
+				// actually be fetched by a tuf client by seeing how many
+				// previous delegation paths match against it -- if it is over
+				// the limit (maxDelegationDepth) then we should mask it here
+				// too.
 				if !yield(TargetFileData{Path: path, TargetFiles: meta}) {
 					return nil
 				}
@@ -220,7 +293,6 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 				if delegations.SuccinctRoles != nil {
 					return fmt.Errorf("role %s uses succinct roles: unsupported feature", thisRole.name)
 				}
-
 				// Append the delegations in reverse order so the first entry
 				// ends up at the top of the stack (tail of todo), to match
 				// s5.6.7 of the TUF spec.
@@ -234,7 +306,7 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 					if len(delegatedRole.PathHashPrefixes) > 0 {
 						return fmt.Errorf("role %s uses path prefixes: unsupported feature", delegatedRole.Name)
 					}
-					newChain := thisRole.chain.Extend(&delegatedRole)
+					newChain := thisRole.chain.Extend(thisRole.name, &delegatedRole)
 					// If this is a terminating delegation then we need to
 					// push a termination marker beneath the role so that roles
 					// already on the todo stack (i.e., later siblings and

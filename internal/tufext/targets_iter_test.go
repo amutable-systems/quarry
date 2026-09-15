@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"iter"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -497,11 +498,13 @@ func TestIterTargetFiles_TerminatingAppliesEvenIfRoleSkippedByCycle(t *testing.T
 	assert.Equal(t, map[string]*tufmetadata.TargetFiles{"control": control, "x/in-a": inA}, got)
 }
 
-func TestIterTargetFiles_TerminatingAppliesEvenIfRoleAlreadyVisited(t *testing.T) {
-	// Diamond variant of the above: "shared" is first reached via "a"
-	// (non-terminating) and then via "b" (terminating). A go-tuf lookup for
-	// x/from-c clears its stack on encountering b's terminating delegation
-	// and then skips the already-visited "shared", so "c" is never consulted.
+func TestIterTargetFiles_TerminatingOnSecondPathBlocksLaterSiblings(t *testing.T) {
+	// Diamond variant of the above: "shared" is reached via "a"
+	// (non-terminating) and again via "b" (terminating); cycle detection is
+	// per path, so the second visit is walked rather than skipped. A go-tuf
+	// lookup for x/from-c clears its stack on encountering b's terminating
+	// delegation, so "c" is never consulted, and the marker must apply after
+	// the second visit's subtree however that visit is handled.
 	control := tf(99)
 	got := pathsFrom(t, map[string]*tufext.SignedTargets{
 		tufmetadata.TARGETS: signedTargets(
@@ -520,8 +523,38 @@ func TestIterTargetFiles_TerminatingAppliesEvenIfRoleAlreadyVisited(t *testing.T
 	assert.Equal(t, map[string]*tufmetadata.TargetFiles{"control": control}, got)
 }
 
+func TestIterTargetFiles_TerminatingAppliesEvenIfRoleSkippedByDepthCap(t *testing.T) {
+	// Companion to TerminatingAppliesEvenIfRoleSkippedByCycle for the other
+	// reason a role can be skipped: r31 delegates terminatingly to r32, which
+	// sits past the depth cap and is never walked. go-tuf clears its stack on
+	// encountering the terminating delegation (and gives up at its own cap
+	// right after), so the later top-level sibling "b" must still be blocked
+	// for x/*. "control" is the positive control.
+	const depth = 33 // r32 has a chain of length 33 > maxDelegationDepth
+	control := tf(99)
+	all := map[string]*tufext.SignedTargets{
+		tufmetadata.TARGETS: signedTargets(
+			map[string]*tufmetadata.TargetFiles{"control": control},
+			[]tufmetadata.DelegatedRole{
+				dr("r0", false, "x/*"),
+				dr("b", false, "x/*"),
+			},
+		),
+		"b": signedTargets(map[string]*tufmetadata.TargetFiles{"x/from-b": tf(2)}, nil),
+	}
+	for i := 0; i < depth-1; i++ {
+		all[fmt.Sprintf("r%d", i)] = signedTargets(nil, []tufmetadata.DelegatedRole{
+			dr(fmt.Sprintf("r%d", i+1), i == depth-2, "x/*"), // only r31 -> r32 terminates
+		})
+	}
+	all[fmt.Sprintf("r%d", depth-1)] = signedTargets(map[string]*tufmetadata.TargetFiles{"x/deep": tf(3)}, nil)
+
+	got := pathsFrom(t, all)
+	assert.Equal(t, map[string]*tufmetadata.TargetFiles{"control": control}, got)
+}
+
 func TestIterTargetFiles_CycleSelfReference(t *testing.T) {
-	// d1 delegates to itself; the seen-set must prevent re-entry.
+	// d1 delegates to itself; the per-path cycle check must prevent re-entry.
 	d1Meta := tf(1)
 	got := pathsFrom(t, map[string]*tufext.SignedTargets{
 		tufmetadata.TARGETS: signedTargets(nil, []tufmetadata.DelegatedRole{
@@ -554,8 +587,8 @@ func TestIterTargetFiles_CycleTwoRoles(t *testing.T) {
 }
 
 func TestIterTargetFiles_DiamondGraph(t *testing.T) {
-	// Two parents delegate to "shared"; the seen-set ensures it's processed
-	// once via whichever path reaches it first.
+	// Two parents delegate to "shared". It is walked once per delegation
+	// path, but the target is yielded once: the first path to reach it wins.
 	got := pathsFrom(t, map[string]*tufext.SignedTargets{
 		tufmetadata.TARGETS: signedTargets(nil, []tufmetadata.DelegatedRole{
 			dr("a", false, "x/*"),
@@ -572,6 +605,28 @@ func TestIterTargetFiles_DiamondGraph(t *testing.T) {
 		}, nil),
 	})
 	assert.Equal(t, []string{"x/file"}, keysOf(got))
+}
+
+func TestIterTargetFiles_DiamondDifferentPatterns(t *testing.T) {
+	// "shared" is reachable via "a" (x/*) and via "b" (y/*). A real lookup
+	// for "y/file" never descends into "a", so it reaches "shared" through
+	// "b" and succeeds. A global visited set would have walked "shared" via
+	// "a" only, rejected "y/file" against a's chain and never come back;
+	// per-path cycle detection walks it again via "b".
+	xf, yf := tf(1), tf(2)
+	got := pathsFrom(t, map[string]*tufext.SignedTargets{
+		tufmetadata.TARGETS: signedTargets(nil, []tufmetadata.DelegatedRole{
+			dr("a", false, "x/*"),
+			dr("b", false, "y/*"),
+		}),
+		"a": signedTargets(nil, []tufmetadata.DelegatedRole{dr("shared", false, "x/*", "y/*")}),
+		"b": signedTargets(nil, []tufmetadata.DelegatedRole{dr("shared", false, "x/*", "y/*")}),
+		"shared": signedTargets(map[string]*tufmetadata.TargetFiles{
+			"x/file": xf,
+			"y/file": yf,
+		}, nil),
+	})
+	assert.Equal(t, map[string]*tufmetadata.TargetFiles{"x/file": xf, "y/file": yf}, got)
 }
 
 func TestIterTargetFiles_PreOrderDepthFirst(t *testing.T) {
@@ -667,27 +722,32 @@ func TestIterTargetFiles_SuccinctRoles(t *testing.T) {
 	assert.Contains(t, err.Error(), "succinct roles")
 }
 
-func TestIterTargetFiles_MaxDelegationsCap(t *testing.T) {
-	// Linear chain of 130 delegations exceeds the 128 cap. To match go-tuf
-	// and avoid DoS amplification on long-chain inputs, hitting the cap
-	// stops iteration cleanly without an error. Targets beyond the cap are
-	// silently dropped; targets within it are still yielded.
+func TestIterTargetFiles_MaxDelegationDepth(t *testing.T) {
+	// A chain deeper than go-tuf's default MaxDelegations (32) can never be
+	// reached by a real lookup, so roles past that depth are skipped without
+	// an error. go-tuf's loop runs while visited <= 32, so it walks 33 roles
+	// down a pure chain: "targets" plus r0..r31. r_i has a chain of length
+	// i+1 and is skipped once that exceeds 32, so r31 is the last role walked
+	// and r32 onwards are dropped.
 	//
-	// TARGETS is the 1st role processed; r_i is the (i+2)th. The cap permits
-	// processing while len(seen) < 128, so r126 is the last role processed
-	// (seen=127 on entry, seen=128 after) and r127 onwards are skipped.
-	const linearLen = 130
-	all := make(map[string]*tufext.SignedTargets, linearLen+1)
+	// The depth cap only prunes the over-deep branch: a sibling declared
+	// after it must still be walked, unlike the total cap (see
+	// TestIterTargetFiles_MaxDelegationsTotal).
+	const linearLen = 40
+	all := make(map[string]*tufext.SignedTargets, linearLen+2)
 	all[tufmetadata.TARGETS] = signedTargets(
 		map[string]*tufmetadata.TargetFiles{"x/start": tf(1)},
-		[]tufmetadata.DelegatedRole{dr("r0", false, "x/*")},
+		[]tufmetadata.DelegatedRole{
+			dr("r0", false, "x/*"),
+			dr("shallow", false, "y/*"),
+		},
 	)
 	for i := 0; i < linearLen-1; i++ {
 		var targets map[string]*tufmetadata.TargetFiles
 		switch i {
-		case 126:
+		case 31:
 			targets = map[string]*tufmetadata.TargetFiles{"x/at-cap": tf(2)}
-		case 127:
+		case 32:
 			targets = map[string]*tufmetadata.TargetFiles{"x/over-cap": tf(3)}
 		}
 		all[fmt.Sprintf("r%d", i)] = signedTargets(targets, []tufmetadata.DelegatedRole{
@@ -695,9 +755,10 @@ func TestIterTargetFiles_MaxDelegationsCap(t *testing.T) {
 		})
 	}
 	all[fmt.Sprintf("r%d", linearLen-1)] = signedTargets(nil, nil)
+	all["shallow"] = signedTargets(map[string]*tufmetadata.TargetFiles{"y/shallow": tf(4)}, nil)
 
 	got, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(all)))
-	require.NoError(t, err, "exceeding the cap must not produce an error")
+	require.NoError(t, err, "exceeding the depth cap must not produce an error")
 
 	paths := make(map[string]struct{}, len(got))
 	for _, td := range got {
@@ -706,6 +767,49 @@ func TestIterTargetFiles_MaxDelegationsCap(t *testing.T) {
 	assert.Contains(t, paths, "x/start")
 	assert.Contains(t, paths, "x/at-cap")
 	assert.NotContains(t, paths, "x/over-cap")
+	assert.Contains(t, paths, "y/shallow", "the depth cap must only prune the deep branch")
+}
+
+func TestIterTargetFiles_MaxDelegationsTotal(t *testing.T) {
+	// Roles are no longer deduplicated globally, so a repository could make
+	// the walk revisit a modest tree an enormous number of times. A hard cap
+	// on fetched roles stops the walk, without an error, once reached. Unlike
+	// the depth cap this ends the whole walk: nothing declared after the
+	// cut-off is visited. The fetcher synthesises roles on demand so the
+	// fixture stays small.
+	const (
+		totalCap = 4096
+		fanOut   = totalCap + 100
+	)
+	roles := make([]tufmetadata.DelegatedRole, 0, fanOut)
+	for i := range fanOut {
+		roles = append(roles, dr(fmt.Sprintf("c%d", i), false, "c/*"))
+	}
+	var fetches int
+	fetch := func(_ context.Context, roleName, _ string) (*tufext.SignedTargets, error) {
+		fetches++
+		if roleName == tufmetadata.TARGETS {
+			return signedTargets(nil, roles), nil
+		}
+		if !strings.HasPrefix(roleName, "c") {
+			return nil, fmt.Errorf("unexpected fetch %q", roleName)
+		}
+		return signedTargets(map[string]*tufmetadata.TargetFiles{"c/" + roleName: tf(1)}, nil), nil
+	}
+	got, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), fetch))
+	require.NoError(t, err, "hitting the total cap must not produce an error")
+
+	// "targets" is the first fetch, so totalCap-1 children are walked, in
+	// declared order, before the cap trips.
+	assert.Equal(t, totalCap, fetches)
+	assert.Len(t, got, totalCap-1)
+	paths := make(map[string]struct{}, len(got))
+	for _, td := range got {
+		paths[td.Path] = struct{}{}
+	}
+	assert.Contains(t, paths, "c/c0")
+	assert.Contains(t, paths, fmt.Sprintf("c/c%d", totalCap-2))
+	assert.NotContains(t, paths, fmt.Sprintf("c/c%d", totalCap-1))
 }
 
 func TestIterTargetFiles_Reusable(t *testing.T) {
@@ -758,11 +862,11 @@ func TestIterTargetFiles_EarlyTermination(t *testing.T) {
 }
 
 func TestIterTargetFiles_DeepDelegationsWithSiblings(t *testing.T) {
-	// Regression for a patternChain aliasing bug: when a parent's slice has
-	// cap > len, two siblings' appends share a backing array and the second
-	// clobbers the first. Whether cap > len holds at a given depth is a Go
-	// runtime detail, so we sweep several depths to stay robust against
-	// growth-strategy changes (today, depths 3/5/6/7 trigger; 4/8/16 don't).
+	// Regression for a chain aliasing bug: siblings derived from the same
+	// parent shared the parent's backing storage (a slice with cap > len at
+	// the time), so the second sibling clobbered the first. The chain is now
+	// map-backed, but the depth sweep is cheap and guards the property
+	// regardless of representation.
 	for _, depth := range []int{2, 3, 4, 5, 6, 7, 8, 16} {
 		t.Run(fmt.Sprintf("depth=%d", depth), func(t *testing.T) {
 			leafA := tf(int64(depth)*10 + 1)
@@ -914,12 +1018,16 @@ func TestIterTargetFiles_FetcherSeesContext(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
-func TestIterTargetFiles_FetcherCalledOncePerRole(t *testing.T) {
-	// Diamond graph: "shared" is delegated by both "a" and "b". The seen-set
-	// must ensure the fetcher is invoked at most once per distinct role.
-	counts := map[string]int{}
-	fetch := func(_ context.Context, roleName, _ string) (*tufext.SignedTargets, error) {
-		counts[roleName]++
+func TestIterTargetFiles_FetcherCalledOncePerDelegationPath(t *testing.T) {
+	// Diamond graph: "shared" is delegated by both "a" and "b". Cycle
+	// detection is per delegation path (spec issue 321), not global, so
+	// "shared" is fetched once per path, each time naming the delegator that
+	// path came through, in pre-order DFS order. The target is still yielded
+	// once: the first path wins.
+	type call struct{ role, delegator string }
+	var calls []call
+	fetch := func(_ context.Context, roleName, delegatorName string) (*tufext.SignedTargets, error) {
+		calls = append(calls, call{roleName, delegatorName})
 		switch roleName {
 		case tufmetadata.TARGETS:
 			return signedTargets(nil, []tufmetadata.DelegatedRole{
@@ -936,20 +1044,26 @@ func TestIterTargetFiles_FetcherCalledOncePerRole(t *testing.T) {
 	got, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), fetch))
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, map[string]int{
-		tufmetadata.TARGETS: 1,
-		"a":                 1,
-		"b":                 1,
-		"shared":            1,
-	}, counts)
+	assert.Equal(t, []call{
+		{tufmetadata.TARGETS, tufmetadata.ROOT},
+		{"a", tufmetadata.TARGETS},
+		{"shared", "a"},
+		{"b", tufmetadata.TARGETS},
+		{"shared", "b"},
+	}, calls)
 }
 
 // chainOf builds a [tufext.DelegationChain] from the given delegations,
-// ordered from the delegation closest to "targets" down to the leaf.
+// ordered from the delegation closest to "targets" down to the leaf. Each
+// link is recorded under the role that made the delegation: "targets" for the
+// first, then the previous link's role name, mirroring how IterTargetFiles
+// builds chains.
 func chainOf(delegations ...tufmetadata.DelegatedRole) tufext.DelegationChain {
 	var chain tufext.DelegationChain
+	fromRole := tufmetadata.TARGETS
 	for _, delegation := range delegations {
-		chain = chain.Extend(&delegation)
+		chain = chain.Extend(fromRole, &delegation)
+		fromRole = delegation.Name
 	}
 	return chain
 }
@@ -1044,16 +1158,18 @@ func TestDelegationChain_ExtendNarrowsAuthority(t *testing.T) {
 	require.True(t, root.IsTargetPermitted("b/x"))
 
 	d1 := dr("d1", false, "a/*")
-	one := root.Extend(&d1)
+	one := root.Extend(tufmetadata.TARGETS, &d1)
 	assert.True(t, one.IsTargetPermitted("a/x"))
 	assert.False(t, one.IsTargetPermitted("b/x"))
 	assert.True(t, root.IsEmpty(), "receiver must be untouched")
 	assert.True(t, root.IsTargetPermitted("b/x"), "receiver must be untouched")
 
 	d2 := dr("d2", false, "a/y")
-	two := one.Extend(&d2)
+	two := one.Extend("d1", &d2)
 	assert.True(t, two.IsTargetPermitted("a/y"))
 	assert.False(t, two.IsTargetPermitted("a/x"))
+	assert.Equal(t, 2, two.Length())
+	assert.Equal(t, 1, one.Length(), "receiver must be untouched")
 	assert.True(t, one.IsTargetPermitted("a/x"), "receiver must be untouched")
 }
 
@@ -1064,68 +1180,97 @@ func TestDelegationChain_IsEmpty(t *testing.T) {
 	assert.True(t, chain.IsEmpty(), "zero value")
 
 	d1 := dr("d1", false, "a/*")
-	child := chain.Extend(&d1)
+	child := chain.Extend(tufmetadata.TARGETS, &d1)
 	assert.False(t, child.IsEmpty(), "Extend result")
 	assert.True(t, chain.IsEmpty(), "Extend must not touch the receiver")
-	assert.False(t, child.Extend(&d1).IsEmpty(), "extending a non-empty chain")
+	assert.False(t, child.Extend("d1", &d1).IsEmpty(), "extending a non-empty chain")
+}
+
+func TestDelegationChain_ContainsAndLength(t *testing.T) {
+	// A chain records the roles that *delegated* along the path, keyed by
+	// delegator, so the leaf itself is never a member. IterTargetFiles relies
+	// on exactly this for cycle detection: a role is skipped only if it has
+	// already delegated on the current path.
+	var chain tufext.DelegationChain
+	assert.Equal(t, 0, chain.Length())
+	assert.False(t, chain.Contains(tufmetadata.TARGETS))
+
+	chain = chainOf(dr("d1", false, "a/*"), dr("d2", false, "a/*")) // targets -> d1 -> d2
+	assert.Equal(t, 2, chain.Length())
+	assert.True(t, chain.Contains(tufmetadata.TARGETS))
+	assert.True(t, chain.Contains("d1"))
+	assert.False(t, chain.Contains("d2"), "the leaf has not delegated anything on this path")
+	assert.False(t, chain.Contains("unrelated"))
+}
+
+func TestDelegationChain_DuplicateDelegatorPanics(t *testing.T) {
+	// A path can only pass through a delegator once, so a second delegation
+	// under the same role is a programming error rather than a metadata
+	// error, and the failed append must leave the receiver untouched.
+	d1 := dr("d1", false, "a/*")
+	d2 := dr("d2", false, "a/*")
+	chain := chainOf(d1) // {targets: d1}
+	assert.Panics(t, func() { _ = chain.Extend(tufmetadata.TARGETS, &d2) })
+	assert.Equal(t, 1, chain.Length())
+
+	// A different delegator is fine.
+	var longer tufext.DelegationChain
+	assert.NotPanics(t, func() { longer = chain.Extend("d1", &d2) })
+	assert.Equal(t, 2, longer.Length())
+	assert.Equal(t, 1, chain.Length())
 }
 
 func TestDelegationChain_ExtendNilIsNoop(t *testing.T) {
 	// A nil delegation is dropped rather than stored, so Match never has to
 	// dereference it (which would panic inside go-tuf) and the chain's
-	// authority is unchanged.
+	// authority is unchanged. The nil check also precedes the duplicate
+	// delegator check, so a nil under an already-used delegator must not
+	// panic either.
 	var empty tufext.DelegationChain
-	stillEmpty := empty.Extend(nil)
+	stillEmpty := empty.Extend(tufmetadata.TARGETS, nil)
 	assert.True(t, stillEmpty.IsEmpty())
 	assert.True(t, stillEmpty.IsTargetPermitted("anything/at/all"))
 
 	d1 := dr("d1", false, "a/*")
-	restricted := chainOf(d1)
-	same := restricted.Extend(nil)
-	assert.False(t, same.IsEmpty())
+	restricted := chainOf(d1) // {targets: d1}
+	var same tufext.DelegationChain
+	assert.NotPanics(t, func() { same = restricted.Extend(tufmetadata.TARGETS, nil) })
+	assert.Equal(t, 1, same.Length())
 	assert.True(t, same.IsTargetPermitted("a/x"))
 	assert.False(t, same.IsTargetPermitted("b/x"))
 
 	// A nil in the middle of a sequence of appends must not poison the
 	// links either side of it.
 	d2 := dr("d2", false, "a/y")
-	longer := restricted.Extend(nil).Extend(&d2)
+	longer := restricted.Extend("d1", nil).Extend("d1", &d2)
+	assert.Equal(t, 2, longer.Length())
 	assert.True(t, longer.IsTargetPermitted("a/y"))
 	assert.False(t, longer.IsTargetPermitted("a/x"))
 }
 
 func TestDelegationChain_ExtendDoesNotAliasSiblings(t *testing.T) {
 	// Companion to TestIterTargetFiles_DeepDelegationsWithSiblings at the
-	// DelegationChain level: two siblings derived from the same parent must
-	// each get their own backing storage, and the parent must be untouched.
-	// Whether cap > len at a given depth is a runtime detail, so sweep a
-	// range of parent depths.
-	// This is also what exercises the unexported clone: Extend clones
-	// before appending, so a clone that shared the backing array would let
-	// one sibling clobber the other.
-	for _, depth := range []int{0, 1, 2, 3, 4, 5, 7, 8} {
-		t.Run(fmt.Sprintf("depth=%d", depth), func(t *testing.T) {
-			var parent tufext.DelegationChain
-			for i := range depth {
-				d := dr(fmt.Sprintf("r%d", i), false, "shared/*")
-				parent = parent.Extend(&d)
-			}
+	// DelegationChain level: two siblings derived from the same parent get
+	// their own storage and the parent is untouched. Both siblings are
+	// appended under the same delegator, so shared storage would either
+	// clobber one leaf or trip the duplicate-delegator check. This is also
+	// what exercises the unexported clone: Extend clones before
+	// appending, so a clone that shared the map would fail here.
+	parent := chainOf(dr("p", false, "shared/*")) // {targets: p}
+	leafA := dr("leafA", false, "shared/A")
+	leafB := dr("leafB", false, "shared/B")
+	a := parent.Extend("p", &leafA)
+	b := parent.Extend("p", &leafB)
 
-			leafA := dr("leafA", false, "shared/A")
-			leafB := dr("leafB", false, "shared/B")
-			a := parent.Extend(&leafA)
-			b := parent.Extend(&leafB)
+	assert.True(t, a.IsTargetPermitted("shared/A"))
+	assert.False(t, a.IsTargetPermitted("shared/B"), "sibling B clobbered A's leaf")
+	assert.True(t, b.IsTargetPermitted("shared/B"))
+	assert.False(t, b.IsTargetPermitted("shared/A"), "sibling A clobbered B's leaf")
 
-			assert.True(t, a.IsTargetPermitted("shared/A"))
-			assert.False(t, a.IsTargetPermitted("shared/B"), "sibling B clobbered A's leaf")
-			assert.True(t, b.IsTargetPermitted("shared/B"))
-			assert.False(t, b.IsTargetPermitted("shared/A"), "sibling A clobbered B's leaf")
-
-			// The parent has no leaf restriction and must accept both.
-			assert.True(t, parent.IsTargetPermitted("shared/A"))
-			assert.True(t, parent.IsTargetPermitted("shared/B"))
-		})
-	}
+	// The parent has no leaf restriction and must accept both.
+	assert.Equal(t, 1, parent.Length())
+	assert.True(t, parent.IsTargetPermitted("shared/A"))
+	assert.True(t, parent.IsTargetPermitted("shared/B"))
 }
 
 func TestDelegationChain_MalformedPatternNeverMatches(t *testing.T) {
