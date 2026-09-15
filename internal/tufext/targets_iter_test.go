@@ -5,6 +5,8 @@ package tufext_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -218,6 +220,25 @@ func TestIterTargetFiles_LiteralPath(t *testing.T) {
 		}, nil),
 	})
 	assert.Equal(t, []string{"exact/file.bin"}, keysOf(got))
+}
+
+func TestIterTargetFiles_MalformedPatternNeverMatches(t *testing.T) {
+	// See TestDelegationChain_MalformedPatternNeverMatches. A target whose
+	// delegation pattern is a malformed glob must not be yielded, even when
+	// the path is byte-for-byte equal to the pattern. "control" guards
+	// against a drop-everything regression.
+	control := tf(99)
+	got := pathsFrom(t, map[string]*tufext.SignedTargets{
+		tufmetadata.TARGETS: signedTargets(
+			map[string]*tufmetadata.TargetFiles{"control": control},
+			[]tufmetadata.DelegatedRole{dr("d1", false, "a/[b")},
+		),
+		"d1": signedTargets(map[string]*tufmetadata.TargetFiles{
+			"a/[b": tf(1),
+			"a/b":  tf(2),
+		}, nil),
+	})
+	assert.Equal(t, map[string]*tufmetadata.TargetFiles{"control": control}, got)
 }
 
 func TestIterTargetFiles_MultiplePathPatterns(t *testing.T) {
@@ -596,15 +617,43 @@ func TestIterTargetFiles_MissingDelegatedRole(t *testing.T) {
 	assert.Contains(t, err.Error(), "missing")
 }
 
-func TestIterTargetFiles_PathHashPrefixes(t *testing.T) {
-	role := dr("d1", false)
-	role.PathHashPrefixes = []string{"abcd"}
-	_, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(map[string]*tufext.SignedTargets{
-		tufmetadata.TARGETS: signedTargets(nil, []tufmetadata.DelegatedRole{role}),
-		"d1":                signedTargets(nil, nil),
-	})))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "uses path prefixes")
+func TestIterTargetFiles_PathHashPrefixes_Rejected(t *testing.T) {
+	// DelegationChain.IsTargetPermitted can evaluate hash-bin delegations (see
+	// TestDelegationChain_PathHashPrefixes_Smoke), but IterTargetFiles
+	// refuses to walk them while go-tuf's digest encoding is non-conformant
+	// (see the NOTE on hashPrefix): a conformant repository would otherwise
+	// be mis-binned identically by us and by the go-tuf client. The error
+	// must fire wherever the delegation appears, not only at the top level.
+	bin := dr("bin", false /* no paths */)
+	bin.PathHashPrefixes = []string{hashPrefix("bins/x")}
+
+	for _, tc := range []struct {
+		name    string
+		targets map[string]*tufext.SignedTargets
+	}{
+		{
+			name: "top-level",
+			targets: map[string]*tufext.SignedTargets{
+				tufmetadata.TARGETS: signedTargets(nil, []tufmetadata.DelegatedRole{bin}),
+				"bin":               signedTargets(nil, nil),
+			},
+		},
+		{
+			name: "nested",
+			targets: map[string]*tufext.SignedTargets{
+				tufmetadata.TARGETS: signedTargets(nil, []tufmetadata.DelegatedRole{dr("d1", false, "bins/*")}),
+				"d1":                signedTargets(nil, []tufmetadata.DelegatedRole{bin}),
+				"bin":               signedTargets(nil, nil),
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := generics.CollectErrorSeq(tufext.IterTargetFiles(t.Context(), tufext.TargetsMapFetcher(tc.targets)))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "uses path prefixes")
+			assert.Contains(t, err.Error(), "bin", "error must name the offending role")
+		})
+	}
 }
 
 func TestIterTargetFiles_SuccinctRoles(t *testing.T) {
@@ -894,6 +943,242 @@ func TestIterTargetFiles_FetcherCalledOncePerRole(t *testing.T) {
 		"b":                 1,
 		"shared":            1,
 	}, counts)
+}
+
+// chainOf builds a [tufext.DelegationChain] from the given delegations,
+// ordered from the delegation closest to "targets" down to the leaf.
+func chainOf(delegations ...tufmetadata.DelegatedRole) tufext.DelegationChain {
+	var chain tufext.DelegationChain
+	for _, delegation := range delegations {
+		chain = chain.Extend(&delegation)
+	}
+	return chain
+}
+
+// hashPrefixLen is long enough that two arbitrary test paths landing in the
+// same bin is not a realistic concern.
+const hashPrefixLen = 8
+
+// hashPrefix returns a PathHashPrefixes entry that go-tuf will treat as
+// covering path: the first hashPrefixLen characters of the base64url-encoded
+// SHA-256 digest of path.
+//
+// NOTE: base64url mirrors go-tuf's IsDelegatedPath, which deviates from the
+// TUF specification (s4.5 says PATH_HASH_PREFIXES are prefixes of the
+// hexadecimal digest, which is what python-tuf and go-tuf v1 implement). If
+// go-tuf is fixed to use hex, this helper must change with it.
+// <https://github.com/theupdateframework/go-tuf/security/advisories/GHSA-3r3c-54j3-3j69>
+func hashPrefix(path string) string {
+	sum := sha256.Sum256([]byte(path))
+	return base64.URLEncoding.EncodeToString(sum[:])[:hashPrefixLen]
+}
+
+func TestDelegationChain_ZeroValueMatchesEverything(t *testing.T) {
+	// An empty chain represents the top-level "targets" role, which has
+	// authority over every path.
+	var chain tufext.DelegationChain
+	for _, path := range []string{"", "a", "a/b", "deep/er/path.bin"} {
+		assert.True(t, chain.IsTargetPermitted(path), "path %q", path)
+	}
+}
+
+func TestDelegationChain_SingleLink(t *testing.T) {
+	chain := chainOf(dr("d1", false, "a/*"))
+	assert.True(t, chain.IsTargetPermitted("a/x"))
+	assert.False(t, chain.IsTargetPermitted("b/x"), "wrong directory")
+	assert.False(t, chain.IsTargetPermitted("a/x/y"), "'*' must not cross '/'")
+	assert.False(t, chain.IsTargetPermitted("a"), "component count must match")
+}
+
+func TestDelegationChain_PatternsWithinLinkAreOr(t *testing.T) {
+	chain := chainOf(dr("d1", false, "a/*", "b/*"))
+	assert.True(t, chain.IsTargetPermitted("a/x"))
+	assert.True(t, chain.IsTargetPermitted("b/x"))
+	assert.False(t, chain.IsTargetPermitted("c/x"))
+}
+
+func TestDelegationChain_LinksAreAnd(t *testing.T) {
+	// Every link in the chain must match: a path that satisfies the ancestor
+	// but not the leaf (or vice versa) is not authorised.
+	chain := chainOf(
+		dr("d1", false, "a/*/*"),
+		dr("d2", false, "a/foo/*"),
+	)
+	assert.True(t, chain.IsTargetPermitted("a/foo/x"))
+	assert.False(t, chain.IsTargetPermitted("a/bar/x"), "matches ancestor only")
+	assert.False(t, chain.IsTargetPermitted("b/foo/x"), "matches neither")
+
+	// A leaf whose patterns are wider than its parent's is clamped by the
+	// parent.
+	wide := chainOf(
+		dr("d1", false, "a/foo/*"),
+		dr("d2", false, "a/*/*"),
+	)
+	assert.True(t, wide.IsTargetPermitted("a/foo/x"))
+	assert.False(t, wide.IsTargetPermitted("a/bar/x"), "matches leaf only")
+}
+
+func TestDelegationChain_LinkWithoutPathsMatchesNothing(t *testing.T) {
+	// Unlike an empty chain, a chain containing a delegation with no paths
+	// (and no hash prefixes) can never match: that role was delegated
+	// nothing.
+	chain := chainOf(dr("d1", false /* no paths */))
+	assert.False(t, chain.IsTargetPermitted(""))
+	assert.False(t, chain.IsTargetPermitted("a"))
+	assert.False(t, chain.IsTargetPermitted("a/b"))
+
+	// This holds even when sandwiched between links that do match.
+	middle := chainOf(
+		dr("d1", false, "a/*"),
+		dr("d2", false /* no paths */),
+		dr("d3", false, "a/*"),
+	)
+	assert.False(t, middle.IsTargetPermitted("a/x"))
+}
+
+func TestDelegationChain_ExtendNarrowsAuthority(t *testing.T) {
+	// Each appended link is one more pattern the path must satisfy, so a
+	// longer chain never authorises more than the chain it was derived from.
+	// Chains are immutable: Extend derives a new one and leaves the
+	// receiver untouched.
+	var root tufext.DelegationChain
+	require.True(t, root.IsTargetPermitted("b/x"))
+
+	d1 := dr("d1", false, "a/*")
+	one := root.Extend(&d1)
+	assert.True(t, one.IsTargetPermitted("a/x"))
+	assert.False(t, one.IsTargetPermitted("b/x"))
+	assert.True(t, root.IsEmpty(), "receiver must be untouched")
+	assert.True(t, root.IsTargetPermitted("b/x"), "receiver must be untouched")
+
+	d2 := dr("d2", false, "a/y")
+	two := one.Extend(&d2)
+	assert.True(t, two.IsTargetPermitted("a/y"))
+	assert.False(t, two.IsTargetPermitted("a/x"))
+	assert.True(t, one.IsTargetPermitted("a/x"), "receiver must be untouched")
+}
+
+func TestDelegationChain_IsEmpty(t *testing.T) {
+	// Only the root "targets" role has an empty chain, so IsEmpty is how a
+	// consumer tells "unrestricted" apart from "restricted to these paths".
+	var chain tufext.DelegationChain
+	assert.True(t, chain.IsEmpty(), "zero value")
+
+	d1 := dr("d1", false, "a/*")
+	child := chain.Extend(&d1)
+	assert.False(t, child.IsEmpty(), "Extend result")
+	assert.True(t, chain.IsEmpty(), "Extend must not touch the receiver")
+	assert.False(t, child.Extend(&d1).IsEmpty(), "extending a non-empty chain")
+}
+
+func TestDelegationChain_ExtendNilIsNoop(t *testing.T) {
+	// A nil delegation is dropped rather than stored, so Match never has to
+	// dereference it (which would panic inside go-tuf) and the chain's
+	// authority is unchanged.
+	var empty tufext.DelegationChain
+	stillEmpty := empty.Extend(nil)
+	assert.True(t, stillEmpty.IsEmpty())
+	assert.True(t, stillEmpty.IsTargetPermitted("anything/at/all"))
+
+	d1 := dr("d1", false, "a/*")
+	restricted := chainOf(d1)
+	same := restricted.Extend(nil)
+	assert.False(t, same.IsEmpty())
+	assert.True(t, same.IsTargetPermitted("a/x"))
+	assert.False(t, same.IsTargetPermitted("b/x"))
+
+	// A nil in the middle of a sequence of appends must not poison the
+	// links either side of it.
+	d2 := dr("d2", false, "a/y")
+	longer := restricted.Extend(nil).Extend(&d2)
+	assert.True(t, longer.IsTargetPermitted("a/y"))
+	assert.False(t, longer.IsTargetPermitted("a/x"))
+}
+
+func TestDelegationChain_ExtendDoesNotAliasSiblings(t *testing.T) {
+	// Companion to TestIterTargetFiles_DeepDelegationsWithSiblings at the
+	// DelegationChain level: two siblings derived from the same parent must
+	// each get their own backing storage, and the parent must be untouched.
+	// Whether cap > len at a given depth is a runtime detail, so sweep a
+	// range of parent depths.
+	// This is also what exercises the unexported clone: Extend clones
+	// before appending, so a clone that shared the backing array would let
+	// one sibling clobber the other.
+	for _, depth := range []int{0, 1, 2, 3, 4, 5, 7, 8} {
+		t.Run(fmt.Sprintf("depth=%d", depth), func(t *testing.T) {
+			var parent tufext.DelegationChain
+			for i := range depth {
+				d := dr(fmt.Sprintf("r%d", i), false, "shared/*")
+				parent = parent.Extend(&d)
+			}
+
+			leafA := dr("leafA", false, "shared/A")
+			leafB := dr("leafB", false, "shared/B")
+			a := parent.Extend(&leafA)
+			b := parent.Extend(&leafB)
+
+			assert.True(t, a.IsTargetPermitted("shared/A"))
+			assert.False(t, a.IsTargetPermitted("shared/B"), "sibling B clobbered A's leaf")
+			assert.True(t, b.IsTargetPermitted("shared/B"))
+			assert.False(t, b.IsTargetPermitted("shared/A"), "sibling A clobbered B's leaf")
+
+			// The parent has no leaf restriction and must accept both.
+			assert.True(t, parent.IsTargetPermitted("shared/A"))
+			assert.True(t, parent.IsTargetPermitted("shared/B"))
+		})
+	}
+}
+
+func TestDelegationChain_MalformedPatternNeverMatches(t *testing.T) {
+	// go-tuf treats a pattern that filepath.IsTargetPermitted rejects as matching
+	// nothing. The matcher that DelegationChain replaced had a
+	// literal-equality fast path which would have accepted "a/[b" for
+	// itself. We must not diverge from go-tuf here: a mismatch between what
+	// the TUF client resolves and what we iterate is exactly the class of
+	// bug this type exists to prevent.
+	chain := chainOf(dr("d1", false, "a/[b"))
+	assert.False(t, chain.IsTargetPermitted("a/[b"))
+	assert.False(t, chain.IsTargetPermitted("a/b"))
+}
+
+func TestDelegationChain_PathHashPrefixes_Smoke(t *testing.T) {
+	// We don't use hash-bin delegations, but DelegationChain.IsTargetPermitted must at
+	// least honour them the way go-tuf does, so that a chain containing one
+	// can't silently accept everything (or nothing).
+	const (
+		covered   = "bins/covered.bin"
+		uncovered = "bins/uncovered.bin"
+	)
+	prefix := hashPrefix(covered)
+	require.NotEqual(t, prefix, hashPrefix(uncovered), "test paths must land in different bins")
+
+	bin := dr("bin", false /* no paths */)
+	bin.PathHashPrefixes = []string{prefix}
+
+	chain := chainOf(bin)
+	assert.True(t, chain.IsTargetPermitted(covered))
+	assert.False(t, chain.IsTargetPermitted(uncovered))
+
+	// Hash-bin links compose with pattern links like any other link.
+	nested := chainOf(dr("d1", false, "bins/*"), bin)
+	assert.True(t, nested.IsTargetPermitted(covered))
+	assert.False(t, nested.IsTargetPermitted(uncovered))
+}
+
+func TestDelegationChain_BothPathsAndHashPrefixes_PathsWin(t *testing.T) {
+	// Spec s4.5 requires exactly one of "paths" and "path_hash_prefixes".
+	// go-tuf only enforces that when marshalling, so a delegation that
+	// arrives with both set is accepted on parse; IsDelegatedPath then
+	// consults Paths and ignores PathHashPrefixes entirely. Pin that so a
+	// change in go-tuf's precedence (or a hex fix, see hashPrefix) shows up
+	// here rather than as a silent change in which role is authorised.
+	const hashed = "b/x"
+	both := dr("both", false, "a/*")
+	both.PathHashPrefixes = []string{hashPrefix(hashed)}
+
+	chain := chainOf(both)
+	assert.True(t, chain.IsTargetPermitted("a/x"), "Paths must still be honoured")
+	assert.False(t, chain.IsTargetPermitted(hashed), "PathHashPrefixes must be ignored when Paths is set")
 }
 
 // keysOf returns the sorted keys. The iterator's within-role order is

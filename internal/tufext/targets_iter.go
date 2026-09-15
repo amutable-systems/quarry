@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"iter"
-	"path/filepath"
 	"slices"
-	"strings"
 
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
@@ -27,40 +25,64 @@ type TargetFileData struct {
 	*tufmetadata.TargetFiles
 }
 
-func pathMatchesPattern(pattern, targetPath string) bool {
-	if targetPath == pattern {
-		return true // fast path for literal patterns
+// DelegationChain represents the chain of TUF delegations that were followed
+// to reach a given target role (or file).
+//
+// If an API returns a [DelegationChain] along with some TUF metadata, users
+// must ensure that they use [DelegationChain.IsTargetPermitted] as part of
+// ensuring a delegated role cannot provide a file they have no authority to
+// provide.
+//
+// A [DelegationChain] is immutable once created (and may share storage with
+// other chains), which is why [DelegationChain.Extend] creates a clone when
+// extending the chain.
+//
+// TODO: This does not currently handle succinct delegations.
+type DelegationChain struct {
+	links []*tufmetadata.DelegatedRole
+}
+
+// IsEmpty returns whether the [DelegationChain] is empty (this can only be
+// true for the root "targets" role).
+func (chain DelegationChain) IsEmpty() bool {
+	return len(chain.links) == 0
+}
+
+// clone makes a shallow copy of a [DelegationChain]. Not exported because
+// [DelegationChain]s are immutable in the public API.
+func (chain DelegationChain) clone() DelegationChain {
+	return DelegationChain{
+		links: slices.Clone(chain.links),
 	}
-	targetParts := strings.Split(targetPath, "/")
-	patternParts := strings.Split(pattern, "/")
-	if len(targetParts) != len(patternParts) {
-		return false
+}
+
+// Extend returns a copy of the [DelegationChain] with the given delegation
+// appended, indicating that the delegation came from the given role. The
+// receiver is left untouched.
+func (chain DelegationChain) Extend(delegation *tufmetadata.DelegatedRole) DelegationChain {
+	clone := chain.clone()
+	if delegation != nil {
+		clone.links = append(clone.links, delegation)
 	}
-	for i := range targetParts {
-		// TODO: filepath.Match is used by go-tuf but it supports more patterns
-		// than the TUF specification (this is almost certainly wrong and could
-		// even be a security bug if someone depends on the paths not being
-		// matched that way).
-		if ok, _ := filepath.Match(patternParts[i], targetParts[i]); !ok {
+	return clone
+}
+
+// IsTargetPermitted returns whether the [DelegationChain] (of a targets role)
+// is authorised to provide a target with the given path. An empty
+// [DelegationChain] will match any path, as it represents the root "targets"
+// role.
+func (chain DelegationChain) IsTargetPermitted(targetPath string) bool {
+	for _, delegation := range chain.links {
+		// NOTE: go-tuf internally uses filepath.Match which actually accepts
+		// more things than the spec allows. This is really not ideal but for
+		// now we need to just accept that they do it that way so that fetching
+		// a target is consistent.
+		// <https://github.com/theupdateframework/go-tuf/security/advisories/GHSA-qr6c-8mjc-hpp5>
+		if ok, err := delegation.IsDelegatedPath(targetPath); !ok || err != nil {
 			return false
 		}
 	}
 	return true
-}
-
-func pathMatchesPatternChain(patternChain [][]string, targetPath string) bool {
-	unmatched := len(patternChain)
-stack:
-	for _, patterns := range patternChain {
-		for _, pattern := range patterns {
-			if pathMatchesPattern(pattern, targetPath) {
-				unmatched--
-				continue stack
-			}
-		}
-		return false // early break
-	}
-	return unmatched == 0
 }
 
 // TargetMetadataFetchFunc is a helper function for [IterTargetFiles] that is
@@ -102,22 +124,22 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 		// roleTodo indicates that we need to walk into the given role.
 		type roleTodo struct {
 			name, delegator string
-			// The stack of patterns which must be matched for a path in this role
-			// to be valid (this includes all ancestor patterns as well as the
-			// patterns for this DelegatedRole).
-			patternChain [][]string
+			// The delegation chain followed to reach this role. Target files
+			// provided by this role are only valid if every link authorises it
+			// (the top-level "targets" role authorises everything).
+			chain DelegationChain
 		}
 
 		// Once we hit a terminating delegation we need to make sure that the
 		// paths it matches cannot be yielded afterwards.
-		terminatedPatternChains := make([][][]string, 0, 128)
-		// terminationTodo is a marker to indicate that terminatedPatternChains
-		// needs to be updated. This is needed because s4.5 of the TUF spec
-		// allows for children of a terminating pattern to match terminating
-		// paths, requiring deferred terminatedPatternChains updates.
-		type terminationTodo struct {
-			chain [][]string
-		}
+		terminatedDelegationChains := make([]DelegationChain, 0, 128)
+		// terminationTodo is a marker to indicate terminatedDelegationChains
+		// needs to be updated to include this DelegationChain. This needs be
+		// deferred this way because s4.5 of the TUF spec allows for child
+		// delegations of a terminating delegation to match terminating paths
+		// -- meaning that the DelegationChain cannot be added to the set of
+		// forbidden patterns until all child delegations have been processed.
+		type terminationTodo DelegationChain
 
 		// Queue and seen-list to avoid re-iterating on a role.
 		seen := make(map[string]struct{}, maxDelegations)
@@ -133,7 +155,7 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 			var thisRole roleTodo
 			switch next := next.(type) {
 			case terminationTodo:
-				terminatedPatternChains = append(terminatedPatternChains, next.chain)
+				terminatedDelegationChains = append(terminatedDelegationChains, DelegationChain(next))
 				continue roles
 			case roleTodo:
 				thisRole = next
@@ -172,15 +194,16 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 				}
 				// Make sure we don't yield entires that were already covered
 				// by an earlier terminating delegation.
-				for _, patternChain := range terminatedPatternChains {
-					if pathMatchesPatternChain(patternChain, path) {
+				for _, chain := range terminatedDelegationChains {
+					// A permitted target path is *bad* for terminated chains!
+					if chain.IsTargetPermitted(path) {
 						// TODO(log): Add logging.
 						continue targets
 					}
 				}
 				// If this is a delegated role, make sure that the target path
 				// matches one of the patterns specified by the delegator.
-				if !pathMatchesPatternChain(thisRole.patternChain, path) {
+				if !thisRole.chain.IsTargetPermitted(path) {
 					// TODO(log): Add logging.
 					continue targets
 				}
@@ -192,6 +215,9 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 
 			// Now append the set of delegations to the todo queue.
 			if delegations := role.Signed.Delegations; delegations != nil {
+				// TODO: Supporting this would require more work in
+				// DelegationChain to properly support, and we do not support
+				// this in the rest of tufrepo and tufext anyway.
 				if delegations.SuccinctRoles != nil {
 					return fmt.Errorf("role %s uses succinct roles: unsupported feature", thisRole.name)
 				}
@@ -200,10 +226,16 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 				// ends up at the top of the stack (tail of todo), to match
 				// s5.6.7 of the TUF spec.
 				for delegatedRole := range generics.ReverseIter(delegations.Roles) {
+					// TODO: In principle we support path hash prefixes since
+					// DelegationChain.IsTargetPermitted uses go-tuf's matching
+					// logic, but go-tuf upstream has a bug in how they compute
+					// these hashes and so we are best to disallow them for
+					// now.
+					// <https://github.com/theupdateframework/go-tuf/security/advisories/GHSA-3r3c-54j3-3j69>
 					if len(delegatedRole.PathHashPrefixes) > 0 {
 						return fmt.Errorf("role %s uses path prefixes: unsupported feature", delegatedRole.Name)
 					}
-					newChain := append(slices.Clone(thisRole.patternChain), delegatedRole.Paths)
+					newChain := thisRole.chain.Extend(&delegatedRole)
 					// If this is a terminating delegation then we need to
 					// push a termination marker beneath the role so that roles
 					// already on the todo stack (i.e., later siblings and
@@ -211,12 +243,12 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 					// targets, while children of this role (pushed above the
 					// marker) still can, to match s4.5 of the TUF spec.
 					if delegatedRole.Terminating {
-						todo = append(todo, terminationTodo{chain: newChain})
+						todo = append(todo, terminationTodo(newChain))
 					}
 					todo = append(todo, roleTodo{
-						name:         delegatedRole.Name,
-						delegator:    thisRole.name,
-						patternChain: newChain,
+						name:      delegatedRole.Name,
+						delegator: thisRole.name,
+						chain:     newChain,
 					})
 				}
 			}
