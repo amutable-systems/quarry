@@ -5,7 +5,7 @@ module go.amutable.dev/quarry
 go 1.26.4
 
 require (
-	cyphar.com/go-pathrs v0.2.5
+	cyphar.com/go-pathrs v0.2.6
 	github.com/BurntSushi/toml v1.6.0
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/google/uuid v1.6.0
