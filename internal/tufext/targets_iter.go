@@ -101,12 +101,9 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 		// roleTodo indicates that we need to walk into the given role.
 		type roleTodo struct {
 			name, delegator string
-			// If non-nil, this is the delegation information for this role.
-			delegation *tufmetadata.DelegatedRole
-			// The stack of patterns which be matched for a path in this role
+			// The stack of patterns which must be matched for a path in this role
 			// to be valid (this includes all ancestor patterns as well as the
-			// patterns for this DelegatedRole). If delegation is nil, then
-			// this field is ignored.
+			// patterns for this DelegatedRole).
 			patternChain [][]string
 		}
 
@@ -182,26 +179,14 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 				}
 				// If this is a delegated role, make sure that the target path
 				// matches one of the patterns specified by the delegator.
-				if delegation := thisRole.delegation; delegation != nil {
-					if !pathMatchesPatternChain(thisRole.patternChain, path) {
-						// TODO(log): Add logging.
-						continue targets
-					}
+				if !pathMatchesPatternChain(thisRole.patternChain, path) {
+					// TODO(log): Add logging.
+					continue targets
 				}
 				if !yield(TargetFileData{Path: path, TargetFiles: meta}) {
 					return nil
 				}
 				seenTargets[path] = struct{}{}
-			}
-
-			// If this is a terminating role, we need to make sure that any
-			// roles higher up on the todo stack cannot match the same paths.
-			// However, for descendants of this role (those about to be pushed
-			// onto the stack) s4.5 says that they are also permitted to match
-			// against the terminating patterns. So we defer this to after any
-			// children added below are processed.
-			if delegation := thisRole.delegation; delegation != nil && delegation.Terminating {
-				todo = append(todo, terminationTodo{chain: thisRole.patternChain})
 			}
 
 			// Now append the set of delegations to the todo queue.
@@ -217,11 +202,20 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 					if len(delegatedRole.PathHashPrefixes) > 0 {
 						return fmt.Errorf("role %s uses path prefixes: unsupported feature", delegatedRole.Name)
 					}
+					newChain := append(slices.Clone(thisRole.patternChain), delegatedRole.Paths)
+					// If this is a terminating delegation then we need to
+					// push a termination marker beneath the role so that roles
+					// already on the todo stack (i.e., later siblings and
+					// ancestors' later siblings) cannot provide matching
+					// targets, while children of this role (pushed above the
+					// marker) still can, to match s4.5 of the TUF spec.
+					if delegatedRole.Terminating {
+						todo = append(todo, terminationTodo{chain: newChain})
+					}
 					todo = append(todo, roleTodo{
 						name:         delegatedRole.Name,
 						delegator:    thisRole.name,
-						delegation:   &delegatedRole,
-						patternChain: append(slices.Clone(thisRole.patternChain), delegatedRole.Paths),
+						patternChain: newChain,
 					})
 				}
 			}

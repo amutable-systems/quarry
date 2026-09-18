@@ -451,6 +451,54 @@ func TestIterTargetFiles_MultipleTerminatingChainsTrackedIndependently(t *testin
 	assert.Equal(t, map[string]*tufmetadata.TargetFiles{"c/yielded": yielded}, got)
 }
 
+func TestIterTargetFiles_TerminatingAppliesEvenIfRoleSkippedByCycle(t *testing.T) {
+	// go-tuf stops considering later roles the moment it *encounters* a
+	// matching terminating delegation in a parent's list (s5.6.7.2.1), before
+	// visiting the role. So the marker must be pushed when the delegation is
+	// seen, not when the role is processed. Here "a" delegates terminatingly
+	// to itself: the second visit is skipped as a cycle, and "b" must still
+	// be blocked. "control" and "x/in-a" are positive controls.
+	control, inA := tf(99), tf(1)
+	got := pathsFrom(t, map[string]*tufext.SignedTargets{
+		tufmetadata.TARGETS: signedTargets(
+			map[string]*tufmetadata.TargetFiles{"control": control},
+			[]tufmetadata.DelegatedRole{
+				dr("a", false, "x/*"),
+				dr("b", false, "x/*"),
+			},
+		),
+		"a": signedTargets(
+			map[string]*tufmetadata.TargetFiles{"x/in-a": inA},
+			[]tufmetadata.DelegatedRole{dr("a", true, "x/*")},
+		),
+		"b": signedTargets(map[string]*tufmetadata.TargetFiles{"x/from-b": tf(2)}, nil),
+	})
+	assert.Equal(t, map[string]*tufmetadata.TargetFiles{"control": control, "x/in-a": inA}, got)
+}
+
+func TestIterTargetFiles_TerminatingAppliesEvenIfRoleAlreadyVisited(t *testing.T) {
+	// Diamond variant of the above: "shared" is first reached via "a"
+	// (non-terminating) and then via "b" (terminating). A go-tuf lookup for
+	// x/from-c clears its stack on encountering b's terminating delegation
+	// and then skips the already-visited "shared", so "c" is never consulted.
+	control := tf(99)
+	got := pathsFrom(t, map[string]*tufext.SignedTargets{
+		tufmetadata.TARGETS: signedTargets(
+			map[string]*tufmetadata.TargetFiles{"control": control},
+			[]tufmetadata.DelegatedRole{
+				dr("a", false, "x/*"),
+				dr("b", false, "x/*"),
+				dr("c", false, "x/*"),
+			},
+		),
+		"a":      signedTargets(nil, []tufmetadata.DelegatedRole{dr("shared", false, "x/*")}),
+		"b":      signedTargets(nil, []tufmetadata.DelegatedRole{dr("shared", true, "x/*")}),
+		"shared": signedTargets(nil, nil),
+		"c":      signedTargets(map[string]*tufmetadata.TargetFiles{"x/from-c": tf(1)}, nil),
+	})
+	assert.Equal(t, map[string]*tufmetadata.TargetFiles{"control": control}, got)
+}
+
 func TestIterTargetFiles_CycleSelfReference(t *testing.T) {
 	// d1 delegates to itself; the seen-set must prevent re-entry.
 	d1Meta := tf(1)
