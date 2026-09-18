@@ -361,7 +361,7 @@ func (client *Client) trustedMetadataTargetsFetcher(repo *config.Repository, met
 		if !isKnownRole {
 			return nil, fmt.Errorf("role %s: %w", roleName, fs.ErrNotExist)
 		}
-		// IterTargetFiles can iterate over the same role more than once, so we
+		// IterTargetRoles can iterate over the same role more than once, so we
 		// can avoid unneeded fetches by returning the local data if we've
 		// already fetched and validated this role's hashes.
 		//
@@ -393,7 +393,7 @@ func (client *Client) trustedMetadataTargetsFetcher(repo *config.Repository, met
 			// NOTE: go-tuf does not do this because they basically implement
 			// <https://github.com/theupdateframework/specification/issues/321>
 			// incorrectly and never walk the same role twice.
-			// FIXME: This needs to be moved to IterTargetFiles so that the
+			// FIXME: This needs to be moved to IterTargetRoles so that the
 			// checking logic is generic -- we might even want to skip over bad
 			// delegations instead of erroring out...?
 			if err := savedDelegator.VerifyDelegate(roleName, savedTarget); err != nil {
@@ -446,7 +446,9 @@ func (client *Client) trustedMetadataTargetsFetcher(repo *config.Repository, met
 }
 
 // IterTargetFiles iterates over all target files in all repositories defined
-// in the [Client].
+// in the [Client]. Each target file will only be listed once even if it is
+// provided by multiple repositories (first-repository-wins semantics). The
+// order of target files is not consistent, however.
 func (client *Client) IterTargetFiles(ctx context.Context) iter.Seq2[*TargetInfo, error] {
 	return generics.ErrorIter(func(yield func(*TargetInfo) bool) error {
 		seen := make(map[string]struct{}, 512) // TODO: Figure out a reasonable default map size.
@@ -469,29 +471,43 @@ func (client *Client) IterTargetFiles(ctx context.Context) iter.Seq2[*TargetInfo
 				}
 				meta = updater.GetTrustedMetadataSet()
 			}
-			fetchFn := client.trustedMetadataTargetsFetcher(repo, &meta)
 
-			for target, err := range tufext.IterTargetFiles(ctx, fetchFn) {
+			fetchFn := client.trustedMetadataTargetsFetcher(repo, &meta)
+			for roleChain, err := range tufext.IterTargetRoles(ctx, fetchFn) {
 				if err != nil {
 					return fmt.Errorf("error while scanning repo %s: %w", repoName, err)
 				}
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				if _, ok := seen[target.Path]; ok {
-					// IterRepos provides a consistent ordering based on
-					// order indexes so if we have already seen this entry
-					// then any later examples must be masked.
-					continue
-				}
-				seen[target.Path] = struct{}{}
 
-				info := &TargetInfo{
-					TargetFiles: target.TargetFiles,
-					Repo:        repo,
-				}
-				if !yield(info) {
-					return nil
+				for _, target := range roleChain.Role.Signed.Targets {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+					if _, ok := seen[target.Path]; ok {
+						// First instance of a target wins:
+						// 1. IterTargetRoles iterates over the roles in the
+						//    TUF lookup order (s5.6.7); and
+						// 2. IterRepos provides a consistent ordering, so the
+						//    first entry we hit masks any later entries.
+						continue
+					}
+					if !roleChain.IsTargetPermitted(target.Path) {
+						// TODO(log): Add logging?
+						continue
+					}
+					seen[target.Path] = struct{}{}
+
+					// TODO: We probably should check if this target file would
+					// actually be fetched by a tuf client by seeing how many
+					// previous delegation paths match against it -- if it is
+					// over the limit (maxDelegationDepth in IterTargetRoles)
+					// then we should mask it here too.
+					info := &TargetInfo{
+						TargetFiles: target,
+						Repo:        repo,
+					}
+					if !yield(info) {
+						return nil
+					}
 				}
 			}
 		}
