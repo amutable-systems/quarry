@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"io"
+	"io/fs"
 	"net/http"
 	"slices"
 	"strings"
@@ -248,4 +249,112 @@ func TestClient_DelegationDiamond_ReverifyFailureAborts(t *testing.T) {
 	require.Error(t, walkErr)
 	assert.Contains(t, walkErr.Error(), "shared", "the error must name the role that failed re-verification")
 	assert.Equal(t, []string{"x/file"}, paths, "the a-path is walked first and is still trusted; y/file must never appear")
+}
+
+// Within one repository a path provided by several roles is listed from the
+// first role a lookup would reach: the top-level role outranks delegations,
+// and delegations rank in declared order (s5.6.7). go-tuf's real lookup must
+// agree with the listing. Distinct content lengths identify each role's entry.
+func TestClient_DelegationPriority_FirstRoleWins(t *testing.T) {
+	srv := testrepo.New(t, testrepo.WithMetaSubdir("meta"))
+	keyD1, keyD2 := newRoleKey(t), newRoleKey(t)
+	write := func(path, data string) *tufmetadata.TargetFiles {
+		return srv.WriteTarget(t, path, bytes.NewReader([]byte(data)))
+	}
+	topShared := write("x/shared", "T")
+	d1Shared, d1Both := write("x/shared", "D1"), write("x/both", "D1")
+	d2Shared, d2Both := write("x/shared", "D22"), write("x/both", "D22")
+	srv.Publish(t,
+		testrepo.AddTargetOp("x/shared", topShared),
+		delegationsOp(t,
+			[]delegatedRole{
+				{name: "d1", signers: []*roleKey{keyD1}, targets: map[string]*tufmetadata.TargetFiles{
+					"x/shared": d1Shared, "x/both": d1Both, "x/only-d1": write("x/only-d1", "1"),
+				}},
+				{name: "d2", signers: []*roleKey{keyD2}, targets: map[string]*tufmetadata.TargetFiles{
+					"x/shared": d2Shared, "x/both": d2Both, "x/only-d2": write("x/only-d2", "2"),
+				}},
+			},
+			[]delegation{
+				{from: tufmetadata.TARGETS, to: "d1", paths: []string{"x/*"}, keys: []*roleKey{keyD1}},
+				{from: tufmetadata.TARGETS, to: "d2", paths: []string{"x/*"}, keys: []*roleKey{keyD2}},
+			},
+		),
+	)
+
+	client := newClient(t, testrepo.Config(t, srv.ConfigBlock("priority")))
+	lengths := make(map[string]int64)
+	for info, err := range client.IterTargetFiles(t.Context()) {
+		require.NoError(t, err)
+		_, dup := lengths[info.Path]
+		require.False(t, dup, "path %s listed twice", info.Path)
+		lengths[info.Path] = info.Length
+	}
+	assert.Equal(t, map[string]int64{
+		"x/shared":  topShared.Length, // targets outranks both delegations
+		"x/both":    d1Both.Length,    // d1 is declared before d2
+		"x/only-d1": 1,
+		"x/only-d2": 1,
+	}, lengths)
+
+	for path, want := range map[string]int64{"x/shared": topShared.Length, "x/both": d1Both.Length} {
+		info, err := client.GetTargetInfo(t.Context(), path)
+		require.NoError(t, err)
+		assert.Equal(t, want, info.Length, "lookup of %s must agree with the listing", path)
+	}
+}
+
+// A terminating delegation stops later roles from providing the paths it
+// covers (s4.5), even when the terminating role itself lacks the target. The
+// listing must exclude such targets, and go-tuf's real lookup must fail to
+// find them, while paths outside the terminating patterns are unaffected.
+func TestClient_TerminatingDelegation_BlocksLaterRole(t *testing.T) {
+	srv := testrepo.New(t, testrepo.WithMetaSubdir("meta"))
+	keyTerm, keyLater := newRoleKey(t), newRoleKey(t)
+	write := func(path string) *tufmetadata.TargetFiles {
+		return srv.WriteTarget(t, path, bytes.NewReader([]byte(path)))
+	}
+	srv.Publish(t, delegationsOp(t,
+		[]delegatedRole{
+			{name: "term", signers: []*roleKey{keyTerm}, targets: map[string]*tufmetadata.TargetFiles{
+				"x/in-term": write("x/in-term"),
+			}},
+			{name: "later", signers: []*roleKey{keyLater}, targets: map[string]*tufmetadata.TargetFiles{
+				"x/from-later": write("x/from-later"), // covered by term's terminating x/*
+				"z/free":       write("z/free"),       // outside it
+			}},
+		},
+		[]delegation{
+			{from: tufmetadata.TARGETS, to: "term", paths: []string{"x/*"}, keys: []*roleKey{keyTerm}},
+			{from: tufmetadata.TARGETS, to: "later", paths: []string{"x/*", "z/*"}, keys: []*roleKey{keyLater}},
+		},
+	))
+	// delegationsOp does not expose the terminating flag; set it on the
+	// published metadata in a second transaction so the fixture stays small.
+	srv.Publish(t, tufrepo.NewTxnOp("test: mark term terminating", func(ctx context.Context, tx *tufrepo.Transaction) error {
+		top, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+		if err != nil {
+			return err
+		}
+		for i := range top.Signed.Delegations.Roles {
+			if top.Signed.Delegations.Roles[i].Name == "term" {
+				top.Signed.Delegations.Roles[i].Terminating = true
+			}
+		}
+		return tx.UpdateRoleData(tufmetadata.TARGETS, top)
+	}))
+
+	client := newClient(t, testrepo.Config(t, srv.ConfigBlock("terminating")))
+	var paths []string
+	for info, err := range client.IterTargetFiles(t.Context()) {
+		require.NoError(t, err)
+		paths = append(paths, info.Path)
+	}
+	slices.Sort(paths)
+	assert.Equal(t, []string{"x/in-term", "z/free"}, paths)
+
+	_, err := client.GetTargetInfo(t.Context(), "x/from-later")
+	require.ErrorIs(t, err, fs.ErrNotExist, "go-tuf's lookup must also stop at the terminating delegation")
+	_, err = client.GetTargetInfo(t.Context(), "z/free")
+	require.NoError(t, err)
 }

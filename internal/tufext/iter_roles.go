@@ -8,22 +8,13 @@ import (
 	"io/fs"
 	"iter"
 	"maps"
+	"slices"
 
 	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 
 	"go.amutable.dev/quarry/internal/generics"
 	"go.amutable.dev/quarry/internal/third_party/assert"
 )
-
-// TargetFileData is a tuple of (name, *[tufmetadata.TargetFiles]), mainly used
-// as an iterator value for [IterTargetFiles].
-type TargetFileData struct {
-	// Path is the logical pathname for this target file.
-	Path string
-
-	// TargetFiles is the TUF target file metadata.
-	*tufmetadata.TargetFiles
-}
 
 // DelegationChain represents the chain of TUF delegations that were followed
 // to reach a given target role (or file).
@@ -104,15 +95,23 @@ func (chain DelegationChain) IsTargetPermitted(targetPath string) bool {
 	return true
 }
 
-// TargetMetadataFetchFunc is a helper function for [IterTargetFiles] that is
-// called to get a particular target. For [tuftrustedmetadata.TrustedMetadata]
-// backends it provides the necessary information to be able to automatically
-// verify the corresponding target file.
+// TargetMetadataFetchFunc is a helper function for [IterTargetRoles] (and thus
+// [IterTargetFiles]) which is called to fetch a particular target role by
+// name.
+//
+// For [tuftrustedmetadata.TrustedMetadata] backends it provides the necessary
+// information to be able to automatically verify the corresponding target
+// file, and such backends are expected to validate the data before returning
+// it.
+//
+// TODO: Maybe we should make this return generic role data so that we can
+// fetch "root" in [IterTargetRoles] and do the validation there regardless of
+// the [TargetMetadataFetchFunc] implementation?
 type TargetMetadataFetchFunc = func(ctx context.Context, roleName, delegatorName string) (*SignedTargets, error)
 
 // TargetsMapFetcher returns a [TargetMetadataFetchFunc] backed by the provided
-// map, for use with [IterTargetFiles] when all of the target files have
-// already been pre-loaded by a user.
+// map, for use with [IterTargetRoles] or [IterTargetFiles] when all of the
+// target role metadata has already been pre-loaded by a user.
 func TargetsMapFetcher(targets map[string]*SignedTargets) TargetMetadataFetchFunc {
 	return func(_ context.Context, roleName, _ string) (*SignedTargets, error) {
 		role, ok := targets[roleName]
@@ -123,27 +122,75 @@ func TargetsMapFetcher(targets map[string]*SignedTargets) TargetMetadataFetchFun
 	}
 }
 
-// IterTargetFiles iterates over all target files, matching the equivalent
-// algorithm used by TUF to search for the correct target file. Note that the
-// order of files yielded is not stable.
+// RoleDelegationChain describes the [DelegationChain] that [IterTargetRoles]
+// encountered when reaching a target role as well as the target role itself.
+//
+// Aside from the obvious bits of information (the target role name, data, and
+// [DelegationChain] used to reach the role), this structure also provides
+// information about the set of terminating delegations reached up to this
+// point in [IterTargetRoles]. As this information is very security-critical,
+// callers that plan to yield target files from this role *MUST* use
+// [RoleDelegationChain.IsTargetPermitted] to filter out forbidden target files
+// so that terminating delegations are respected correctly.
+//
+// Note that the [DelegationChain] used to reach a target role might not be
+// unique, as roles can be delegated to via several distinct chains (though
+// this usage is quite rare in practice).
+type RoleDelegationChain struct {
+	// Name is the name of the delegated target role. "targets" is the
+	// top-level targets role.
+	Name string
+	// Role is the [SignedTargets] data for this role, as returned by the
+	// corresponding [TargetMetadataFetchFunc] call. This value must be treated
+	// as read-only.
+	Role *SignedTargets
+	// ThisChain is the [DelegationChain] used to reach this role.
+	ThisChain DelegationChain
+	// TerminatedChains is the set of [DelegationChain] to terminating roles up
+	// until now in the iteration of target roles -- target files that match
+	// these terminated chains *MUST NOT BE YIELDED*. This is used by
+	// [RoleDelegationChain.IsTargetPermitted].
+	TerminatedChains []DelegationChain
+}
+
+// IsTargetPermitted returns whether the [RoleDelegationChain] reached during
+// an [IterTargetRoles] walk is authorised to provide a target with the given
+// path. Users that yield target files when iterating over [IterTargetRoles]
+// *MUST* make use of this method.
+func (chain RoleDelegationChain) IsTargetPermitted(targetPath string) bool {
+	if !chain.ThisChain.IsTargetPermitted(targetPath) {
+		return false
+	}
+	for _, badChain := range chain.TerminatedChains {
+		// A permitted target path is *bad* for terminated chains!
+		if badChain.IsTargetPermitted(targetPath) {
+			return false
+		}
+	}
+	return true
+}
+
+// IterTargetRoles iterates over all target roles from a single repository in a
+// pre-order depth-first traversal order (as defined in s5.6.7 of the TUF
+// specification).
 //
 // The provided [TargetMetadataFetchFunc] is called each time a target's role
 // metadata needs to be loaded.
 //
-// TODO(links): This will need callbacks and a lot more infrastructure once we
-// add cross-repository links. (Arguably even today it's a little less than
-// ideal because we need to pre-fetch all of the targets which the default
-// updater doesn't do.)
-func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.Seq2[TargetFileData, error] {
+// Users that yield target files when iterating over [IterTargetRoles] *MUST*
+// make use of [RoleDelegationChain.IsTargetPermitted] to ensure they do not
+// violate the security properties of terminating delegations in TUF. Note that
+// it is possible for the same role to be reached via different
+// [DelegationChain]s, in which case [IterTargetRoles] will yield the same role
+// multiple times.
+func IterTargetRoles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.Seq2[RoleDelegationChain, error] {
 	// TODO: Pass these in as configuration so that this matches tufclient's
 	// limits exactly and potentially works better with links?
 	const (
 		maxDelegationDepth = 32 // go-tuf default limit
 		maxDelegations     = 4096
 	)
-	return generics.ErrorIter(func(yield func(TargetFileData) bool) error {
-		seenTargets := make(map[string]struct{}, 256)
-
+	return generics.ErrorIter(func(yield func(RoleDelegationChain) bool) error {
 		// roleTodo indicates that we need to walk into the given role.
 		type roleTodo struct {
 			name, delegator string
@@ -240,7 +287,7 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 			}
 			role, err := fetchFn(ctx, thisRole.name, thisRole.delegator)
 			if err != nil {
-				return fmt.Errorf("target file walk aborted: failed to get role %s: %w", thisRole.name, err)
+				return fmt.Errorf("target role walk aborted: failed to get role %s: %w", thisRole.name, err)
 			}
 			// TODO: Validate the delegation signatures here as well (the real
 			// fetchFn used by clients does so implicitly but we should do it
@@ -249,40 +296,15 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 			// allow us to skip bad delegations...?
 			seenDelegations++
 
-			// First, yield all of the immediate target files.
-		targets:
-			for path, meta := range role.Signed.Targets {
-				// If we already saw this target path before, it was provided
-				// by a higher-priority (i.e., earlier in the chain) target
-				// file.
-				if _, ok := seenTargets[path]; ok {
-					// TODO(log): Add logging?
-					continue targets
-				}
-				// Make sure we don't yield entires that were already covered
-				// by an earlier terminating delegation.
-				for _, chain := range terminatedDelegationChains {
-					// A permitted target path is *bad* for terminated chains!
-					if chain.IsTargetPermitted(path) {
-						// TODO(log): Add logging.
-						continue targets
-					}
-				}
-				// If this is a delegated role, make sure that the target path
-				// matches one of the patterns specified by the delegator.
-				if !thisRole.chain.IsTargetPermitted(path) {
-					// TODO(log): Add logging.
-					continue targets
-				}
-				// TODO: We probably should check if this target file would
-				// actually be fetched by a tuf client by seeing how many
-				// previous delegation paths match against it -- if it is over
-				// the limit (maxDelegationDepth) then we should mask it here
-				// too.
-				if !yield(TargetFileData{Path: path, TargetFiles: meta}) {
-					return nil
-				}
-				seenTargets[path] = struct{}{}
+			val := RoleDelegationChain{
+				Name:      thisRole.name,
+				Role:      role,
+				ThisChain: thisRole.chain,
+				// terminatedDelegationChains gets mutated later so use a copy.
+				TerminatedChains: slices.Clone(terminatedDelegationChains),
+			}
+			if !yield(val) {
+				return nil
 			}
 
 			// Now append the set of delegations to the todo queue.
@@ -301,8 +323,7 @@ func IterTargetFiles(ctx context.Context, fetchFn TargetMetadataFetchFunc) iter.
 					// DelegationChain.IsTargetPermitted uses go-tuf's matching
 					// logic, but go-tuf upstream has a bug in how they compute
 					// these hashes and so we are best to disallow them for
-					// now.
-					// <https://github.com/theupdateframework/go-tuf/security/advisories/GHSA-3r3c-54j3-3j69>
+					// now. <https://github.com/theupdateframework/go-tuf/pull/783>
 					if len(delegatedRole.PathHashPrefixes) > 0 {
 						return fmt.Errorf("role %s uses path prefixes: unsupported feature", delegatedRole.Name)
 					}
