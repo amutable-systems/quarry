@@ -357,6 +357,34 @@ func TestIterRepos_EarlyBreak(t *testing.T) {
 
 // Updates published through a [testrepo.Server] transaction must be visible
 // to (fresh) clients of the repository.
+// Breaking out of IterTargetFiles must stop the walk cleanly, and the returned
+// sequence must be re-rangeable afterwards: each range starts over and sees
+// every target.
+func TestClient_IterTargetFiles_EarlyBreak(t *testing.T) {
+	srv := testrepo.New(t)
+	srv.Publish(t,
+		srv.AddTarget(t, "a.txt", bytes.NewReader([]byte("a"))),
+		srv.AddTarget(t, "b.txt", bytes.NewReader([]byte("b"))),
+	)
+	client := newClient(t, testrepo.Config(t, srv.ConfigBlock("test-repo")))
+	seq := client.IterTargetFiles(t.Context())
+
+	var yielded int
+	for _, err := range seq {
+		require.NoError(t, err)
+		yielded++
+		break
+	}
+	assert.Equal(t, 1, yielded)
+
+	var paths []string
+	for info, err := range seq {
+		require.NoError(t, err)
+		paths = append(paths, info.Path)
+	}
+	assert.ElementsMatch(t, []string{"a.txt", "b.txt"}, paths, "a fresh range must start over")
+}
+
 func TestClient_TargetUpdates(t *testing.T) {
 	targetData := []byte("hello quarry")
 
