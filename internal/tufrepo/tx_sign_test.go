@@ -622,7 +622,7 @@ func TestBumpExpiry_CommitsClosureMutationsWithNewExpiry(t *testing.T) {
 	assertRootDelegates(ctx, t, tx, tufmetadata.TARGETS, signed)
 }
 
-// A nil expiryFn must drive the default per-role expiry via tx.expiry's
+// A nil expiryFn must drive the default per-role expiry via tx.ExpiresAfter's
 // dispatch -- each core role gets its own default, and delegated targets
 // fall through to DefaultTargetsExpiry.
 func TestBumpExpiry_NilClosureAppliesDefaultForAllRoles(t *testing.T) {
@@ -709,9 +709,45 @@ func TestBumpExpiry_DiscardsClosureMutationsOnNilReturn(t *testing.T) {
 
 // ----- SetExpiresAfter -----------------------------------------------------
 
-// SetExpiresAfter feeds tx.expiry, so a nil-closure BumpExpiry is the most
-// direct probe of a role's currently-configured expiry. A per-role override
-// must only move the named role -- a sibling keeps its own default.
+// ExpiresAfter is the read side of SetExpiresAfter: it reports the package
+// default for every role kind on a fresh transaction (including roles the
+// transaction has never heard of), then tracks per-role overrides and the ""
+// form.
+func TestExpiresAfter_TracksSetExpireAfter(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t, withDelegation("my-delegation"))
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	defaults := map[string]time.Duration{
+		tufmetadata.ROOT:      tufrepo.DefaultRootExpiry,
+		tufmetadata.TIMESTAMP: tufrepo.DefaultTimestampExpiry,
+		tufmetadata.SNAPSHOT:  tufrepo.DefaultSnapshotExpiry,
+		tufmetadata.TARGETS:   tufrepo.DefaultTargetsExpiry,
+		"my-delegation":       tufrepo.DefaultTargetsExpiry,
+		"not-in-transaction":  tufrepo.DefaultTargetsExpiry,
+	}
+	for roleName, want := range defaults {
+		assert.Equal(t, want, tx.ExpiresAfter(roleName), "default expiry for %s", roleName)
+	}
+
+	const override = 99 * time.Hour
+	require.NoError(t, tx.SetExpiresAfter(tufmetadata.SNAPSHOT, override))
+	assert.Equal(t, override, tx.ExpiresAfter(tufmetadata.SNAPSHOT))
+	assert.Equal(t, tufrepo.DefaultTimestampExpiry, tx.ExpiresAfter(tufmetadata.TIMESTAMP),
+		"override must not leak to other roles")
+
+	const all = 5 * time.Hour
+	require.NoError(t, tx.SetExpiresAfter("", all))
+	for roleName := range defaults {
+		assert.Equal(t, all, tx.ExpiresAfter(roleName), "expiry for %s after the all-roles form", roleName)
+	}
+}
+
+// SetExpiresAfter feeds tx.ExpiresAfter, so a nil-closure BumpExpiry is the
+// most direct probe of a role's currently-configured expiry. A per-role
+// override must only move the named role -- a sibling keeps its own default.
 func TestSetExpiresAfter_OverridesOnlyNamedRole(t *testing.T) {
 	const override = 99 * time.Hour
 	for _, tc := range []struct {

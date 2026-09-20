@@ -464,9 +464,14 @@ var defaultRoleExpiry = map[string]time.Duration{
 // [Transaction.Sign] auto-bump the expiry.
 var DefaultExpiryRefreshWindow = 6 * time.Hour
 
-// expiry returns the duration to use when extending the expiry for the given
-// role.
-func (tx *Transaction) expiry(roleName string) time.Duration {
+// ExpiresAfter returns the per-role expiry for roleName used by
+// [Transaction.Sign] if it dermines it needs to bump a role's expiry (in
+// contrast to [Transaction.BumpExpiry] which explicitly sets the expiry
+// duration).
+//
+// This value can be configured using [Transaction.SetExpiresAfter] and is
+// resolved relative to [Transaction.RefTime].
+func (tx *Transaction) ExpiresAfter(roleName string) time.Duration {
 	roleExpiry := tx.roleExpiry
 	if roleExpiry == nil {
 		roleExpiry = defaultRoleExpiry // use the default in read-only mode
@@ -530,7 +535,7 @@ func metaExpiry(meta any) (*time.Time, error) {
 func (tx *Transaction) BumpExpiry(ctx context.Context, roleName string, expiryFn func(oldExpiry time.Time, roleData any) (*time.Time, error)) (Err error) {
 	if expiryFn == nil {
 		expiryFn = func(_ time.Time, _ any) (*time.Time, error) {
-			expiresAfter := tx.expiry(roleName)
+			expiresAfter := tx.ExpiresAfter(roleName)
 			newExpiry := tx.RefTime.Add(expiresAfter)
 			return &newExpiry, nil
 		}
@@ -609,7 +614,7 @@ func (tx *Transaction) bumpExpiries(ctx context.Context, store *keystore.Store) 
 			// the old version of every target file. The best we can do here is
 			// not *shorten* the expiry.
 
-			newExpiry := tx.RefTime.Add(tx.expiry(roleName))
+			newExpiry := tx.RefTime.Add(tx.ExpiresAfter(roleName))
 			if newExpiry.Before(oldExpiry) {
 				return nil, nil //nolint:nilnil // nil indicates no change needed
 			}
@@ -694,7 +699,7 @@ func (tx *Transaction) updateSnapshot(ctx context.Context) (Err error) {
 		return fmt.Errorf("could not check if role %s needs bumps: %w", tufmetadata.SNAPSHOT, err)
 	} else if needsBump {
 		tx.snapshot.Signed.Version = tx.RefTime.UnixMilli()
-		tx.snapshot.Signed.Expires = tx.RefTime.Add(tx.expiry(tufmetadata.SNAPSHOT))
+		tx.snapshot.Signed.Expires = tx.RefTime.Add(tx.ExpiresAfter(tufmetadata.SNAPSHOT))
 		tx.markDirty(tufmetadata.SNAPSHOT)
 	}
 	return nil
@@ -734,7 +739,7 @@ func (tx *Transaction) updateTimestamp(ctx context.Context) (Err error) {
 	// atomic update scheme relies on timestamp always being updated.
 	if len(tx.dirty) > 0 {
 		tx.timestamp.Signed.Version = tx.RefTime.UnixMilli()
-		tx.timestamp.Signed.Expires = tx.RefTime.Add(tx.expiry(tufmetadata.TIMESTAMP))
+		tx.timestamp.Signed.Expires = tx.RefTime.Add(tx.ExpiresAfter(tufmetadata.TIMESTAMP))
 		tx.markDirty(tufmetadata.TIMESTAMP)
 	}
 	return nil
