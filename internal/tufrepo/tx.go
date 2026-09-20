@@ -82,6 +82,10 @@ type Transaction struct {
 	// should be based on it.
 	RefTime time.Time
 
+	// roleExpiry is the default expiry for a given role. The "" key is used as
+	// a default value if a role doesn't have a specific duration.
+	roleExpiry map[string]time.Duration
+
 	// root is the original root metadata, which we always keep around in order
 	// for Sign to be able to sign the new root metadata with old keys (if it
 	// was changed).

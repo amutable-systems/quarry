@@ -707,6 +707,304 @@ func TestBumpExpiry_DiscardsClosureMutationsOnNilReturn(t *testing.T) {
 	assert.NotContains(t, got.Signed.Targets, "ghost")
 }
 
+// ----- SetExpiresAfter -----------------------------------------------------
+
+// SetExpiresAfter feeds tx.expiry, so a nil-closure BumpExpiry is the most
+// direct probe of a role's currently-configured expiry. A per-role override
+// must only move the named role -- a sibling keeps its own default.
+func TestSetExpiresAfter_OverridesOnlyNamedRole(t *testing.T) {
+	const override = 99 * time.Hour
+	for _, tc := range []struct {
+		roleName, sibling string
+		siblingWant       time.Duration
+	}{
+		{tufmetadata.ROOT, tufmetadata.TIMESTAMP, tufrepo.DefaultTimestampExpiry},
+		{tufmetadata.TIMESTAMP, tufmetadata.SNAPSHOT, tufrepo.DefaultSnapshotExpiry},
+		{tufmetadata.SNAPSHOT, tufmetadata.TARGETS, tufrepo.DefaultTargetsExpiry},
+		{tufmetadata.TARGETS, "my-delegation", tufrepo.DefaultTargetsExpiry},
+		{"my-delegation", tufmetadata.TARGETS, tufrepo.DefaultTargetsExpiry},
+	} {
+		t.Run(tc.roleName, func(t *testing.T) {
+			ctx := context.Background()
+			bs := bootstrapRepo(t, withDelegation("my-delegation"))
+
+			tx, err := bs.repo.TxnStart(ctx)
+			require.NoError(t, err)
+			require.NoError(t, tx.SetExpiresAfter(tc.roleName, override))
+
+			require.NoError(t, tx.BumpExpiry(ctx, tc.roleName, nil))
+			got, err := tx.RoleData(ctx, tc.roleName)
+			require.NoError(t, err)
+			want := tx.RefTime.Add(override)
+			assert.True(t, want.Equal(tufrepo.SignedExpires(t, got)),
+				"%s expiry should be RefTime + %v = %v, got %v",
+				tc.roleName, override, want, tufrepo.SignedExpires(t, got))
+
+			require.NoError(t, tx.BumpExpiry(ctx, tc.sibling, nil))
+			gotSibling, err := tx.RoleData(ctx, tc.sibling)
+			require.NoError(t, err)
+			wantSibling := tx.RefTime.Add(tc.siblingWant)
+			assert.True(t, wantSibling.Equal(tufrepo.SignedExpires(t, gotSibling)),
+				"%s expiry should keep its default RefTime + %v = %v, got %v",
+				tc.sibling, tc.siblingWant, wantSibling, tufrepo.SignedExpires(t, gotSibling))
+		})
+	}
+}
+
+// The "" form is the only way to reach delegated roles a caller cannot
+// enumerate, so it must wipe every per-role override (core and delegated
+// alike) and make all roles fall through to the new fallback.
+func TestSetExpiresAfter_AllRolesClearsEveryOverride(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t, withDelegation("my-delegation"))
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+	require.NoError(t, tx.SetExpiresAfter(tufmetadata.SNAPSHOT, 5*time.Hour))
+	require.NoError(t, tx.SetExpiresAfter("my-delegation", 7*time.Hour))
+
+	const all = 99 * time.Hour
+	require.NoError(t, tx.SetExpiresAfter("", all))
+
+	want := tx.RefTime.Add(all)
+	for _, roleName := range []string{
+		tufmetadata.ROOT, tufmetadata.TIMESTAMP, tufmetadata.SNAPSHOT,
+		tufmetadata.TARGETS, "my-delegation",
+	} {
+		require.NoError(t, tx.BumpExpiry(ctx, roleName, nil))
+		got, err := tx.RoleData(ctx, roleName)
+		require.NoError(t, err)
+		assert.True(t, want.Equal(tufrepo.SignedExpires(t, got)),
+			"%s expiry should be RefTime + %v = %v, got %v",
+			roleName, all, want, tufrepo.SignedExpires(t, got))
+	}
+}
+
+// A per-role override set after the "" form layers on top of the new
+// fallback rather than being discarded by it.
+func TestSetExpiresAfter_RoleOverrideAfterAllRoles(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t, withDelegation("my-delegation"))
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	const all, tsOnly = 99 * time.Hour, 3 * time.Hour
+	require.NoError(t, tx.SetExpiresAfter("", all))
+	require.NoError(t, tx.SetExpiresAfter(tufmetadata.TIMESTAMP, tsOnly))
+
+	for roleName, after := range map[string]time.Duration{
+		tufmetadata.TIMESTAMP: tsOnly,
+		tufmetadata.SNAPSHOT:  all,
+		"my-delegation":       all,
+	} {
+		require.NoError(t, tx.BumpExpiry(ctx, roleName, nil))
+		got, err := tx.RoleData(ctx, roleName)
+		require.NoError(t, err)
+		want := tx.RefTime.Add(after)
+		assert.True(t, want.Equal(tufrepo.SignedExpires(t, got)),
+			"%s expiry should be RefTime + %v = %v, got %v",
+			roleName, after, want, tufrepo.SignedExpires(t, got))
+	}
+}
+
+// Non-positive durations would produce metadata that is expired the moment
+// it is signed, so SetExpiresAfter must reject them -- and must do so before
+// touching any state, so that a rejected "" call does not wipe overrides
+// that were already configured.
+func TestSetExpiresAfter_RejectsNonPositive(t *testing.T) {
+	for _, after := range []time.Duration{0, -time.Hour} {
+		t.Run(after.String(), func(t *testing.T) {
+			ctx := context.Background()
+			bs := bootstrapRepo(t, withDelegation("my-delegation"))
+
+			tx, err := bs.repo.TxnStart(ctx)
+			require.NoError(t, err)
+
+			const override = 99 * time.Hour
+			require.NoError(t, tx.SetExpiresAfter("my-delegation", override))
+
+			for _, roleName := range []string{tufmetadata.SNAPSHOT, "my-delegation", ""} {
+				require.Error(t, tx.SetExpiresAfter(roleName, after))
+			}
+
+			// The delegated override survives and snapshot keeps its default.
+			require.NoError(t, tx.BumpExpiry(ctx, "my-delegation", nil))
+			got, err := tx.RoleData(ctx, "my-delegation")
+			require.NoError(t, err)
+			want := tx.RefTime.Add(override)
+			assert.True(t, want.Equal(tufrepo.SignedExpires(t, got)),
+				"delegated override should survive rejected calls: want %v, got %v",
+				want, tufrepo.SignedExpires(t, got))
+
+			require.NoError(t, tx.BumpExpiry(ctx, tufmetadata.SNAPSHOT, nil))
+			gotSnap, err := tx.RoleData(ctx, tufmetadata.SNAPSHOT)
+			require.NoError(t, err)
+			wantSnap := tx.RefTime.Add(tufrepo.DefaultSnapshotExpiry)
+			assert.True(t, wantSnap.Equal(tufrepo.SignedExpires(t, gotSnap)),
+				"snapshot should keep its default: want %v, got %v",
+				wantSnap, tufrepo.SignedExpires(t, gotSnap))
+		})
+	}
+}
+
+// Sign's bumpExpiries path must honour a per-role override when it re-signs
+// a dirty role, while the snapshot/timestamp cascade keeps using their own
+// (untouched) defaults -- the override must not leak across roles.
+func TestSign_SetExpiresAfterAppliesToDirtyRole(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t, withDelegation("a"))
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	// Longer than the bootstrap expiry so the no-shortening guard in
+	// bumpExpiries cannot mask the override.
+	override := 3 * tufrepo.DefaultTargetsExpiry
+	require.NoError(t, tx.SetExpiresAfter(tufmetadata.TARGETS, override))
+	require.NoError(t, tx.Apply(ctx, addTargetOp("foo/bar", 1)))
+
+	origDelegated, err := tx.TargetsRoleData(ctx, "a")
+	require.NoError(t, err)
+
+	_, err = tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+
+	afterTargets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	wantTargets := tx.RefTime.Add(override)
+	assert.True(t, wantTargets.Equal(afterTargets.Signed.Expires),
+		"targets expiry should be RefTime + %v = %v, got %v",
+		override, wantTargets, afterTargets.Signed.Expires)
+
+	afterSnap, err := tx.SnapshotRoleData(ctx)
+	require.NoError(t, err)
+	wantSnap := tx.RefTime.Add(tufrepo.DefaultSnapshotExpiry)
+	assert.True(t, wantSnap.Equal(afterSnap.Signed.Expires),
+		"snapshot should keep its default expiry %v, got %v",
+		wantSnap, afterSnap.Signed.Expires)
+
+	afterTs, err := tx.TimestampRoleData(ctx)
+	require.NoError(t, err)
+	wantTs := tx.RefTime.Add(tufrepo.DefaultTimestampExpiry)
+	assert.True(t, wantTs.Equal(afterTs.Signed.Expires),
+		"timestamp should keep its default expiry %v, got %v",
+		wantTs, afterTs.Signed.Expires)
+
+	// Neither dirty nor inside the refresh window: untouched.
+	afterDelegated, err := tx.TargetsRoleData(ctx, "a")
+	require.NoError(t, err)
+	assert.True(t, origDelegated.Signed.Expires.Equal(afterDelegated.Signed.Expires))
+	assert.Equal(t, origDelegated.Signatures, afterDelegated.Signatures)
+}
+
+// The updateSnapshot/updateTimestamp cascade must honour overrides for those
+// two roles. Unlike bumpExpiries this path has no no-shortening guard, so a
+// shorter-than-default override is applied verbatim -- which is what
+// `hardhat repoctl snapshot --expire-after` relies on.
+func TestSign_SetExpiresAfterAppliesToSnapshotAndTimestampCascade(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	const snapAfter, tsAfter = 2 * time.Hour, time.Hour
+	require.NoError(t, tx.SetExpiresAfter(tufmetadata.SNAPSHOT, snapAfter))
+	require.NoError(t, tx.SetExpiresAfter(tufmetadata.TIMESTAMP, tsAfter))
+
+	origSnap, err := tx.SnapshotRoleData(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, tx.Apply(ctx, addTargetOp("foo/bar", 1)))
+	_, err = tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+
+	afterSnap, err := tx.SnapshotRoleData(ctx)
+	require.NoError(t, err)
+	wantSnap := tx.RefTime.Add(snapAfter)
+	assert.True(t, wantSnap.Equal(afterSnap.Signed.Expires),
+		"snapshot expiry should be RefTime + %v = %v, got %v",
+		snapAfter, wantSnap, afterSnap.Signed.Expires)
+	assert.True(t, afterSnap.Signed.Expires.Before(origSnap.Signed.Expires),
+		"sanity: the override must actually have shortened the snapshot expiry")
+	assertRootDelegates(ctx, t, tx, tufmetadata.SNAPSHOT, afterSnap)
+
+	afterTs, err := tx.TimestampRoleData(ctx)
+	require.NoError(t, err)
+	wantTs := tx.RefTime.Add(tsAfter)
+	assert.True(t, wantTs.Equal(afterTs.Signed.Expires),
+		"timestamp expiry should be RefTime + %v = %v, got %v",
+		tsAfter, wantTs, afterTs.Signed.Expires)
+	assertRootDelegates(ctx, t, tx, tufmetadata.TIMESTAMP, afterTs)
+}
+
+// bumpExpiries keeps its no-shortening guard even under an override: a dirty
+// targets role whose configured expiry would land before its current one is
+// re-signed with the current expiry left alone.
+func TestSign_SetExpiresAfterCannotShortenViaBumpExpiries(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+	require.NoError(t, tx.SetExpiresAfter(tufmetadata.TARGETS, time.Hour))
+
+	origTargets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+
+	require.NoError(t, tx.Apply(ctx, addTargetOp("foo/bar", 1)))
+	_, err = tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+
+	afterTargets, err := tx.TargetsRoleData(ctx, tufmetadata.TARGETS)
+	require.NoError(t, err)
+	assert.Greater(t, afterTargets.Signed.Version, origTargets.Signed.Version,
+		"targets was dirty and must still be re-signed")
+	assert.True(t, origTargets.Signed.Expires.Equal(afterTargets.Signed.Expires),
+		"targets expiry must not be shortened: want %v, got %v",
+		origTargets.Signed.Expires, afterTargets.Signed.Expires)
+}
+
+// The "" form must reach delegated roles through Sign itself, not only via
+// BumpExpiry. With a refresh window wide enough to auto-refresh every
+// non-root role, all of them must land on RefTime + the shared expiry.
+func TestSign_SetExpiresAfterAllRolesAppliesToAutoRefresh(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t, withDelegation("a"))
+
+	withRefreshWindow(t, 2*tufrepo.DefaultTargetsExpiry)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+
+	all := 3 * tufrepo.DefaultTargetsExpiry
+	require.NoError(t, tx.SetExpiresAfter("", all))
+
+	origRoot, err := tx.RootRoleData(ctx)
+	require.NoError(t, err)
+
+	_, err = tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+
+	want := tx.RefTime.Add(all)
+	for _, roleName := range []string{
+		tufmetadata.TIMESTAMP, tufmetadata.SNAPSHOT, tufmetadata.TARGETS, "a",
+	} {
+		got, err := tx.RoleData(ctx, roleName)
+		require.NoError(t, err)
+		assert.True(t, want.Equal(tufrepo.SignedExpires(t, got)),
+			"%s expiry should be RefTime + %v = %v, got %v",
+			roleName, all, want, tufrepo.SignedExpires(t, got))
+	}
+
+	// Root is two years out and so outside even this window: untouched.
+	afterRoot, err := tx.RootRoleData(ctx)
+	require.NoError(t, err)
+	assert.True(t, origRoot.Signed.Expires.Equal(afterRoot.Signed.Expires))
+	assert.Equal(t, origRoot.Signatures, afterRoot.Signatures)
+}
+
 // ----- bumpExpiries auto-refresh ---------------------------------------
 
 // Snapshot/timestamp assertions here are correctness checks, not isolation
