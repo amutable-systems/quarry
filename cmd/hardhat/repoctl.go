@@ -133,7 +133,7 @@ var repoctlInitCommand = &cli.Command{
 	},
 }
 
-var repoctlRefreshCommand = &cli.Command{
+var repoctlRefreshCommand = withTxExpireAfterFlag(&cli.Command{
 	Name:  "refresh",
 	Usage: "refresh the repo's timestamp.json",
 	Flags: []cli.Flag{
@@ -142,13 +142,6 @@ var repoctlRefreshCommand = &cli.Command{
 			Aliases: []string{"r"},
 			Usage:   "set of roles to refresh",
 			Value:   []string{"timestamp"},
-		},
-		// TODO: expire-after should probably be a map because we can specify
-		// multiple roles.
-		&cli.DurationFlag{
-			Name:  "expire-after",
-			Value: tufrepo.DefaultTimestampExpiry,
-			Usage: "configure the expiry of the roles specified in --role (duration relative to --ref-time)",
 		},
 	},
 	MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{
@@ -181,6 +174,10 @@ var repoctlRefreshCommand = &cli.Command{
 		}
 		tx.RefTime, _ = ctxext.RefTime(ctx)
 
+		if err := applyTxExpireAfter(ctx, tx); err != nil {
+			return err
+		}
+
 		var refreshWindow *time.Duration
 		if !cmd.Bool("force-refresh") {
 			v := cmd.Duration("refresh-if-expires-in")
@@ -199,7 +196,10 @@ var repoctlRefreshCommand = &cli.Command{
 						roleName, deadline.Format(time.RFC3339), oldExpiry.Format(time.RFC3339))
 					return nil, nil //nolint:nilnil // nil indicates no change needed
 				}
-				expireAfter := cmd.Duration("expire-after")
+				// Use the transaction's configured expiry so that Sign's own
+				// expiry bumps (which recompute from the same value) agree
+				// with ours rather than clobbering it.
+				expireAfter := tx.ExpiresAfter(roleName)
 				newExpiry := tx.RefTime.Add(expireAfter)
 				mustFprintf(wtr, "Repository %s.json updated to expire at %s (duration is %s).\n",
 					roleName, newExpiry.Format(time.RFC3339), expireAfter)
@@ -231,18 +231,11 @@ var repoctlRefreshCommand = &cli.Command{
 		pprint.ToJSON(wtr, "\t", "\t", timestamp)
 		return nil
 	},
-}
+})
 
-var repoctlSnapshotCommand = &cli.Command{
+var repoctlSnapshotCommand = withTxExpireAfterFlag(&cli.Command{
 	Name:  "snapshot",
 	Usage: "update the repo's snapshot.json",
-	Flags: []cli.Flag{
-		&cli.DurationFlag{
-			Name:  "expire-after",
-			Value: tufrepo.DefaultTimestampExpiry,
-			Usage: "configure the expiry of snapshot.json (duration relative to --ref-time)",
-		},
-	},
 	Arguments: []cli.Argument{
 		&cli.StringArgs{
 			Name:      "targets",
@@ -260,6 +253,10 @@ var repoctlSnapshotCommand = &cli.Command{
 			return fmt.Errorf("start transaction: %w", err)
 		}
 		tx.RefTime, _ = ctxext.RefTime(ctx)
+
+		if err := applyTxExpireAfter(ctx, tx); err != nil {
+			return err
+		}
 
 		for _, targets := range cmd.StringArgs("targets") {
 			roleName, path, ok := strings.Cut(targets, "=")
@@ -298,4 +295,4 @@ var repoctlSnapshotCommand = &cli.Command{
 		pprint.ToJSON(wtr, "\t", "\t", timestamp)
 		return nil
 	},
-}
+})

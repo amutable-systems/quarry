@@ -335,3 +335,78 @@ func TestInitTxn_Commit_RejectsNonOneVersion(t *testing.T) {
 		})
 	}
 }
+
+// TestInitTxn_WithTargets_ExpiryConfiguration: an InitTxn never goes through
+// TxnStart, so it must work from the zero-value expiry configuration. The
+// snapshot and timestamp that Sign synthesises must get the package defaults
+// (rather than being born expired), and SetExpiresAfter must be usable on it.
+func TestInitTxn_WithTargets_ExpiryConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		configure func(t *testing.T, tx *tufrepo.Transaction)
+		wantSnap  time.Duration
+		wantTs    time.Duration
+	}{
+		{
+			name:      "Defaults",
+			configure: func(*testing.T, *tufrepo.Transaction) {},
+			wantSnap:  tufrepo.DefaultSnapshotExpiry,
+			wantTs:    tufrepo.DefaultTimestampExpiry,
+		},
+		{
+			name: "SetExpiresAfter",
+			configure: func(t *testing.T, tx *tufrepo.Transaction) {
+				require.NoError(t, tx.SetExpiresAfter(tufmetadata.SNAPSHOT, 2*time.Hour))
+				require.NoError(t, tx.SetExpiresAfter(tufmetadata.TIMESTAMP, time.Hour))
+			},
+			wantSnap: 2 * time.Hour,
+			wantTs:   time.Hour,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store, _ := newTestKeystore(t)
+
+			rootKey := generateInsecureKey(ctx, t, store)
+			targetsKey := generateInsecureKey(ctx, t, store)
+			snapshotKey := generateInsecureKey(ctx, t, store)
+			timestampKey := generateInsecureKey(ctx, t, store)
+
+			builder := tufext.NewRootBuilder()
+			_, err := builder.AddRole(tufmetadata.ROOT, 1, rootKey.Public)
+			require.NoError(t, err)
+			_, err = builder.AddRole(tufmetadata.TARGETS, 1, targetsKey.Public)
+			require.NoError(t, err)
+			_, err = builder.AddRole(tufmetadata.SNAPSHOT, 1, snapshotKey.Public)
+			require.NoError(t, err)
+			_, err = builder.AddRole(tufmetadata.TIMESTAMP, 1, timestampKey.Public)
+			require.NoError(t, err)
+			signedRoot, _, err := builder.Sign(ctx, store)
+			require.NoError(t, err)
+
+			tx := tufrepo.InitTxn(signedRoot)
+			tc.configure(t, tx)
+
+			targets := tufext.DefaultTargets(tx.RefTime.Add(tufrepo.DefaultTargetsExpiry))
+			targets.Signed.Version = 1
+			require.NoError(t, tx.UpdateRoleData(tufmetadata.TARGETS, targets))
+
+			_, err = tx.Sign(ctx, store)
+			require.NoError(t, err)
+
+			snap, err := tx.SnapshotRoleData(ctx)
+			require.NoError(t, err)
+			wantSnap := tx.RefTime.Add(tc.wantSnap)
+			assert.True(t, wantSnap.Equal(snap.Signed.Expires),
+				"snapshot expiry should be RefTime + %v = %v, got %v",
+				tc.wantSnap, wantSnap, snap.Signed.Expires)
+
+			ts, err := tx.TimestampRoleData(ctx)
+			require.NoError(t, err)
+			wantTs := tx.RefTime.Add(tc.wantTs)
+			assert.True(t, wantTs.Equal(ts.Signed.Expires),
+				"timestamp expiry should be RefTime + %v = %v, got %v",
+				tc.wantTs, wantTs, ts.Signed.Expires)
+		})
+	}
+}

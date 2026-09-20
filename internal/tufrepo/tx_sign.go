@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"iter"
+	"maps"
 	"slices"
 	"time"
 
@@ -444,36 +445,67 @@ func (tx *Transaction) bumpRevisions(ctx context.Context) (Err error) {
 }
 
 // Default expiries for different role types.
-var (
+const (
 	DefaultRootExpiry      = 2 * 365 * 24 * time.Hour // 2 years
 	DefaultTimestampExpiry = (24 + 6) * time.Hour     // 1 day
 	DefaultSnapshotExpiry  = DefaultTargetsExpiry     // 1 week
 	DefaultTargetsExpiry   = (7*24 + 6) * time.Hour   // 1 week
 )
 
+var defaultRoleExpiry = map[string]time.Duration{
+	tufmetadata.ROOT:      DefaultRootExpiry,
+	tufmetadata.TIMESTAMP: DefaultTimestampExpiry,
+	tufmetadata.SNAPSHOT:  DefaultSnapshotExpiry,
+	tufmetadata.TARGETS:   DefaultTargetsExpiry,
+	"":                    DefaultTargetsExpiry, // delegated target roles
+}
+
 // DefaultExpiryRefreshWindow is how long before an object expires will
 // [Transaction.Sign] auto-bump the expiry.
 var DefaultExpiryRefreshWindow = 6 * time.Hour
 
-// expiry returns the duration to use when extending the expiry for the given
-// role.
+// ExpiresAfter returns the per-role expiry for roleName used by
+// [Transaction.Sign] if it dermines it needs to bump a role's expiry (in
+// contrast to [Transaction.BumpExpiry] which explicitly sets the expiry
+// duration).
 //
-// TODO: This should be configurable (both the expiry of individual roles but
-// also the expiry when we need to bump the expiry in a transaction). We might
-// even want to allow users to configure the expiries to be manually-managed...
-func (tx *Transaction) expiry(roleName string) time.Duration {
-	switch roleName {
-	case tufmetadata.ROOT:
-		return DefaultRootExpiry
-	case tufmetadata.TIMESTAMP:
-		return DefaultTimestampExpiry
-	case tufmetadata.SNAPSHOT:
-		return DefaultSnapshotExpiry
-	case tufmetadata.TARGETS:
-		fallthrough
-	default:
-		return DefaultTargetsExpiry
+// This value can be configured using [Transaction.SetExpiresAfter] and is
+// resolved relative to [Transaction.RefTime].
+func (tx *Transaction) ExpiresAfter(roleName string) time.Duration {
+	roleExpiry := tx.roleExpiry
+	if roleExpiry == nil {
+		roleExpiry = defaultRoleExpiry // use the default in read-only mode
 	}
+	if expires, ok := roleExpiry[roleName]; ok {
+		return expires
+	}
+	return roleExpiry[""] // use fallback value
+}
+
+// SetExpiresAfter changes the per-role expiry for roleName that is used as the
+// default expiry when [Transaction.Sign] is called and determines it needs to
+// bump a role's expiry (this is distinct from [Transaction.BumpExpiry] which
+// explicitly bumps role expiries).
+//
+// If roleName is "", then all roles (i.e., both built-in roles and delegated
+// targets) will use the given expiry. The expiry [time.Duration] is evaluated
+// relative to [Transaction.RefTime] and only positive values are permitted.
+//
+// TODO: We should probably also make DefaultExpiryRefreshWindow configurable
+// on a per-transaction basis. We might even want to allow users to configure
+// the expiries to be manually-managed (no auto-bumps even if we can sign)...
+func (tx *Transaction) SetExpiresAfter(roleName string, after time.Duration) error {
+	if after <= 0 {
+		return fmt.Errorf("expiry duration %v for role %q must be in the future", after, roleName)
+	}
+	if tx.roleExpiry == nil {
+		tx.roleExpiry = maps.Clone(defaultRoleExpiry)
+	}
+	if roleName == "" {
+		clear(tx.roleExpiry)
+	}
+	tx.roleExpiry[roleName] = after
+	return nil
 }
 
 func metaExpiry(meta any) (*time.Time, error) {
@@ -503,7 +535,7 @@ func metaExpiry(meta any) (*time.Time, error) {
 func (tx *Transaction) BumpExpiry(ctx context.Context, roleName string, expiryFn func(oldExpiry time.Time, roleData any) (*time.Time, error)) (Err error) {
 	if expiryFn == nil {
 		expiryFn = func(_ time.Time, _ any) (*time.Time, error) {
-			expiresAfter := tx.expiry(roleName)
+			expiresAfter := tx.ExpiresAfter(roleName)
 			newExpiry := tx.RefTime.Add(expiresAfter)
 			return &newExpiry, nil
 		}
@@ -582,7 +614,7 @@ func (tx *Transaction) bumpExpiries(ctx context.Context, store *keystore.Store) 
 			// the old version of every target file. The best we can do here is
 			// not *shorten* the expiry.
 
-			newExpiry := tx.RefTime.Add(tx.expiry(roleName))
+			newExpiry := tx.RefTime.Add(tx.ExpiresAfter(roleName))
 			if newExpiry.Before(oldExpiry) {
 				return nil, nil //nolint:nilnil // nil indicates no change needed
 			}
@@ -667,7 +699,7 @@ func (tx *Transaction) updateSnapshot(ctx context.Context) (Err error) {
 		return fmt.Errorf("could not check if role %s needs bumps: %w", tufmetadata.SNAPSHOT, err)
 	} else if needsBump {
 		tx.snapshot.Signed.Version = tx.RefTime.UnixMilli()
-		tx.snapshot.Signed.Expires = tx.RefTime.Add(tx.expiry(tufmetadata.SNAPSHOT))
+		tx.snapshot.Signed.Expires = tx.RefTime.Add(tx.ExpiresAfter(tufmetadata.SNAPSHOT))
 		tx.markDirty(tufmetadata.SNAPSHOT)
 	}
 	return nil
@@ -707,7 +739,7 @@ func (tx *Transaction) updateTimestamp(ctx context.Context) (Err error) {
 	// atomic update scheme relies on timestamp always being updated.
 	if len(tx.dirty) > 0 {
 		tx.timestamp.Signed.Version = tx.RefTime.UnixMilli()
-		tx.timestamp.Signed.Expires = tx.RefTime.Add(tx.expiry(tufmetadata.TIMESTAMP))
+		tx.timestamp.Signed.Expires = tx.RefTime.Add(tx.ExpiresAfter(tufmetadata.TIMESTAMP))
 		tx.markDirty(tufmetadata.TIMESTAMP)
 	}
 	return nil
