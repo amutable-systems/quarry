@@ -141,6 +141,9 @@ func (tx *Transaction) Apply(ctx context.Context, txOps ...TxnOp) (Err error) {
 	defer tx.invalidateOnError(&Err)
 
 	for _, txOp := range txOps {
+		if txOp == nil {
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("transaction cancelled: %w", ctx.Err())
