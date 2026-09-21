@@ -975,6 +975,41 @@ func TestSign_SetExpiresAfterAppliesToSnapshotAndTimestampCascade(t *testing.T) 
 	assertRootDelegates(ctx, t, tx, tufmetadata.TIMESTAMP, afterTs)
 }
 
+// The `hardhat repoctl refresh` flow: a caller bumps a role via BumpExpiry to
+// RefTime + tx.ExpiresAfter(role). Without a matching SetExpiresAfter, Sign's
+// own bumpExpiries and updateTimestamp/updateSnapshot recompute from the
+// default and clobber a shorter value; with it, all three paths agree and the
+// value survives Sign for every role kind.
+func TestSign_SetExpiresAfterPreservesBumpExpiryValue(t *testing.T) {
+	for _, roleName := range []string{
+		tufmetadata.TIMESTAMP, tufmetadata.SNAPSHOT, tufmetadata.TARGETS, "a",
+	} {
+		t.Run(roleName, func(t *testing.T) {
+			ctx := context.Background()
+			bs := bootstrapRepo(t, withDelegation("a"))
+
+			tx, err := bs.repo.TxnStart(ctx)
+			require.NoError(t, err)
+
+			// Shorter than every role's default so a clobber is visible.
+			require.NoError(t, tx.SetExpiresAfter(roleName, time.Hour))
+			want := tx.RefTime.Add(tx.ExpiresAfter(roleName))
+			require.NoError(t, tx.BumpExpiry(ctx, roleName, func(time.Time, any) (*time.Time, error) {
+				return &want, nil
+			}))
+
+			_, err = tx.Sign(ctx, bs.store)
+			require.NoError(t, err)
+
+			got, err := tx.RoleData(ctx, roleName)
+			require.NoError(t, err)
+			assert.True(t, want.Equal(tufrepo.SignedExpires(t, got)),
+				"%s expiry should survive Sign as %v, got %v",
+				roleName, want, tufrepo.SignedExpires(t, got))
+		})
+	}
+}
+
 // bumpExpiries keeps its no-shortening guard even under an override: a dirty
 // targets role whose configured expiry would land before its current one is
 // re-signed with the current expiry left alone.
