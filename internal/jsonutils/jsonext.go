@@ -12,10 +12,10 @@ import (
 // when given a top-level structure that doesn't support UnrecognizedFields.
 var ErrNotExtensible = errors.New("json structure not extensible")
 
-// reParseJSON takes an arbitrary object and then re-parses as though it were
+// ReparseJSON takes an arbitrary object and then re-parses as though it were
 // JSON for the given type parameter. This is necessary to "cast" pre-parsed
 // any interfaces into something strongly typed.
-func reParseJSON[T any](data any) (T, error) {
+func ReparseJSON[T any](data any) (T, error) {
 	var (
 		encoded []byte
 		err     error
@@ -38,7 +38,7 @@ func GetExtensionJSON[T any](extStruct any, field string) (*T, error) {
 	// Get the set of structure fields as json.RawMessage so we can re-parse
 	// them slightly more efficiently and without triggering parsing errors for
 	// other fields.
-	structFields, err := reParseJSON[map[string]json.RawMessage](extStruct)
+	structFields, err := ReparseJSON[map[string]json.RawMessage](extStruct)
 	if err != nil {
 		return nil, fmt.Errorf("%w: re-parse %T as generic struct: %w", ErrNotExtensible, extStruct, err)
 	}
@@ -66,7 +66,7 @@ func SetExtensionJSON[W any](extStruct *W, field string, value any) (json.RawMes
 	if err != nil {
 		return nil, fmt.Errorf("marshal value %T: %w", value, err)
 	}
-	structFields, err := reParseJSON[map[string]json.RawMessage](*extStruct)
+	structFields, err := ReparseJSON[map[string]json.RawMessage](*extStruct)
 	if err != nil {
 		return nil, fmt.Errorf("%w: re-parse %T as generic struct: %w", ErrNotExtensible, *new(W), err)
 	}
@@ -74,7 +74,7 @@ func SetExtensionJSON[W any](extStruct *W, field string, value any) (json.RawMes
 	var oldExtBytes json.RawMessage
 	oldExtBytes, structFields[field] = structFields[field], json.RawMessage(extBytes)
 
-	newExtStruct, err := reParseJSON[W](structFields)
+	newExtStruct, err := ReparseJSON[W](structFields)
 	if err != nil {
 		return nil, fmt.Errorf("%w: re-parse generic struct to %T: %w", ErrNotExtensible, *new(W), err)
 	}
@@ -82,7 +82,7 @@ func SetExtensionJSON[W any](extStruct *W, field string, value any) (json.RawMes
 	// Make sure that round-tripping the new extension structure through
 	// encoding still includes the same extension fields. If not, then the
 	// struct doesn't support extensions of this form.
-	roundTripStructFields, err := reParseJSON[map[string]json.RawMessage](newExtStruct)
+	roundTripStructFields, err := ReparseJSON[map[string]json.RawMessage](newExtStruct)
 	if err != nil {
 		return nil, fmt.Errorf("%w: re-parse modified %T as generic struct: %w", ErrNotExtensible, *new(W), err)
 	}
