@@ -26,7 +26,7 @@ import (
 	"go.amutable.dev/quarry/internal/ctxext"
 	"go.amutable.dev/quarry/internal/testrepo"
 	"go.amutable.dev/quarry/internal/tufclient"
-	"go.amutable.dev/quarry/internal/tufclient/config"
+	"go.amutable.dev/quarry/internal/tufext"
 )
 
 var fixedRefTime = time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
@@ -99,14 +99,14 @@ func initExt(ctx context.Context, t *testing.T) *TransferFileExtension {
 	return ext
 }
 
-// makeRepo returns the [config.Repository] backed by the given test
-// repository server.
-func makeRepo(t *testing.T, srv *testrepo.Server, name string) *config.Repository {
+// makeRepo returns the [tufext.Repository] backed by the given test repository
+// server.
+func makeRepo(t *testing.T, srv *testrepo.Server, name string) *tufext.Repository {
 	t.Helper()
 	cfg := testrepo.Config(t, srv.ConfigBlock(name))
 	repo, ok := cfg.Repos[name]
 	require.True(t, ok, "testrepo config did not yield repository %q", name)
-	return repo
+	return repo.AsRepository()
 }
 
 func TestPatchTransferFile_OverrideSourcePath(t *testing.T) {
