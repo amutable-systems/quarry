@@ -33,9 +33,8 @@ const (
 	emptyHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 )
 
-// testRepo returns a [config.Repository] for a dummy repository. The config
-// has to be parsed because the URL fields are not exported types.
-func testRepo(t *testing.T) *config.Repository {
+// testRepo returns the [tufext.Repository] for a dummy repository config.
+func testRepo(t *testing.T) *tufext.Repository {
 	t.Helper()
 	cfg, err := config.Parse(strings.NewReader(`
 config_version = 1
@@ -49,7 +48,7 @@ data_root_url = "https://example.com/data"
 	require.NoError(t, err)
 	repo, ok := cfg.Repos["test-repo"]
 	require.True(t, ok, "test-repo should be in the parsed config")
-	return repo
+	return repo.AsRepository()
 }
 
 // testClient returns a client with no repositories configured. That is enough
