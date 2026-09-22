@@ -20,19 +20,18 @@ import (
 
 	"go.amutable.dev/quarry/internal/testrepo"
 	"go.amutable.dev/quarry/internal/tufclient"
-	"go.amutable.dev/quarry/internal/tufclient/config"
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
 const targetPath = "foo/target.txt"
 
-// serverRepo returns the [config.Repository] for the given server.
-func serverRepo(t *testing.T, srv *testrepo.Server) *config.Repository {
+// serverRepo returns the [tufext.Repository] for the given server.
+func serverRepo(t *testing.T, srv *testrepo.Server) *tufext.Repository {
 	t.Helper()
 	cfg := testrepo.Config(t, srv.ConfigBlock("testrepo"))
 	repo, ok := cfg.Repos["testrepo"]
 	require.True(t, ok, "config did not yield repository testrepo")
-	return repo
+	return repo.AsRepository()
 }
 
 // targetURLPath returns the URL path the test target is fetched from.
@@ -63,7 +62,7 @@ func serveStatus(srv *testrepo.Server, pattern string, status int) {
 // data. Any extensions (inline data, override URLs) must be applied in ext
 // rather than afterwards -- SetExtensionJSON round-trips the struct through
 // JSON, which drops non-JSON fields like Path.
-func newTargetInfo(repo *config.Repository, data []byte, ext func(*tufmetadata.TargetFiles)) *tufclient.TargetInfo {
+func newTargetInfo(repo *tufext.Repository, data []byte, ext func(*tufmetadata.TargetFiles)) *tufclient.TargetInfo {
 	sum := sha256.Sum256(data)
 	target := &tufmetadata.TargetFiles{
 		Length: int64(len(data)),

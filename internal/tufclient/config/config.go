@@ -9,9 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"maps"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -20,68 +18,22 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"go.amutable.dev/quarry/internal/expand"
-	"go.amutable.dev/quarry/internal/third_party/funchelpers"
+	"go.amutable.dev/quarry/internal/generics"
+	"go.amutable.dev/quarry/internal/serde"
+	"go.amutable.dev/quarry/internal/tufext"
 )
 
-// TODO: Make these more configurable.
-const (
-	MaxRootBytes = 512_000 // 512k
-)
-
-// RootTrustSource represents a source of trust for the initial state of a
-// client's locally cached root.json.
-type RootTrustSource interface {
-	Type() string
-	fmt.Stringer
-
-	// This is a helper method called from [parseTomlRootTrust] to fill the
-	// structure based on the pre-parsed TOML table. Unfortunately, we cannot
-	// do this generically (i.e., there doesn't appear to be a way to have a
-	// generic requirement to operate on a type whose pointer implements an
-	// interface) so we need to return a [RootTrustSource] (which is a copy of
-	// the object itself).
-	//
-	// We do not implement [encoding.TextUnmarshaler] or [toml.Unmarshaler]
-	// here because there are multiple types of root trust and you need to
-	// unmarshal [tomlRootTrust] for this to work generically.
-	fromTomlMap(table map[string]any) (RootTrustSource, error)
-
-	// IsRemote indicates whether the root source is to be fetched from a
-	// remote resource. Callers can use this as a hint for whether some errors
-	// from [FetchRoot] should be skipped.
-	IsRemote() bool
-
-	// FetchRoot fetches the initial root.json for the given [Repository],
-	// based on the internal policy of this [RootTrustSource].
-	FetchRoot(ctx context.Context, repo *Repository) ([]byte, error)
-}
-
-// tomlRootTrust is a wrapper around [RootTrustSource] that allows for a
-// generic parsing of [RootTrustSource] implementations.
+// tomlRootTrust is a wrapper around [tufext.RootTrustSource] that allows for a
+// generic parsing of [tufext.RootTrustSource] implementations.
 type tomlRootTrust struct {
-	RootTrustSource
-}
-
-// parseTomlKey takes the value from the map with the given key, parses it into
-// the given slot, and drops it from the original map. This is quite handy for
-// detecting unsupported fields in an ergonomic way when parsing TOML maps.
-func parseTomlKey[T any](data map[string]any, key string, slot *T) error {
-	if valAny, ok := data[key]; !ok {
-		return fmt.Errorf("missing required field %q", key)
-	} else if val, ok := valAny.(T); !ok {
-		return fmt.Errorf("field %q has incorrect value type: %v (%T) is not a %T", key, valAny, valAny, *new(T))
-	} else { //nolint:revive // variable chaining makes this uglier vis-a-vis indent-error-flow
-		*slot = val
-		delete(data, key)
-		return nil
-	}
+	tufext.RootTrustSource
 }
 
 // errWrongType is a sentinel error returned from [parseTomlRootTrust] if the
 // generic type does not match the type of the TOML object.
 var errWrongType = errors.New("[internal error] wrong type")
 
-func parseTomlRootTrust[T RootTrustSource](data any) (RootTrustSource, error) {
+func parseTomlRootTrust[T tufext.RootTrustSource](data any) (tufext.RootTrustSource, error) {
 	rootTrust := *new(T)
 	trustType := rootTrust.Type()
 
@@ -94,7 +46,7 @@ func parseTomlRootTrust[T RootTrustSource](data any) (RootTrustSource, error) {
 		// Name-based specifications are only valid for types which also accept
 		// empty TOML tables (usually empty structs but also structs with no
 		// required fields).
-		rootTrust, err := rootTrust.fromTomlMap(map[string]any{})
+		rootTrust, err := rootTrust.FromMap(map[string]any{})
 		if err != nil {
 			return nil, fmt.Errorf("root trust %q cannot be instantiated using a plain string: %w", trustType, err)
 		}
@@ -109,7 +61,7 @@ func parseTomlRootTrust[T RootTrustSource](data any) (RootTrustSource, error) {
 		table = maps.Clone(table)
 
 		var gotType string
-		if err := parseTomlKey(table, "type", &gotType); err != nil {
+		if err := serde.ParseMapKey(table, "type", &gotType); err != nil {
 			return nil, err
 		}
 		if gotType != trustType {
@@ -118,7 +70,7 @@ func parseTomlRootTrust[T RootTrustSource](data any) (RootTrustSource, error) {
 		}
 
 		// Let the RootTrustSource parse the rest of the options.
-		rootTrust, err := rootTrust.fromTomlMap(table)
+		rootTrust, err := rootTrust.FromMap(table)
 		if err != nil {
 			return nil, fmt.Errorf("root trust %q could not be parsed: %w", trustType, err)
 		}
@@ -129,10 +81,10 @@ func parseTomlRootTrust[T RootTrustSource](data any) (RootTrustSource, error) {
 }
 
 func (t *tomlRootTrust) UnmarshalTOML(data any) error {
-	for _, parser := range []func(any) (RootTrustSource, error){
-		parseTomlRootTrust[tofuRootTrust],
-		parseTomlRootTrust[bundledRootTrust],
-		parseTomlRootTrust[inlineRootTrust],
+	for _, parser := range []func(any) (tufext.RootTrustSource, error){
+		parseTomlRootTrust[tufext.TofuRootTrust],
+		parseTomlRootTrust[tomlBundledRootTrust],
+		parseTomlRootTrust[tomlInlineRootTrust],
 	} {
 		rootTrust, err := parser(data)
 		if errors.Is(err, errWrongType) {
@@ -151,14 +103,14 @@ func (t *tomlRootTrust) UnmarshalTOML(data any) error {
 }
 
 // Expand applies the given [expand.Expansions] to the underlying
-// [RootTrustSource].
+// [tufext.RootTrustSource].
 func (t *tomlRootTrust) Expand(exp *expand.Expansions) error {
-	var newRootTrust RootTrustSource
+	var newRootTrust tufext.RootTrustSource
 	switch rootTrust := t.RootTrustSource.(type) {
-	case tofuRootTrust, inlineRootTrust:
+	case tufext.TofuRootTrust, tomlInlineRootTrust:
 		// nothing to expand
 		newRootTrust = rootTrust
-	case bundledRootTrust:
+	case tomlBundledRootTrust:
 		path, err := exp.ExpandString(rootTrust.Path)
 		if err != nil {
 			return fmt.Errorf("cannot %%-expand path %q: %w", rootTrust.Path, err)
@@ -175,73 +127,26 @@ func (t *tomlRootTrust) Expand(exp *expand.Expansions) error {
 	return nil
 }
 
-// tofuRootTrust indicates that makeUpdater should fetch the root.json
-// directly from the repository with a trust-on-first-use policy.
-// *This is inherently insecure*.
-type tofuRootTrust struct{}
-
-var _ RootTrustSource = &tofuRootTrust{}
-
-func (tofuRootTrust) Type() string { return "insecure-tofu" }
-
-func (t tofuRootTrust) String() string { return t.Type() }
-
-func (t tofuRootTrust) fromTomlMap(data map[string]any) (RootTrustSource, error) {
-	if len(data) > 0 {
-		return nil, fmt.Errorf("unsupported fields: %v", slices.Collect(maps.Keys(data)))
-	}
-	return t, nil
-}
-
-func (tofuRootTrust) IsRemote() bool { return true }
-
-func (tofuRootTrust) FetchRoot(ctx context.Context, repo *Repository) (_ []byte, Err error) {
-	// The updater will bump the root.json to the latest version afterwards.
-	rootURL := repo.MetaRootURL.JoinPath("1.root.json")
-
-	req, err := http.NewRequestWithContext(ctx, "GET", rootURL.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("create http request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-
-	client := http.DefaultClient
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch %s: %w", rootURL, err)
-	}
-	if res.StatusCode >= 300 {
-		if res.Body != nil {
-			_ = res.Body.Close()
-		}
-		err := fmt.Errorf("fetch %s failed with status code %.3d", rootURL, res.StatusCode)
-		if res.StatusCode == http.StatusNotFound {
-			// Emulate ENOENT for 404.
-			err = fmt.Errorf("%w: %w", err, fs.ErrNotExist)
-		}
-		return nil, err
-	}
-	rdr := http.MaxBytesReader(nil, res.Body, MaxRootBytes) // use same max as client
-	defer funchelpers.VerifyClose(&Err, rdr)
-
-	return io.ReadAll(rdr)
-}
-
-// bundledRootTrust indicates that the root.json for this makeUpdater should be
-// sourced from a particular on-disk file (usually distributed as part of the
-// base OS image).
-type bundledRootTrust struct {
+// tomlBundledRootTrust indicates that the root.json for this repository should
+// be sourced from a particular on-disk file (usually distributed as part of
+// the base OS image). *This only makes sense for repositories defined via
+// config files*.
+//
+// TODO: Does this really belong here and not in [tufclient/config]? It is
+// quite a local-config concept.
+type tomlBundledRootTrust struct {
 	Path string `toml:"path"`
+	// TODO: UnrecognizedFields?
 }
 
-var _ RootTrustSource = bundledRootTrust{}
+var _ tufext.RootTrustSource = tomlBundledRootTrust{}
 
-func (t bundledRootTrust) Type() string { return "bundled" }
+func (t tomlBundledRootTrust) Type() string { return "bundled" }
 
-func (t bundledRootTrust) String() string { return t.Type() + ":" + t.Path }
+func (t tomlBundledRootTrust) String() string { return t.Type() + ":" + t.Path }
 
-func (t bundledRootTrust) fromTomlMap(data map[string]any) (RootTrustSource, error) {
-	if err := parseTomlKey(data, "path", &t.Path); err != nil {
+func (t tomlBundledRootTrust) FromMap(data map[string]any) (tufext.RootTrustSource, error) {
+	if err := serde.ParseMapKey(data, "path", &t.Path); err != nil {
 		return nil, err
 	}
 	if len(data) > 0 {
@@ -250,29 +155,27 @@ func (t bundledRootTrust) fromTomlMap(data map[string]any) (RootTrustSource, err
 	return t, nil
 }
 
-func (bundledRootTrust) IsRemote() bool { return false }
+func (tomlBundledRootTrust) IsRemote() bool { return false }
 
-func (t bundledRootTrust) FetchRoot(_ context.Context, _ *Repository) ([]byte, error) {
+func (t tomlBundledRootTrust) FetchRoot(_ context.Context, _ *tufext.Repository) ([]byte, error) {
 	return os.ReadFile(t.Path) //nolint:forbidigo // user-controlled host path
 }
 
-// inlineRootTrust is like [bundledRootTrust] except the root.json is embedded
-// directly into the configuration file as a string, which is much easier to
-// manage than [bundledRootTrust] when dealing with drop-in files.
-type inlineRootTrust struct {
+// tomlInlineRootTrust is the TOML version of [tufext.InlineRootTrust].
+type tomlInlineRootTrust struct {
 	RootJSON string `toml:"root.json"`
 }
 
-var _ RootTrustSource = inlineRootTrust{}
+var _ tufext.RootTrustSource = tomlInlineRootTrust{}
 
-func (t inlineRootTrust) Type() string { return "inline" }
+func (t tomlInlineRootTrust) Type() string { return "inline" }
 
-func (t inlineRootTrust) String() string { return fmt.Sprintf("%s:%q", t.Type(), t.RootJSON) }
+func (t tomlInlineRootTrust) String() string { return fmt.Sprintf("%s:%q", t.Type(), t.RootJSON) }
 
-func (inlineRootTrust) IsRemote() bool { return false }
+func (tomlInlineRootTrust) IsRemote() bool { return false }
 
-func (t inlineRootTrust) fromTomlMap(data map[string]any) (RootTrustSource, error) {
-	if err := parseTomlKey[string](data, "root.json", &t.RootJSON); err != nil {
+func (t tomlInlineRootTrust) FromMap(data map[string]any) (tufext.RootTrustSource, error) {
+	if err := serde.ParseMapKey[string](data, "root.json", &t.RootJSON); err != nil {
 		return nil, err
 	}
 	if len(data) > 0 {
@@ -281,7 +184,7 @@ func (t inlineRootTrust) fromTomlMap(data map[string]any) (RootTrustSource, erro
 	return t, nil
 }
 
-func (t inlineRootTrust) FetchRoot(_ context.Context, _ *Repository) ([]byte, error) {
+func (t tomlInlineRootTrust) FetchRoot(_ context.Context, _ *tufext.Repository) ([]byte, error) {
 	return []byte(t.RootJSON), nil
 }
 
@@ -336,10 +239,11 @@ type Repository struct {
 	RootTrust *tomlRootTrust `toml:"root_trust"`
 
 	// MetaRootURL is the base URL for the directory containing TUF metadata.
+	// If unset, the default is derived by [tufext.Repository.RootURL].
 	MetaRootURL *tomlURL `toml:"meta_root_url"`
 
 	// DataRootURL is the base URL for the directory containing target data
-	// files.
+	// files. If unset, the default is derived by [tufext.Repository.DataURL].
 	DataRootURL *tomlURL `toml:"data_root_url"`
 }
 
@@ -353,6 +257,24 @@ func (repo Repository) OrderIndex() int64 {
 		return *r
 	}
 	return defaultOrderIndex
+}
+
+var _ tufext.RepositoryLike = Repository{}
+
+// AsRepository maps this configured repository to the more generic
+// [tufext.Repository] representation.
+func (repo Repository) AsRepository() *tufext.Repository {
+	extRepo := &tufext.Repository{
+		Name:      repo.Name,
+		RootTrust: repo.RootTrust.RootTrustSource,
+	}
+	if u := repo.MetaRootURL; u != nil {
+		extRepo.MetaRootURL = generics.Ptr(u.URL)
+	}
+	if u := repo.DataRootURL; u != nil {
+		extRepo.DataRootURL = generics.Ptr(u.URL)
+	}
+	return extRepo
 }
 
 // ConfigVersion is the current version of the configuration file format.
@@ -450,8 +372,8 @@ func parseToml(rdr io.Reader) (*Config, error) {
 // DefaultCacheDir is the default value of [Config.CacheDir] if unspecified.
 const DefaultCacheDir = "/var/lib/quarry-client/latest-metadata"
 
-// expandAndValidate applies the %-expansions, fills in the URL fields derived
-// from the repository name, and validates the merged configuration.
+// expandAndValidate applies the %-expansions and validates the merged
+// configuration.
 func (cfg *Config) expandAndValidate() error {
 	var err error
 
@@ -481,24 +403,23 @@ func (cfg *Config) expandAndValidate() error {
 			return fmt.Errorf("repository %s has invalid root_trust value: %w", repo.Name, err)
 		}
 
-		if repo.MetaRootURL == nil {
-			// If unspecified, assume that the metadata URL is the same as the
-			// repository name.
-			repo.MetaRootURL = &tomlURL{rawString: "https://" + repo.Name}
+		// Unset URLs are defaulted by [tufext.Repository].
+		if repo.MetaRootURL != nil {
+			if err := repo.MetaRootURL.Expand(subExpander); err != nil {
+				return fmt.Errorf("repository %s has invalid meta_root_url value: %w", repo.Name, err)
+			}
 		}
-		if err := repo.MetaRootURL.Expand(subExpander); err != nil {
-			return fmt.Errorf("repository %s has invalid meta_root_url value: %w", repo.Name, err)
+		if repo.DataRootURL != nil {
+			if err := repo.DataRootURL.Expand(subExpander); err != nil {
+				return fmt.Errorf("repository %s has invalid data_root_url value: %w", repo.Name, err)
+			}
 		}
-
-		if repo.DataRootURL == nil {
-			// If unspecified, assume that the targets URL is a subdirectory of
-			// the metadata URL (this matches the stock go-tuf client
-			// behaviour).
-			rootURL := repo.MetaRootURL.JoinPath("targets")
-			repo.DataRootURL = &tomlURL{rawString: rootURL.String()}
-		}
-		if err := repo.DataRootURL.Expand(subExpander); err != nil {
-			return fmt.Errorf("repository %s has invalid data_root_url value: %w", repo.Name, err)
+		// Verify the [tufext.Repository]-derived URLs are actually valid URLs.
+		if err := errors.Join(
+			generics.TakeError(repo.AsRepository().RootURL()),
+			generics.TakeError(repo.AsRepository().DataURL()),
+		); err != nil {
+			return fmt.Errorf("repository %s has invalid default url: %w", repo.Name, err)
 		}
 	}
 	return nil

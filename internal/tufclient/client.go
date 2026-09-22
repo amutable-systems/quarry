@@ -46,8 +46,19 @@ import (
 var ErrSkippableRepo = errors.New("skippable repository error")
 
 // RepoClient constructs a [tufupdater.Updater] for a single TUF repository,
-// defined by a [config.Repository] configuration.
-func RepoClient(ctx context.Context, cacheDir *pathrs.Root, repo *config.Repository) (_ *tufupdater.Updater, Err error) {
+// defined by a [tufext.Repository] configuration.
+func RepoClient(ctx context.Context, cacheDir *pathrs.Root, repoLike tufext.RepositoryLike) (_ *tufupdater.Updater, Err error) {
+	repo := repoLike.AsRepository()
+
+	metaRootURL, err := repo.RootURL()
+	if err != nil {
+		return nil, fmt.Errorf("invalid repository definition: %w", err)
+	}
+	dataRootURL, err := repo.DataURL()
+	if err != nil {
+		return nil, fmt.Errorf("invalid repository definition: %w", err)
+	}
+
 	repoCacheDirHandle, err := cacheDir.MkdirAll(repo.Name, 0o755)
 	if err != nil {
 		return nil, fmt.Errorf("open repo cache dir: %w", err)
@@ -120,14 +131,14 @@ func RepoClient(ctx context.Context, cacheDir *pathrs.Root, repo *config.Reposit
 	}
 
 	// Use the go-tuf defaults and adjust the arguments.
-	tufConfig, err := tufconfig.New(repo.MetaRootURL.String(), rootData)
+	tufConfig, err := tufconfig.New(metaRootURL.String(), rootData)
 	if err != nil {
 		return nil, fmt.Errorf("initialise tuf-client config: %w", err)
 	}
-	tufConfig.RootMaxLength = config.MaxRootBytes
+	tufConfig.RootMaxLength = tufext.MaxRootBytes
 	// Custom URLs.
-	tufConfig.RemoteMetadataURL = repo.MetaRootURL.String()
-	tufConfig.RemoteTargetsURL = repo.DataRootURL.String()
+	tufConfig.RemoteMetadataURL = metaRootURL.String()
+	tufConfig.RemoteTargetsURL = dataRootURL.String()
 	// Use our own cache dir.
 	tufConfig.LocalMetadataDir = repoCacheDir.IntoFile().Name()
 	// NOTE: Ideally we wouldn't have this (there is little point to this kind
@@ -246,13 +257,13 @@ func (client *Client) SetRefTime(ctx context.Context, refTime time.Time) {
 	}
 }
 
-// TargetInfo is a tuple of [*tufmetadata.TargetFiles] and [*config.Repository]
+// TargetInfo is a tuple of [*tufmetadata.TargetFiles] and [*tufext.Repository]
 // which is returned by most [Client] methods. This is necessary to help with
 // identifying which repository a target file comes from, as well as doing some
 // other operations.
 type TargetInfo struct {
 	*tufmetadata.TargetFiles
-	Repo *config.Repository
+	Repo *tufext.Repository
 }
 
 // Fetch retreives the target file referenced by this [TargetInfo] and returns
@@ -275,7 +286,11 @@ func (info *TargetInfo) Fetch(ctx context.Context) (io.ReadCloser, error) {
 
 	// Rather than using the go-tuf DownloadTarget (which requires the data be
 	// stored in-memory) we fetch it directly.
-	for url, err := range infoExt.FetchURLs(&info.Repo.DataRootURL.URL) {
+	dataRootURL, err := info.Repo.DataURL()
+	if err != nil {
+		return nil, fmt.Errorf("check target candidate urls: %w", err)
+	}
+	for url, err := range infoExt.FetchURLs(dataRootURL) {
 		if err != nil {
 			return nil, fmt.Errorf("check target candidate urls: %w", err)
 		}
@@ -314,7 +329,7 @@ func (client *Client) GetTargetInfo(ctx context.Context, targetPath string) (*Ta
 		// be masked anyway.
 		return &TargetInfo{
 			TargetFiles: info,
-			Repo:        client.Config.Repos[repoName],
+			Repo:        client.Config.Repos[repoName].AsRepository(),
 		}, nil
 	}
 	return nil, fmt.Errorf("target %s not found: %w", targetPath, fs.ErrNotExist)
@@ -336,7 +351,7 @@ func (client *Client) FetchTargetFile(ctx context.Context, targetPath string) (i
 
 // trustedMetadataTargetsFetcher returns a [tufext.TargetMetadataFetchFunc] for
 // the given repository in the client.
-func (client *Client) trustedMetadataTargetsFetcher(repo *config.Repository, metadata *tuftrustedmetadata.TrustedMetadata) tufext.TargetMetadataFetchFunc {
+func (client *Client) trustedMetadataTargetsFetcher(repo *tufext.Repository, metadata *tuftrustedmetadata.TrustedMetadata) tufext.TargetMetadataFetchFunc {
 	var mu sync.RWMutex // to serialise access to TrustedMetadata
 
 	return func(ctx context.Context, roleName, delegatorName string) (_ *tufext.SignedTargets, Err error) {
@@ -404,7 +419,10 @@ func (client *Client) trustedMetadataTargetsFetcher(repo *config.Repository, met
 			return savedTarget, nil
 		}
 		metaPath := fmt.Sprintf("%d.%s.json", metaRef.Version, roleName)
-		metaURL := repo.MetaRootURL.JoinPath(metaPath)
+		metaURL, err := repo.RootURL(metaPath)
+		if err != nil {
+			return nil, err
+		}
 
 		rdr, _, err := httputils.VerifiedHTTPGet(ctx, metaURL, metaRef.Length, metaRef.Hashes)
 		if err != nil {
@@ -456,7 +474,7 @@ func (client *Client) IterTargetFiles(ctx context.Context) iter.Seq2[*TargetInfo
 				return err
 			}
 
-			repo := client.Config.Repos[repoName]
+			repo := client.Config.Repos[repoName].AsRepository()
 			meta := updater.GetTrustedMetadataSet()
 			if meta.Timestamp == nil {
 				// FIXME: The local client TrustedMetadata state does not get
