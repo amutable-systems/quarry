@@ -215,11 +215,32 @@ func (client *Client) WithRepos(repoNames ...string) error {
 	return nil
 }
 
+// Repository is the [Client] representation of a [tufext.Repository].
+type Repository struct {
+	*tufupdater.Updater
+	chains []tufext.RoleDelegationChain
+}
+
+// IsTargetPermitted returns whether the delegation chain taken to reach this
+// [Repository] (this can only return "false" if it was reached via
+// [tufext.RepoLink]).
+func (repo Repository) IsTargetPermitted(targetPath string) bool {
+	for _, chain := range repo.chains {
+		if !chain.IsTargetPermitted(targetPath) {
+			return false
+		}
+	}
+	return true
+}
+
 // IterRepos returns an iterator over the set of repositories in the [Client],
 // the order is always consistent for a given configuration and is based on the
-// repository order index (and name as a tie-breaker). Note that use of this
-// operation directly is very rarely necessary, most of the time
-// [GetTargetInfo] and [FetchTargetFile] are more ergonomic.
+// repository order index (and name as a tie-breaker). If repository contains a
+// [tufext.RepoLink] extension, [IterRepos] will iterate over those
+// repositories too.
+//
+// Note that use of this operation directly is very rarely necessary, most of
+// the time [GetTargetInfo] and [FetchTargetFile] are more ergonomic.
 //
 // TODO: Return some custom type?
 func (client *Client) IterRepos(_ context.Context) iter.Seq2[string, *tufupdater.Updater] {
@@ -233,6 +254,7 @@ func (client *Client) IterRepos(_ context.Context) iter.Seq2[string, *tufupdater
 				cmp.Compare(repoA, repoB),                       // name is for tie-breaks
 			)
 		})
+		// The active repos set is the starting point of our repo iteration.
 		for _, name := range order {
 			if _, ok := client.activeRepos[name]; !ok {
 				continue
