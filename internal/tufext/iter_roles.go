@@ -64,9 +64,12 @@ func (chain DelegationChain) Contains(roleName string) bool {
 // appended, indicating that the delegation came from the given role. The
 // receiver is left untouched. This function will panic if several delegations
 // from the same role are appended.
-func (chain DelegationChain) Extend(fromRole string, delegation *tufmetadata.DelegatedRole) DelegationChain {
+func (chain DelegationChain) Extend(fromRole string, delegations ...*tufmetadata.DelegatedRole) DelegationChain {
 	clone := chain.clone()
-	if delegation != nil {
+	for _, delegation := range delegations {
+		if delegation == nil {
+			continue
+		}
 		assert.Assertf(!chain.Contains(fromRole),
 			"DelegationChain must not have the same role %q inserted multiple times", fromRole)
 		if clone.links == nil {
