@@ -3,10 +3,12 @@
 A [TUF][]-based software distribution toolchain for immutable Linux
 distributions, with a protocol that is "dumb as rocks".
 
-For more background on Quarry, take a look at [the announcement blog
-post][quarry-blog].
+To see how to get started with publishing artefacts and pulling them with the
+Quarry client, see our [getting started guide][getting-started]. For more
+background on Quarry, take a look at [the announcement blog post][quarry-blog].
 
 [TUF]: https://theupdateframework.io/
+[getting-started]: ./docs/getting-started.md
 [quarry-blog]: https://amutable.com/blog/distributing-images-quarry
 
 ### License ###
