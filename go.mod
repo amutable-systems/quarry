@@ -17,7 +17,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/theupdateframework/go-tuf/v2 v2.4.1
 	github.com/tiendc/go-deepcopy v1.7.2
-	github.com/urfave/cli/v3 v3.12.0
+	github.com/urfave/cli/v3 v3.13.0
 	golang.org/x/sys v0.48.0
 	gopkg.in/ini.v1 v1.67.3
 	snai.pe/go-varlink v0.0.0-20260218093529-c14cc4939572
