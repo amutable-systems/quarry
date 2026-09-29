@@ -27,11 +27,15 @@ concurrency:
 
 jobs:
   build:
-    name: go build
-    runs-on: ubuntu-latest
+    name: go build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, ubuntu-24.04-arm ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -101,11 +105,15 @@ jobs:
               contrib/rpm/quarry.spec
 
   go-test:
-    name: go test
-    runs-on: ubuntu-latest
+    name: go test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, ubuntu-24.04-arm ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
