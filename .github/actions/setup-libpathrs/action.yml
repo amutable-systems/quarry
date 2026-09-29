@@ -42,7 +42,12 @@ runs:
       if: steps.cache-libpathrs.outputs.cache-hit != 'true'
       shell: bash
       working-directory: ${{ runner.temp }}/libpathrs-${{ inputs.version }}
-      run: make release
+      # libpathrs links its cdylib with lld. On x86_64 Rust ships its own
+      # rust-lld, but other architectures need the system one.
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y lld
+        make release
 
     - name: install libpathrs
       shell: bash
