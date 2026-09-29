@@ -1,9 +1,13 @@
-## quarry ##
+## Quarry ##
 
-A [TUF][]-based update system that is solid as bedrock but produces updates
-using a protocol that is as dumb as rocks.
+A [TUF][]-based software distribution toolchain for immutable Linux
+distributions, with a protocol that is "dumb as rocks".
+
+For more background on Quarry, take a look at [the announcement blog
+post][quarry-blog].
 
 [TUF]: https://theupdateframework.io/
+[quarry-blog]: https://amutable.com/blog/distributing-images-quarry
 
 ### License ###
 
