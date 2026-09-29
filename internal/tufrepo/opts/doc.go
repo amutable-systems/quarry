@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Amutable GmbH
 
 // Package opts provides generic options for tufrepo's RepoStore

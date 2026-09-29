@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Amutable GmbH
 
 // Package tufclient provides helpers for creating a set TUF clients to fetch

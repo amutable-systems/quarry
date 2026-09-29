@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Amutable GmbH
 
 // Package tufrepo provides helpers for managing a TUF repo directory.

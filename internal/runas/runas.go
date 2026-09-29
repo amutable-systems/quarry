@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Amutable GmbH
 
 // Package runas provides a helper to run a function as a different user and

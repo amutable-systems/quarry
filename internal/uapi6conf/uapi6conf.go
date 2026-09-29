@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Amutable GmbH
 
 // Package uapi6conf implements the configuration file lookup rules from the

@@ -1,6 +1,8 @@
 #!/bin/bash
 
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Amutable GmbH
+
 # repo-publish.sh -- create a new repository locally
 
 set -Eeuo pipefail

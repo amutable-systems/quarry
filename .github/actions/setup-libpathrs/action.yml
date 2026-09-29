@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Amutable GmbH
 
 # TODO: Move this to cyphar/setup-libpathrs so this can be used elsewhere.

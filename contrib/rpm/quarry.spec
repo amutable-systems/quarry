@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Amutable GmbH
 
 %bcond sysupdate 1
@@ -13,7 +14,7 @@ Name:           quarry
 Version:        0.0.1
 Release:        %autorelease
 Summary:        TUF Repository Scheme for AmutableOS
-License:        Proprietary
+License:        Apache-2.0
 URL:            https://github.com/amutable-systems/quarry
 Source0:        %{name}-%{version}.tar.gz
 
