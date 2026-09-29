@@ -47,8 +47,19 @@ import (
 var ErrSkippableRepo = errors.New("skippable repository error")
 
 // RepoClient constructs a [tufupdater.Updater] for a single TUF repository,
-// defined by a [config.Repository] configuration.
-func RepoClient(ctx context.Context, cacheDir *pathrs.Root, repo *config.Repository) (_ *tufupdater.Updater, Err error) {
+// defined by a [tufext.Repository] configuration.
+func RepoClient(ctx context.Context, cacheDir *pathrs.Root, repoLike tufext.RepositoryLike) (_ *tufupdater.Updater, Err error) {
+	repo := repoLike.AsRepository()
+
+	metaRootURL, err := repo.RootURL()
+	if err != nil {
+		return nil, fmt.Errorf("invalid repository definition: %w", err)
+	}
+	dataRootURL, err := repo.DataURL()
+	if err != nil {
+		return nil, fmt.Errorf("invalid repository definition: %w", err)
+	}
+
 	repoCacheDirHandle, err := cacheDir.MkdirAll(repo.Name, 0o755)
 	if err != nil {
 		return nil, fmt.Errorf("open repo cache dir: %w", err)
@@ -121,14 +132,14 @@ func RepoClient(ctx context.Context, cacheDir *pathrs.Root, repo *config.Reposit
 	}
 
 	// Use the go-tuf defaults and adjust the arguments.
-	tufConfig, err := tufconfig.New(repo.MetaRootURL.String(), rootData)
+	tufConfig, err := tufconfig.New(metaRootURL.String(), rootData)
 	if err != nil {
 		return nil, fmt.Errorf("initialise tuf-client config: %w", err)
 	}
-	tufConfig.RootMaxLength = config.MaxRootBytes
+	tufConfig.RootMaxLength = tufext.MaxRootBytes
 	// Custom URLs.
-	tufConfig.RemoteMetadataURL = repo.MetaRootURL.String()
-	tufConfig.RemoteTargetsURL = repo.DataRootURL.String()
+	tufConfig.RemoteMetadataURL = metaRootURL.String()
+	tufConfig.RemoteTargetsURL = dataRootURL.String()
 	// Use our own cache dir.
 	tufConfig.LocalMetadataDir = repoCacheDir.IntoFile().Name()
 	// NOTE: Ideally we wouldn't have this (there is little point to this kind
@@ -204,11 +215,32 @@ func (client *Client) WithRepos(repoNames ...string) error {
 	return nil
 }
 
+// Repository is the [Client] representation of a [tufext.Repository].
+type Repository struct {
+	*tufupdater.Updater
+	chains []tufext.RoleDelegationChain
+}
+
+// IsTargetPermitted returns whether the delegation chain taken to reach this
+// [Repository] (this can only return "false" if it was reached via
+// [tufext.RepoLink]).
+func (repo Repository) IsTargetPermitted(targetPath string) bool {
+	for _, chain := range repo.chains {
+		if !chain.IsTargetPermitted(targetPath) {
+			return false
+		}
+	}
+	return true
+}
+
 // IterRepos returns an iterator over the set of repositories in the [Client],
 // the order is always consistent for a given configuration and is based on the
-// repository order index (and name as a tie-breaker). Note that use of this
-// operation directly is very rarely necessary, most of the time
-// [GetTargetInfo] and [FetchTargetFile] are more ergonomic.
+// repository order index (and name as a tie-breaker). If repository contains a
+// [tufext.RepoLink] extension, [IterRepos] will iterate over those
+// repositories too.
+//
+// Note that use of this operation directly is very rarely necessary, most of
+// the time [GetTargetInfo] and [FetchTargetFile] are more ergonomic.
 //
 // TODO: Return some custom type?
 func (client *Client) IterRepos(_ context.Context) iter.Seq2[string, *tufupdater.Updater] {
@@ -222,6 +254,7 @@ func (client *Client) IterRepos(_ context.Context) iter.Seq2[string, *tufupdater
 				cmp.Compare(repoA, repoB),                       // name is for tie-breaks
 			)
 		})
+		// The active repos set is the starting point of our repo iteration.
 		for _, name := range order {
 			if _, ok := client.activeRepos[name]; !ok {
 				continue
@@ -247,13 +280,13 @@ func (client *Client) SetRefTime(ctx context.Context, refTime time.Time) {
 	}
 }
 
-// TargetInfo is a tuple of [*tufmetadata.TargetFiles] and [*config.Repository]
+// TargetInfo is a tuple of [*tufmetadata.TargetFiles] and [*tufext.Repository]
 // which is returned by most [Client] methods. This is necessary to help with
 // identifying which repository a target file comes from, as well as doing some
 // other operations.
 type TargetInfo struct {
 	*tufmetadata.TargetFiles
-	Repo *config.Repository
+	Repo *tufext.Repository
 }
 
 // Fetch retreives the target file referenced by this [TargetInfo] and returns
@@ -276,7 +309,11 @@ func (info *TargetInfo) Fetch(ctx context.Context) (io.ReadCloser, error) {
 
 	// Rather than using the go-tuf DownloadTarget (which requires the data be
 	// stored in-memory) we fetch it directly.
-	for url, err := range infoExt.FetchURLs(&info.Repo.DataRootURL.URL) {
+	dataRootURL, err := info.Repo.DataURL()
+	if err != nil {
+		return nil, fmt.Errorf("check target candidate urls: %w", err)
+	}
+	for url, err := range infoExt.FetchURLs(dataRootURL) {
 		if err != nil {
 			return nil, fmt.Errorf("check target candidate urls: %w", err)
 		}
@@ -315,7 +352,7 @@ func (client *Client) GetTargetInfo(ctx context.Context, targetPath string) (*Ta
 		// be masked anyway.
 		return &TargetInfo{
 			TargetFiles: info,
-			Repo:        client.Config.Repos[repoName],
+			Repo:        client.Config.Repos[repoName].AsRepository(),
 		}, nil
 	}
 	return nil, fmt.Errorf("target %s not found: %w", targetPath, fs.ErrNotExist)
@@ -337,18 +374,78 @@ func (client *Client) FetchTargetFile(ctx context.Context, targetPath string) (i
 
 // trustedMetadataTargetsFetcher returns a [tufext.TargetMetadataFetchFunc] for
 // the given repository in the client.
-func (client *Client) trustedMetadataTargetsFetcher(repo *config.Repository, metadata *tuftrustedmetadata.TrustedMetadata) tufext.TargetMetadataFetchFunc {
+func (client *Client) trustedMetadataTargetsFetcher(repo *tufext.Repository, metadata *tuftrustedmetadata.TrustedMetadata) tufext.TargetMetadataFetchFunc {
 	var mu sync.RWMutex // to serialise access to TrustedMetadata
 
 	return func(ctx context.Context, roleName, delegatorName string) (_ *tufext.SignedTargets, Err error) {
-		mu.RLock() // TODO: Make this cancellable with ctx.
-		metaRef, ok := metadata.Snapshot.Signed.Meta[roleName+".json"]
+		// TODO: Make this critical section cancellable with ctx?
+		mu.RLock()
+		// Fetch the link from the snapshot.
+		metaRef, isKnownRole := metadata.Snapshot.Signed.Meta[roleName+".json"]
+		// Fetch the cached data if we have it already.
+		var (
+			savedTarget, haveFetched = metadata.Targets[roleName]
+			savedDelegator           tufext.TargetDelegatorRole
+			haveDelegator            bool
+		)
+		if delegatorName == tufmetadata.ROOT {
+			savedDelegator, haveDelegator = metadata.Root, true
+		} else {
+			savedDelegator, haveDelegator = metadata.Targets[delegatorName]
+		}
 		mu.RUnlock()
-		if !ok {
+
+		if !isKnownRole {
 			return nil, fmt.Errorf("role %s: %w", roleName, fs.ErrNotExist)
 		}
+		// IterTargetRoles can iterate over the same role more than once, so we
+		// can avoid unneeded fetches by returning the local data if we've
+		// already fetched and validated this role's hashes.
+		//
+		// It is safe to re-use the data because TrustedMetadata explicitly
+		// does not permit the timestamp or snapshot role data to be updated
+		// after targets have been fetched -- if we have the target already
+		// then this must be the exact same thing we would've fetched anyway.
+		if haveFetched {
+			// This really cannot happen, but add a check just in case. Sadly
+			// we cannot assert the hashes because those are not necessarily
+			// recomputable.
+			if savedTarget.Signed.Version != metaRef.Version {
+				return nil, fmt.Errorf(
+					"previously-fetched-and-trusted target role %s has inconsistent version (snapshot says %d but role has %d)",
+					roleName, metaRef.Version, savedTarget.Signed.Version,
+				)
+			}
+			// This cannot happen by construction (in order to reach a
+			// delegatee we must have already parsed the delegator data), but
+			// do it anyway to avoid nil panics.
+			if !haveDelegator {
+				return nil, fmt.Errorf(
+					"target role %s was reached from delegator %s without delegator being fetched (should never happen)",
+					roleName, delegatorName,
+				)
+			}
+			// Make sure that the saved target is actually signed by keys
+			// trusted by *this* delegator as well.
+			// NOTE: go-tuf does not do this because they basically implement
+			// <https://github.com/theupdateframework/specification/issues/321>
+			// incorrectly and never walk the same role twice.
+			// FIXME: This needs to be moved to IterTargetRoles so that the
+			// checking logic is generic -- we might even want to skip over bad
+			// delegations instead of erroring out...?
+			if err := savedDelegator.VerifyDelegate(roleName, savedTarget); err != nil {
+				return nil, fmt.Errorf(
+					"previously-fetched-and-trusted target role %s has bad signature for delegation from role %s: %w",
+					roleName, delegatorName, err,
+				)
+			}
+			return savedTarget, nil
+		}
 		metaPath := fmt.Sprintf("%d.%s.json", metaRef.Version, roleName)
-		metaURL := repo.MetaRootURL.JoinPath(metaPath)
+		metaURL, err := repo.RootURL(metaPath)
+		if err != nil {
+			return nil, err
+		}
 
 		rdr, _, err := httputils.VerifiedHTTPGet(ctx, metaURL, metaRef.Length, metaRef.Hashes)
 		if err != nil {
@@ -389,7 +486,9 @@ func (client *Client) trustedMetadataTargetsFetcher(repo *config.Repository, met
 }
 
 // IterTargetFiles iterates over all target files in all repositories defined
-// in the [Client].
+// in the [Client]. Each target file will only be listed once even if it is
+// provided by multiple repositories (first-repository-wins semantics). The
+// order of target files is not consistent, however.
 func (client *Client) IterTargetFiles(ctx context.Context) iter.Seq2[*TargetInfo, error] {
 	return generics.ErrorIter(func(yield func(*TargetInfo) bool) error {
 		seen := make(map[string]struct{}, 512) // TODO: Figure out a reasonable default map size.
@@ -398,7 +497,7 @@ func (client *Client) IterTargetFiles(ctx context.Context) iter.Seq2[*TargetInfo
 				return err
 			}
 
-			repo := client.Config.Repos[repoName]
+			repo := client.Config.Repos[repoName].AsRepository()
 			meta := updater.GetTrustedMetadataSet()
 			if meta.Timestamp == nil {
 				// FIXME: The local client TrustedMetadata state does not get
@@ -412,29 +511,43 @@ func (client *Client) IterTargetFiles(ctx context.Context) iter.Seq2[*TargetInfo
 				}
 				meta = updater.GetTrustedMetadataSet()
 			}
-			fetchFn := client.trustedMetadataTargetsFetcher(repo, &meta)
 
-			for target, err := range tufext.IterTargetFiles(ctx, fetchFn) {
+			fetchFn := client.trustedMetadataTargetsFetcher(repo, &meta)
+			for roleChain, err := range tufext.IterTargetRoles(ctx, fetchFn) {
 				if err != nil {
 					return fmt.Errorf("error while scanning repo %s: %w", repoName, err)
 				}
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				if _, ok := seen[target.Path]; ok {
-					// IterRepos provides a consistent ordering based on
-					// order indexes so if we have already seen this entry
-					// then any later examples must be masked.
-					continue
-				}
-				seen[target.Path] = struct{}{}
 
-				info := &TargetInfo{
-					TargetFiles: target.TargetFiles,
-					Repo:        repo,
-				}
-				if !yield(info) {
-					return nil
+				for _, target := range roleChain.Role.Signed.Targets {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+					if _, ok := seen[target.Path]; ok {
+						// First instance of a target wins:
+						// 1. IterTargetRoles iterates over the roles in the
+						//    TUF lookup order (s5.6.7); and
+						// 2. IterRepos provides a consistent ordering, so the
+						//    first entry we hit masks any later entries.
+						continue
+					}
+					if !roleChain.IsTargetPermitted(target.Path) {
+						// TODO(log): Add logging?
+						continue
+					}
+					seen[target.Path] = struct{}{}
+
+					// TODO: We probably should check if this target file would
+					// actually be fetched by a tuf client by seeing how many
+					// previous delegation paths match against it -- if it is
+					// over the limit (maxDelegationDepth in IterTargetRoles)
+					// then we should mask it here too.
+					info := &TargetInfo{
+						TargetFiles: target,
+						Repo:        repo,
+					}
+					if !yield(info) {
+						return nil
+					}
 				}
 			}
 		}
