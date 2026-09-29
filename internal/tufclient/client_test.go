@@ -1,5 +1,6 @@
 //go:build insecure
 
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Amutable GmbH
 
 package tufclient_test

@@ -1,6 +1,8 @@
 #!/bin/bash
 
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Amutable GmbH
+
 # quarry-bakery -- generate targets.json from flatcar/sysext-bakery components
 
 set -Eeuo pipefail

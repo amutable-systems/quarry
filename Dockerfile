@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Amutable GmbH
 
 # Builds the quarry binaries in a container with libpathrs.a so you don't need

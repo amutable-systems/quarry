@@ -1,5 +1,6 @@
 //go:build insecure
 
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Amutable GmbH
 
 // Package testrepo provides helpers for constructing real TUF repositories
