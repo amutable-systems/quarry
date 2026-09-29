@@ -41,7 +41,7 @@ original TUF paper][tuf-paper]) might make the relationship between these roles
 a little more clear.
 
 ```mermaid
-flowchart TD
+flowchart BT
    root("`**root** role`") -. delegates to ..-> timestamp("`**timestamp** role`") & snapshot("`**snapshot** role`") & targets("`**targets** role`")
    root -- signs ---> rootjson["root.json"]
 
