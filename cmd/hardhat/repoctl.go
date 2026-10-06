@@ -237,6 +237,12 @@ var repoctlRefreshCommand = withTxExpireAfterFlag(&cli.Command{
 var repoctlSnapshotCommand = withTxExpireAfterFlag(&cli.Command{
 	Name:  "snapshot",
 	Usage: "update the repo's snapshot.json",
+	Flags: []cli.Flag{
+		&cli.Int64Flag{
+			Name:  "if-timestamp-version",
+			Usage: "fail unless the repository is still at this timestamp version (0: has no timestamp yet), i.e. the one the targets were computed from",
+		},
+	},
 	Arguments: []cli.Argument{
 		&cli.StringArgs{
 			Name:      "targets",
@@ -254,6 +260,12 @@ var repoctlSnapshotCommand = withTxExpireAfterFlag(&cli.Command{
 			return fmt.Errorf("start transaction: %w", err)
 		}
 		tx.RefTime, _ = ctxext.RefTime(ctx)
+
+		if cmd.IsSet("if-timestamp-version") {
+			if err := tx.Apply(ctx, tufrepo.RequireTimestampVersion(cmd.Int64("if-timestamp-version"))); err != nil {
+				return err
+			}
+		}
 
 		if err := applyTxExpireAfter(ctx, tx); err != nil {
 			return err
