@@ -162,8 +162,8 @@ func TestTagsApplyTarget_NotForUs(t *testing.T) {
 
 	for _, targetPath := range []string{
 		"regular/target.bin",
-		".zzz-quarry-special/sysupdate.d/foo.transfer",
-		".zzz-quarry-special/machine-tags", // no trailing slash: not a tag file
+		".quarry/sysupdate.d/foo.transfer",
+		".quarry/machine-tags", // no trailing slash: not a tag file
 	} {
 		info := &tufclient.TargetInfo{
 			TargetFiles: &tufmetadata.TargetFiles{Path: targetPath},

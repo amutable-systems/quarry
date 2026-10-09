@@ -12,13 +12,37 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"go.amutable.dev/quarry/internal/tufclient"
 )
 
-// ExtensionTargetPrefix is the path prefix used by quarry extension target
-// files to indicate they are a special kind of repository metadata.
-const ExtensionTargetPrefix = ".zzz-quarry-special/"
+const (
+	// ExtensionTargetPrefix is the path prefix used by quarry extension target
+	// files to indicate they are a special kind of repository metadata.
+	ExtensionTargetPrefix = ".quarry/"
+
+	// legacyExtensionTargetPrefix is the old name for [ExtensionTargetPrefix],
+	// still accepted for backward compatibility.
+	// TODO: Drop this.
+	legacyExtensionTargetPrefix = ".zzz-quarry-special/"
+)
+
+// CutExtensionTargetPrefix returns path without its [ExtensionTargetPrefix]
+// with similar semantics to [strings.CutPrefix]. legacy is true if the prefix
+// is actually the legacy (to-be-removed) prefix and should be used when
+// deciding which version of an extension path should have priority.
+func CutExtensionTargetPrefix(path string) (name string, legacy, ok bool) {
+	for prefix, isLegacy := range map[string]bool{
+		ExtensionTargetPrefix:       false,
+		legacyExtensionTargetPrefix: true,
+	} {
+		if name, ok := strings.CutPrefix(path, prefix); ok {
+			return name, isLegacy, ok
+		}
+	}
+	return path, false, false
+}
 
 // Extension represents a Quarry extension that deal with special files in the
 // repository.

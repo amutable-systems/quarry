@@ -131,7 +131,7 @@ func serveSHA256SUMS(rw http.ResponseWriter, req *http.Request) (Err error) {
 		}
 		// Extension targets are consumed by quarry-sysupdate itself, not by
 		// systemd-sysupdate.
-		if strings.HasPrefix(target.Path, xsysupdate.ExtensionTargetPrefix) {
+		if _, _, ok := xsysupdate.CutExtensionTargetPrefix(target.Path); ok {
 			slog.Debug("Stripped quarry extension target from generated SHA256SUMS",
 				"target", target.Path)
 			continue
