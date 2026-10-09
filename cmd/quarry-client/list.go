@@ -118,7 +118,11 @@ func (o *uapi16ListFormatter) Begin(ctx context.Context, client *tufclient.Clien
 }
 
 func (o *uapi16ListFormatter) Output(_ context.Context, target *tufclient.TargetInfo) error {
-	file, err := uapi16ext.FromTargetFile(target.TargetFiles, &target.Repo.DataRootURL.URL)
+	dataRootURL, err := target.Repo.DataURL()
+	if err != nil {
+		return err
+	}
+	file, err := uapi16ext.FromTargetFile(target.TargetFiles, dataRootURL)
 	if err != nil {
 		return err
 	}

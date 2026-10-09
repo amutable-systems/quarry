@@ -224,7 +224,11 @@ func proxyTargetFile(rw http.ResponseWriter, req *http.Request) (Err error) {
 	// TODO(uapi16): Once we get UAPI.16 support into systemd, we can serve a
 	// manifest that lists every URL candidate as an alternative contents source
 	// (as "quarry-client list --uapi-16" does) and drop this shim entirely.
-	for url, err := range infoExt.FetchURLs(&info.Repo.DataRootURL.URL) {
+	dataRootURL, err := info.Repo.DataURL()
+	if err != nil {
+		return fmt.Errorf("bad repo %s definition: cannot compute target url: %w", info.Repo.Name, err)
+	}
+	for url, err := range infoExt.FetchURLs(dataRootURL) {
 		if err != nil {
 			return fmt.Errorf("bad target data in repo %s for target %s: cannot compute target url: %w", info.Repo.Name, targetPath, err)
 		}

@@ -20,7 +20,6 @@ import (
 	"go.amutable.dev/quarry/internal/expand"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 	"go.amutable.dev/quarry/internal/tufclient"
-	"go.amutable.dev/quarry/internal/tufclient/config"
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
@@ -86,7 +85,7 @@ func pprintHashes(wtr io.Writer, prefix string, hashes tufmetadata.Hashes) {
 	}
 }
 
-func pprintTargetFile(wtr io.Writer, prefix string, repo *config.Repository, target *tufmetadata.TargetFiles) {
+func pprintTargetFile(wtr io.Writer, prefix string, repo *tufext.Repository, target *tufmetadata.TargetFiles) {
 	targetExt := tufext.TargetFilesExt(target)
 
 	mustFprintf(wtr, "%s%s:\n", prefix, target.Path)
@@ -98,11 +97,15 @@ func pprintTargetFile(wtr io.Writer, prefix string, repo *config.Repository, tar
 		mustFprintf(wtr, "%sInline data: %d bytes\n", prefix, len(data))
 	}
 	mustFprintf(wtr, "%sURL(s):\n", prefix)
-	for url, err := range targetExt.FetchURLs(&repo.DataRootURL.URL) {
-		if err != nil {
-			mustFprintf(wtr, "%s - <invalid target url: %v>\n", prefix, err)
+	if dataRootURL, err := repo.DataURL(); err != nil {
+		mustFprintf(wtr, "%s - <invalid repo data url: %v>\n", prefix, err)
+	} else {
+		for url, err := range targetExt.FetchURLs(dataRootURL) {
+			if err != nil {
+				mustFprintf(wtr, "%s - <invalid target url: %v>\n", prefix, err)
+			}
+			mustFprintf(wtr, "%s - %s\n", prefix, url)
 		}
-		mustFprintf(wtr, "%s - %s\n", prefix, url)
 	}
 	mustFprintf(wtr, "%sSize: %d\n", prefix, target.Length)
 	pprintHashes(wtr, prefix, target.Hashes)
@@ -113,7 +116,7 @@ func pprintTargetFile(wtr io.Writer, prefix string, repo *config.Repository, tar
 	// TODO(ext): UnrecognisedFields
 }
 
-func expandTargetFile(wtr io.Writer, fmtStr string, repo *config.Repository, target *tufmetadata.TargetFiles) error {
+func expandTargetFile(wtr io.Writer, fmtStr string, repo *tufext.Repository, target *tufmetadata.TargetFiles) error {
 	targetExt := tufext.TargetFilesExt(target)
 
 	expander := expand.NewExpansions().
@@ -131,7 +134,11 @@ func expandTargetFile(wtr io.Writer, fmtStr string, repo *config.Repository, tar
 			} else if data != nil {
 				return "data:;base64," + base64.StdEncoding.EncodeToString(data), nil
 			}
-			for url, err := range targetExt.FetchURLs(&repo.DataRootURL.URL) {
+			dataRootURL, err := repo.DataURL()
+			if err != nil {
+				return "", err
+			}
+			for url, err := range targetExt.FetchURLs(dataRootURL) {
 				var urlStr string
 				if url != nil {
 					urlStr = url.String()
