@@ -591,7 +591,7 @@ Type=partition
 MatchPattern=foo_@v
 `) + "\n")
 
-	const targetPath = ".zzz-quarry-special/sysupdate.d/foo.transfer"
+	const targetPath = ".quarry/sysupdate.d/foo.transfer"
 	srv := testrepo.New(t)
 	target := srv.WriteTarget(t, targetPath, bytes.NewReader(body))
 
@@ -626,7 +626,7 @@ func TestApplyTarget_NestedPath(t *testing.T) {
 
 	body := []byte("dummy=value\n")
 
-	const targetPath = ".zzz-quarry-special/sysupdate.d/foo.transfer.d/x.conf"
+	const targetPath = ".quarry/sysupdate.d/foo.transfer.d/x.conf"
 	srv := testrepo.New(t)
 	target := srv.WriteTarget(t, targetPath, bytes.NewReader(body))
 

@@ -31,7 +31,11 @@ const (
 	// extension to sysupdate. Any target file in a repository with this prefix
 	// will be installed as /etc/sysupdate.* (with the [Source] Path= adjusted to
 	// point to the local quarry-http-client server).
-	TransferFilePrefix = ExtensionTargetPrefix + "sysupdate."
+	TransferFilePrefix = ExtensionTargetPrefix + transferFileName
+
+	// transferFileName is [TransferFilePrefix] without the
+	// [ExtensionTargetPrefix].
+	transferFileName = "sysupdate."
 
 	liveLink = "live"
 	lastLink = "last"
@@ -227,13 +231,9 @@ func (ext *TransferFileExtension) patchTransferFile(wtr io.Writer, rdr io.Reader
 // ApplyTarget saves the transfer file from the repository to the per-update
 // transfer directory.
 func (ext *TransferFileExtension) ApplyTarget(ctx context.Context, info *tufclient.TargetInfo) (_ bool, Err error) {
-	if !strings.HasPrefix(info.Path, TransferFilePrefix) {
+	transferPath, _, ok := CutExtensionTargetPrefix(info.Path)
+	if !ok || !strings.HasPrefix(transferPath, transferFileName) {
 		return false, nil // not for this extension
-	}
-	transferPath, ok := strings.CutPrefix(info.Path, ExtensionTargetPrefix)
-	if !ok {
-		// Should never happen.
-		return false, fmt.Errorf("extension transfer file %s does not have %s prefix", info.Path, ExtensionTargetPrefix)
 	}
 
 	slog.Info("[xsysupdate transfers target] Applying transfer file.",

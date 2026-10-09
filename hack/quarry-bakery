@@ -37,7 +37,7 @@ SHA256SUMS="$(mktemp "quarry-bakery-$sysext.SHA256SUMS.XXXXXX")"
 trap 'rm -f "$SHA256SUMS"' EXIT
 curl -sSL -o "$SHA256SUMS" "https://github.com/flatcar/sysext-bakery/releases/download/$sysext/SHA256SUMS"
 
-# Pre-compute the special .zzz-quarry-special/sysupdate.FOO.d/* entries for the
+# Pre-compute the special .quarry/sysupdate.FOO.d/* entries for the
 # repository to insert it into the targets.json.
 sysext_transfer_url="https://github.com/flatcar/sysext-bakery/releases/download/$sysext/$sysext.conf"
 sysext_transfer="$(curl -sSL -o- "$sysext_transfer_url")"
@@ -51,7 +51,7 @@ sysext_transfer_entry="$(cat <<-EOF
 		"version": 1,
 		"spec_version": "1.0.31",
 		"targets": {
-			".zzz-quarry-special/sysupdate.$sysext.d/$sysext.transfer": {
+			".quarry/sysupdate.$sysext.d/$sysext.transfer": {
 				"hashes": {
 				  "sha256": "$(sha256sum <<<"$sysext_transfer" | awk '{ print $1 }')"
 				},

@@ -26,7 +26,10 @@ const (
 	// The filename suffix is the tag name, and the target file contents are
 	// the tag value. If the file is zero-length then the tag is a "sentinel"
 	// and thus is just of the form "foo.bar" rather than "foo.bar=baz".
-	TagsPrefix = ExtensionTargetPrefix + "machine-tags/"
+	TagsPrefix = ExtensionTargetPrefix + tagsName
+
+	// tagsName is [TagsPrefix] without the [ExtensionTargetPrefix].
+	tagsName = "machine-tags/"
 
 	// maxTagFileSize is the maximum tag target file size we are willing to
 	// read. hostnamed has a restriction of 255 characters but lets use
@@ -132,10 +135,11 @@ func (ext *TagsExtension) Init(ctx context.Context) (context.Context, error) {
 // ApplyTarget collects the machine tag described by the target file, to be
 // applied in BeforeUpdate.
 func (ext *TagsExtension) ApplyTarget(ctx context.Context, info *tufclient.TargetInfo) (_ bool, Err error) {
-	if !strings.HasPrefix(info.Path, TagsPrefix) {
+	name, _, ok := CutExtensionTargetPrefix(info.Path)
+	if !ok || !strings.HasPrefix(name, tagsName) {
 		return false, nil // not for this extension
 	}
-	tagName := strings.TrimPrefix(info.Path, TagsPrefix)
+	tagName := strings.TrimPrefix(name, tagsName)
 
 	slog.Info("[xsysupdate tags target] Collecting machine tag file.",
 		"target", info.Path, "repository", info.Repo.Name, "tagName", tagName)
