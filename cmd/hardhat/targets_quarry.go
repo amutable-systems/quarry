@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"maps"
@@ -13,14 +14,16 @@ import (
 	"strings"
 	"unicode"
 
+	tufmetadata "github.com/theupdateframework/go-tuf/v2/metadata"
 	"github.com/urfave/cli/v3"
 
+	"go.amutable.dev/quarry/internal/jsonutils"
 	"go.amutable.dev/quarry/internal/transferlayout"
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
-// quarryTargetsFlags returns the --quarry-* options of "hardhat targets". They
-// add the transfer definition directories of
+// quarryTargetsFlags returns the --quarry-* options of "hardhat targets" (and
+// --custom-version). They add the transfer definition directories of
 // internal/transferlayout that quarry-sysupdate reads. hardhat lays them out
 // from plain definition files, so producers need not know the layout.
 func quarryTargetsFlags() []cli.Flag {
@@ -28,6 +31,10 @@ func quarryTargetsFlags() []cli.Flag {
 		&cli.StringSliceFlag{
 			Name:  "quarry-transfer-dir",
 			Usage: "ship sysupdate definitions for one component, given as <component dir>=<source>. <component dir> is the component's sysupdate definitions directory. It is \"sysupdate.d\" for the default component or \"sysupdate.<component>.d\". <source> is a directory of definitions (*.transfer, *.feature, <component>.component and drop-in directories) or \"" + confextSourcePrefix + "<name>\" for a generated transfer installing the confext DDI <name>_<version>.confext.raw. Repeat the option for the same <component dir> to merge sources. The files are published under " + transferlayout.Prefix + "<component dir>/. For a named component, <component>.component is generated (without Enabled=, so it is an enabled-by-default component) if no source ships it",
+		},
+		&cli.StringFlag{
+			Name:  "custom-version",
+			Usage: "set custom.quarry.version on every target outside " + transferlayout.Prefix,
 		},
 	}
 }
@@ -207,4 +214,31 @@ func rejectExisting(builder *tufext.TargetsBuilder, path string) error {
 		return fmt.Errorf("target %s is given twice", path)
 	}
 	return nil
+}
+
+// setQuarryCustomVersion sets custom.quarry.version on a target, keeping its
+// other custom fields.
+func setQuarryCustomVersion(target *tufmetadata.TargetFiles, version string) error {
+	return updateCustom(target, func(custom map[string]json.RawMessage) error {
+		quarry := map[string]json.RawMessage{}
+		if raw, ok := custom[tufext.QuarryCustomField]; ok {
+			if err := json.Unmarshal(raw, &quarry); err != nil {
+				return fmt.Errorf("existing custom.quarry data is not an object: %w", err)
+			}
+		}
+		if quarry == nil { // "quarry": null
+			quarry = map[string]json.RawMessage{}
+		}
+		encodedVersion, err := json.Marshal(version)
+		if err != nil {
+			return err
+		}
+		quarry["version"] = encodedVersion
+		encodedQuarry, err := jsonutils.MarshalNoEscapeHTML(quarry)
+		if err != nil {
+			return err
+		}
+		custom[tufext.QuarryCustomField] = encodedQuarry
+		return nil
+	})
 }

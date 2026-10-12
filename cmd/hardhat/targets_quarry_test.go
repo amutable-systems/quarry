@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,6 +134,22 @@ func TestAddQuarryTargets_Confext(t *testing.T) {
 		}
 		require.Error(t, addQuarryTargets(tufext.NewTargetsBuilder(), spec), "confext name %q", name)
 	}
+}
+
+func TestSetQuarryCustomVersion(t *testing.T) {
+	builder := tufext.NewTargetsBuilder()
+	target, err := addInlineBytes(builder, "x", []byte("x"))
+	require.NoError(t, err)
+	// Existing custom fields, inside and outside quarry, survive.
+	existing := json.RawMessage(`{"quarry": {"update": true}, "other": 1}`)
+	target.Custom = &existing
+	require.NoError(t, setQuarryCustomVersion(target, "2"))
+	assert.JSONEq(t, `{"quarry": {"update": true, "version": "2"}, "other": 1}`, string(*target.Custom))
+
+	null := json.RawMessage(`{"quarry": null}`)
+	target.Custom = &null
+	require.NoError(t, setQuarryCustomVersion(target, "3"))
+	assert.JSONEq(t, `{"quarry": {"version": "3"}}`, string(*target.Custom))
 }
 
 // quarrySpecFor runs quarrySpecFromFlags on a dummy command with the args.
