@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
@@ -31,6 +32,7 @@ import (
 	"go.amutable.dev/quarry/internal/keystore"
 	"go.amutable.dev/quarry/internal/linux"
 	"go.amutable.dev/quarry/internal/pathrsext"
+	"go.amutable.dev/quarry/internal/transferlayout"
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
@@ -116,6 +118,64 @@ func addInlineBytes(builder *tufext.TargetsBuilder, logicalPath string, data []b
 	}
 	tufext.TargetFilesExt(target).WithInlineData(data)
 	return target, nil
+}
+
+// applyCustomFrom merges the per-target "custom" objects from the given JSON
+// file ({"<target path>": {<custom fields>}}) into the targets. Every path
+// must name a target that was already added, so that a typo cannot silently
+// drop metadata. No path may be under .quarry/ because the
+// --quarry-* options own that metadata. Existing custom fields are kept unless
+// overridden by key.
+func applyCustomFrom(builder *tufext.TargetsBuilder, path string) error {
+	data, err := os.ReadFile(path) //nolint:forbidigo // user-controlled host path
+	if err != nil {
+		return fmt.Errorf("--custom-from=%q file is invalid: %w", path, err)
+	}
+	customs, err := jsonutils.Parse[map[string]map[string]json.RawMessage](data)
+	if err != nil {
+		return fmt.Errorf("--custom-from=%q file is invalid json: %w", path, err)
+	}
+	targets := builder.TargetsType().Targets
+	for targetPath, custom := range customs {
+		if strings.HasPrefix(targetPath, transferlayout.Prefix) {
+			return fmt.Errorf("--custom-from=%q: target %q is quarry metadata, which --custom-from must not change", path, targetPath)
+		}
+		target, ok := targets[targetPath]
+		if !ok {
+			return fmt.Errorf("--custom-from=%q: target %q does not exist", path, targetPath)
+		}
+		err := updateCustom(target, func(fields map[string]json.RawMessage) error {
+			maps.Copy(fields, custom)
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("--custom-from=%q: target %q: %w", path, targetPath, err)
+		}
+	}
+	return nil
+}
+
+// updateCustom lets update change the fields of a target's custom object and
+// stores the result. A missing or null custom object is an empty one.
+func updateCustom(target *tufmetadata.TargetFiles, update func(fields map[string]json.RawMessage) error) error {
+	fields := map[string]json.RawMessage{}
+	if target.Custom != nil {
+		if err := json.Unmarshal(*target.Custom, &fields); err != nil {
+			return fmt.Errorf("existing custom data is not an object: %w", err)
+		}
+	}
+	if fields == nil { // "custom": null
+		fields = map[string]json.RawMessage{}
+	}
+	if err := update(fields); err != nil {
+		return err
+	}
+	encoded, err := jsonutils.MarshalNoEscapeHTML(fields)
+	if err != nil {
+		return fmt.Errorf("encode custom data: %w", err)
+	}
+	target.Custom = (*json.RawMessage)(&encoded)
+	return nil
 }
 
 const dataRootURLCtxKey ctxKey = "--data-root-url"
@@ -287,6 +347,11 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		&cli.StringSliceFlag{
 			Name:  "include-from",
 			Usage: "include targets defined in the given targets.json files (later files take precedence, with <files> arguments taking highest precedence)",
+		},
+		&cli.StringSliceFlag{
+			Name:      "custom-from",
+			Usage:     "merge per-target \"custom\" objects from the given JSON file ({\"<target path>\": {...}}), where every path must name a target",
+			TakesFile: true,
 		},
 		&cli.BoolFlag{
 			Name:  "ext-override-url",
@@ -464,6 +529,25 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 
 		if err := addQuarryTargets(builder, quarry); err != nil {
 			return err
+		}
+
+		for _, customPath := range cmd.StringSlice("custom-from") {
+			if err := applyCustomFrom(builder, customPath); err != nil {
+				return err
+			}
+		}
+		// This comes after --custom-from because that replaces a target's
+		// whole "quarry" object. The .quarry/ targets are skipped
+		// because they are quarry metadata and belong to no version.
+		if version := cmd.String("custom-version"); version != "" {
+			for path, target := range builder.TargetsType().Targets {
+				if strings.HasPrefix(path, transferlayout.Prefix) {
+					continue
+				}
+				if err := setQuarryCustomVersion(target, version); err != nil {
+					return fmt.Errorf("--custom-version: %s: %w", path, err)
+				}
+			}
 		}
 
 		signed, err := builder.SignWith(ctx, store, keys...)
