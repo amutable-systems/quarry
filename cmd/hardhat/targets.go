@@ -101,6 +101,23 @@ func hashToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalP
 	return nil
 }
 
+// maxInlineSize bounds the contents the --quarry-* options embed into
+// targets.json. Inline data is meant for tiny metadata files, not payloads.
+const maxInlineSize = 64 << 10
+
+// addInlineBytes adds data as a target file with its contents inlined.
+func addInlineBytes(builder *tufext.TargetsBuilder, logicalPath string, data []byte) (*tufmetadata.TargetFiles, error) {
+	if int64(len(data)) > maxInlineSize {
+		return nil, fmt.Errorf("target %s is too large (%d bytes) to be inlined (limit %d bytes)", logicalPath, len(data), maxInlineSize)
+	}
+	target, err := builder.AddTargetFile(logicalPath, int64(len(data)), hashAlgorithm.FromBytes(data))
+	if err != nil {
+		return nil, fmt.Errorf("add file %s to targets data: %w", logicalPath, err)
+	}
+	tufext.TargetFilesExt(target).WithInlineData(data)
+	return target, nil
+}
+
 const dataRootURLCtxKey ctxKey = "--data-root-url"
 
 func ctxDataRoolURL(ctx context.Context) *url.URL {
@@ -255,7 +272,7 @@ func addPrehashedToTargets(ctx context.Context, builder *tufext.TargetsBuilder, 
 var targetsCommand = withKeystoreFlag(&cli.Command{
 	Name:  "targets",
 	Usage: "generate a TUF targets.json (or delegated target) file",
-	Flags: []cli.Flag{
+	Flags: append([]cli.Flag{
 		&cli.StringFlag{
 			Name:      "output",
 			Aliases:   []string{"o"},
@@ -289,7 +306,7 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			Name:  "expire-after",
 			Usage: "configure the expiry of the targets file (duration relative to --ref-time)",
 		},
-	},
+	}, quarryTargetsFlags()...),
 	Arguments: []cli.Argument{
 		// TODO: This doesn't work if you have pre-hashed values.
 		// TODO: This won't work if you have enough files to hit the
@@ -343,6 +360,13 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		store := ctxKeystore(ctx)
+
+		// This happens before creating --output so that bad options leave it
+		// alone.
+		quarry, err := quarrySpecFromFlags(cmd)
+		if err != nil {
+			return err
+		}
 
 		var output io.Writer
 		if outPath := cmd.String("output"); outPath != "-" {
@@ -436,6 +460,10 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 					return fmt.Errorf("failed to add %s (as %s) to targets: %w", filename, logicalFilename, err)
 				}
 			}
+		}
+
+		if err := addQuarryTargets(builder, quarry); err != nil {
+			return err
 		}
 
 		signed, err := builder.SignWith(ctx, store, keys...)

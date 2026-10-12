@@ -14,13 +14,14 @@ import (
 	"log/slog"
 	"strings"
 
+	"go.amutable.dev/quarry/internal/transferlayout"
 	"go.amutable.dev/quarry/internal/tufclient"
 )
 
 const (
 	// ExtensionTargetPrefix is the path prefix used by quarry extension target
 	// files to indicate they are a special kind of repository metadata.
-	ExtensionTargetPrefix = ".quarry/"
+	ExtensionTargetPrefix = transferlayout.Prefix
 
 	// legacyExtensionTargetPrefix is the old name for [ExtensionTargetPrefix],
 	// still accepted for backward compatibility.
