@@ -102,10 +102,6 @@ var updateCommand = withExtensionDirFlag(withQuarryUserFlag(withQuarryProxyFlag(
 		// the extension application, clean up the successfully installed
 		// components, and force-downgrade to the old versions.
 
-		// Pick up tags the user set by hand, not only ones a confext ships.
-		if err := enableSuggested(ctx); err != nil {
-			return err
-		}
 		if err := sysupdateAll(ctx); err != nil {
 			return err
 		}
@@ -149,9 +145,6 @@ var updateCommand = withExtensionDirFlag(withQuarryUserFlag(withQuarryProxyFlag(
 			slog.Info("Machine tags changed by refresh, running another update pass.",
 				"iteration", iteration, "before", tags, "after", newTags)
 			tags = newTags
-			if err := enableSuggested(ctx); err != nil {
-				return err
-			}
 			if err := sysupdateAll(ctx); err != nil {
 				return err
 			}
