@@ -8,10 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 
 	"github.com/urfave/cli/v3"
 
+	"go.amutable.dev/quarry/internal/hostnamed"
 	"go.amutable.dev/quarry/internal/third_party/assert"
+	"go.amutable.dev/quarry/internal/transferlayout"
 	"go.amutable.dev/quarry/internal/tufclient"
 	"go.amutable.dev/quarry/internal/xsysupdate"
 )
@@ -20,10 +24,11 @@ var updateCommand = withExtensionDirFlag(withQuarryUserFlag(withQuarryProxyFlag(
 	Name:  "update",
 	Usage: "extended 'systemd-sysupdate update' wrapper",
 	Action: func(ctx context.Context, _ *cli.Command) (Err error) {
+		transfersExt := &xsysupdate.TransferFileExtension{
+			OverrideSourcePathURL: ctxQuarryProxyURL(ctx),
+		}
 		exts := xsysupdate.ExtensionSet{
-			&xsysupdate.TransferFileExtension{
-				OverrideSourcePathURL: ctxQuarryProxyURL(ctx),
-			},
+			transfersExt,
 			&xsysupdate.TagsExtension{
 				// TODO: There is no ownership model for machine tags yet, so
 				// as a temporary workaround we take full control of the acp.*
@@ -39,6 +44,26 @@ var updateCommand = withExtensionDirFlag(withQuarryUserFlag(withQuarryProxyFlag(
 		}
 		slog.Info("Initialised extensions.",
 			"extensions", exts.String())
+		// A failure before the components are updated leaves nothing
+		// installed, so the extensions are aborted (reverting the tags and
+		// removing the staging directory). Afterwards the state is kept (see
+		// the FIXME below) and the extensions are only closed.
+		updating, closed := false, false
+		defer func() {
+			switch {
+			case Err == nil || closed:
+			case !updating:
+				// A failed Do* call has aborted already, and aborting again
+				// does nothing.
+				if err := exts.DoAbort(context.WithoutCancel(ctx), Err); err != nil {
+					Err = errors.Join(Err, fmt.Errorf("abort extensions: %w", err))
+				}
+			default:
+				if err := exts.Close(); err != nil {
+					Err = errors.Join(Err, fmt.Errorf("post-update extension cleanup: %w", err))
+				}
+			}
+		}()
 		// Legacy-prefixed targets are only applied after all other targets so
 		// we can allow them to be overridden by the non-legacy prefix.
 		// TODO: Drop this.
@@ -99,27 +124,64 @@ var updateCommand = withExtensionDirFlag(withQuarryUserFlag(withQuarryProxyFlag(
 		// FIXME FIXME FIXME
 		//
 		// If these updates error out we are kind of in a messy position.
-		// Because we need to call sysupdate multiple times to update each
-		// component, it is possible that one component installation fails. We
+		// sysupdate updates the components one after the other, so one
+		// component installation can fail after another succeeded. We
 		// would ideally never want to allow execution with mixed repo states,
 		// but fixing this requires having logic for cleanup so we can abort
 		// the extension application, clean up the successfully installed
 		// components, and force-downgrade to the old versions.
 
-		components, err := listComponents(ctx)
-		if err != nil {
-			return fmt.Errorf("get list of sysupdate components: %w", err)
-		}
-		slog.Info("Spawning 'systemd-sysupdate update'...",
-			"components", components)
 		var errs []error
-		for _, component := range components {
-			if err := sysupdate(ctx, component); err != nil {
-				slog.Error("sysupdate for component failed.",
-					"err", err.Error(), "component", component)
-				// FIXME: If we hit an error, continue on because we don't have
-				// a decent revert story at the moment.
-				errs = append(errs, err)
+
+		// Only components with transfer definitions are updated. A component
+		// without any is not managed by us.
+		transfers := transfersExt.Transfers()
+		if len(transfers) == 0 {
+			slog.Info("No transfer definitions found -- nothing to update.")
+		} else {
+			// The machine tags decide which components and features are
+			// enabled while staging the definitions, because sysupdate does
+			// not enable suggested ones by itself (see
+			// xsysupdate.TransferFileExtension.Stage).
+			currentTags, err := hostnamed.CurrentTags(ctx, "")
+			if err != nil {
+				return fmt.Errorf("get current machine tags: %w", err)
+			}
+
+			updating = true
+			components := slices.Sorted(maps.Keys(transfers))
+			slog.Info("Staging transfer definitions for 'systemd-sysupdate update'...",
+				"components", len(components), "machineTags", currentTags)
+			var staged []*xsysupdate.StagedTransfers
+			for _, component := range components {
+				componentDir := transferlayout.ComponentDir(component) // for log messages
+				sc, err := transfersExt.Stage(ctx, transfers[component], xsysupdate.StageOptions{MachineTags: currentTags})
+				if err != nil {
+					slog.Error("Staging the component's transfer definitions failed.",
+						"err", err.Error(), "component", componentDir)
+					// FIXME: If we hit an error, continue on because we don't have
+					// a decent revert story at the moment.
+					errs = append(errs, err)
+					continue
+				}
+				if sc == nil {
+					continue // not enabled on this machine
+				}
+				slog.Info("Staged transfer definitions.",
+					"component", componentDir, "path", sc.Path(), "enabledFeatures", sc.EnabledFeatures)
+				staged = append(staged, sc)
+			}
+			if len(staged) > 0 {
+				// There is one run for everything staged. The hook units merge
+				// the extensions and relink the UKI after each component.
+				// TODO: Make sure we control this better to only do it at the end
+				// after everything was successfully updated.
+				slog.Info("Spawning 'systemd-sysupdate update' with the staged transfer definitions...",
+					"components", len(staged))
+				if err := updateStaged(ctx, staged); err != nil {
+					slog.Error("sysupdate failed.", "err", err.Error())
+					errs = append(errs, err)
+				}
 			}
 		}
 		if err := errors.Join(errs...); err != nil {
@@ -127,6 +189,7 @@ var updateCommand = withExtensionDirFlag(withQuarryUserFlag(withQuarryProxyFlag(
 		}
 		slog.Info("'systemd-sysupdate update' completed.")
 
+		closed = true
 		if err := exts.Close(); err != nil {
 			return fmt.Errorf("post-update extension cleanup: %w", err)
 		}
