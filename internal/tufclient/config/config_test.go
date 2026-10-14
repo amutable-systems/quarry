@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.amutable.dev/quarry/internal/expand"
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
@@ -64,19 +65,9 @@ func TestParseConfig_RootTrust_Valid(t *testing.T) {
 			want:      tomlBundledRootTrust{Path: "/etc/root.json"},
 		},
 		{
-			name:      "BundledEmptyPath",
-			rootTrust: `root_trust = { type = "bundled", path = "" }`,
-			want:      tomlBundledRootTrust{Path: ""},
-		},
-		{
 			name:      "InlineInlineTable",
 			rootTrust: `root_trust = { type = "inline", "root.json" = '{"signed": {}}' }`,
 			want:      tomlInlineRootTrust{RootJSON: `{"signed": {}}`},
-		},
-		{
-			name:      "InlineEmptyRootJSON",
-			rootTrust: `root_trust = { type = "inline", "root.json" = "" }`,
-			want:      tomlInlineRootTrust{RootJSON: ""},
 		},
 		{
 			// Unlike bundled paths, inline root.json data is exempt from
@@ -105,27 +96,27 @@ func TestParseConfig_RootTrust_Invalid(t *testing.T) {
 		{
 			name:      "BundledPlainString",
 			rootTrust: `root_trust = "bundled"`,
-			wantErr:   `cannot be instantiated using a plain string`,
+			wantErr:   `root_trust "bundled" cannot be specified by name alone: missing required field "path"`,
 		},
 		{
 			name:      "UnknownPlainString",
 			rootTrust: `root_trust = "no-such-mode"`,
-			wantErr:   `invalid root_trust value`,
+			wantErr:   `unsupported root_trust type "no-such-mode"`,
 		},
 		{
 			name:      "EmptyString",
 			rootTrust: `root_trust = ""`,
-			wantErr:   `invalid root_trust value`,
+			wantErr:   `unsupported root_trust type ""`,
 		},
 		{
 			name:      "InlineTableMissingType",
 			rootTrust: `root_trust = { path = "/etc/root.json" }`,
-			wantErr:   `missing required field "type"`,
+			wantErr:   `root_trust: missing required field "type"`,
 		},
 		{
 			name:      "InlineTableNonStringType",
 			rootTrust: `root_trust = { type = 42 }`,
-			wantErr:   `"type" has incorrect value type`,
+			wantErr:   `root_trust: field "type" has incorrect value type: int64 is not a string`,
 		},
 		{
 			name:      "InlineTableUnknownType",
@@ -135,59 +126,69 @@ func TestParseConfig_RootTrust_Invalid(t *testing.T) {
 		{
 			name:      "BundledMissingPath",
 			rootTrust: `root_trust = { type = "bundled" }`,
-			wantErr:   `missing required field "path"`,
+			wantErr:   `root_trust "bundled": missing required field "path"`,
 		},
 		{
 			name:      "BundledNonStringPath",
 			rootTrust: `root_trust = { type = "bundled", path = 7 }`,
-			wantErr:   `"path" has incorrect value type`,
+			wantErr:   `root_trust "bundled": toml: (last key "path"): incompatible types`,
 		},
 		{
 			name:      "BundledExtraField",
 			rootTrust: `root_trust = { type = "bundled", path = "/x", extra = "y" }`,
-			wantErr:   `unsupported fields: [extra]`,
+			wantErr:   `root_trust "bundled" has unsupported field "extra"`,
 		},
 		{
 			name:      "TofuExtraField",
 			rootTrust: `root_trust = { type = "insecure-tofu", path = "/x" }`,
-			wantErr:   `unsupported fields: [path]`,
+			wantErr:   `root_trust "insecure-tofu" has unsupported field "path"`,
 		},
 		{
 			name:      "InlinePlainString",
 			rootTrust: `root_trust = "inline"`,
-			wantErr:   `cannot be instantiated using a plain string`,
+			wantErr:   `root_trust "inline" cannot be specified by name alone: missing required field "root.json"`,
+		},
+		{
+			name:      "BundledEmptyPath",
+			rootTrust: `root_trust = { type = "bundled", path = "" }`,
+			wantErr:   `root_trust "bundled": missing required field "path"`,
+		},
+		{
+			name:      "InlineEmptyRootJSON",
+			rootTrust: `root_trust = { type = "inline", "root.json" = "" }`,
+			wantErr:   `root_trust "inline": missing required field "root.json"`,
 		},
 		{
 			name:      "InlineMissingRootJSON",
 			rootTrust: `root_trust = { type = "inline" }`,
-			wantErr:   `missing required field "root.json"`,
+			wantErr:   `root_trust "inline": missing required field "root.json"`,
 		},
 		{
 			// An unquoted root.json key is a TOML dotted key (a nested
 			// "root" table), not the literal "root.json" key inline needs.
 			name:      "InlineUnquotedRootJSONKey",
 			rootTrust: `root_trust = { type = "inline", root.json = "{}" }`,
-			wantErr:   `missing required field "root.json"`,
+			wantErr:   `root_trust "inline" has unsupported field "root"`,
 		},
 		{
 			name:      "InlineNonStringRootJSON",
 			rootTrust: `root_trust = { type = "inline", "root.json" = 42 }`,
-			wantErr:   `"root.json" has incorrect value type`,
+			wantErr:   `root_trust "inline": toml: (last key "\"root.json\""): incompatible types`,
 		},
 		{
 			name:      "InlineExtraField",
 			rootTrust: `root_trust = { type = "inline", "root.json" = "{}", extra = "y" }`,
-			wantErr:   `unsupported fields: [extra]`,
+			wantErr:   `root_trust "inline" has unsupported field "extra"`,
 		},
 		{
 			name:      "Integer",
 			rootTrust: `root_trust = 42`,
-			wantErr:   `unsupported toml type int64`,
+			wantErr:   `root_trust: expected a string or table, got int64`,
 		},
 		{
 			name:      "Array",
 			rootTrust: `root_trust = ["insecure-tofu"]`,
-			wantErr:   `unsupported toml type []`,
+			wantErr:   `root_trust: expected a string or table, got []interface {}`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -537,31 +538,6 @@ func TestParseConfig_ExampleFile(t *testing.T) {
 		repo.RootTrust.RootTrustSource)
 	assert.Equal(t, "https://updates.example.com/update", repo.MetaRootURL.String())
 	assert.Equal(t, "https://updates.example.com/update", repo.DataRootURL.String())
-}
-
-// [tomlRootTrust.UnmarshalTOML]'s parser-dispatch loop relies on
-// [errWrongType] propagating from [parseTomlRootTrust] when the TOML data is
-// tagged for a different [tufext.RootTrustSource] type. Pin that contract here.
-func TestParseTomlRootTrust_WrongType(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		fn   func(any) (tufext.RootTrustSource, error)
-		data any
-	}{
-		{"TofuParser_BundledString", parseTomlRootTrust[tufext.TofuRootTrust], "bundled"},
-		{"TofuParser_BundledTable", parseTomlRootTrust[tufext.TofuRootTrust], map[string]any{"type": "bundled", "path": "/x"}},
-		{"BundledParser_TofuString", parseTomlRootTrust[tomlBundledRootTrust], "insecure-tofu"},
-		{"BundledParser_TofuTable", parseTomlRootTrust[tomlBundledRootTrust], map[string]any{"type": "insecure-tofu"}},
-		{"TofuParser_InlineTable", parseTomlRootTrust[tufext.TofuRootTrust], map[string]any{"type": "inline", "root.json": "{}"}},
-		{"BundledParser_InlineTable", parseTomlRootTrust[tomlBundledRootTrust], map[string]any{"type": "inline", "root.json": "{}"}},
-		{"InlineParser_TofuString", parseTomlRootTrust[tomlInlineRootTrust], "insecure-tofu"},
-		{"InlineParser_BundledTable", parseTomlRootTrust[tomlInlineRootTrust], map[string]any{"type": "bundled", "path": "/x"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := tc.fn(tc.data)
-			assert.ErrorIs(t, err, errWrongType)
-		})
-	}
 }
 
 func TestInlineRootTrust_FetchRoot(t *testing.T) {
@@ -1151,6 +1127,19 @@ func TestRootTrustSource_String(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, tc.src.String())
 			assert.Equal(t, strings.SplitN(tc.want, ":", 2)[0], tc.src.Type())
+		})
+	}
+}
+
+// Make sure [tomlRootTrust.Expand] handles every registered root_trust type
+// rather than hitting the panicking default case.
+func TestRootTrustSources_ExpandExhaustive(t *testing.T) {
+	for _, src := range rootTrustSources.Variants() {
+		t.Run(src.Type(), func(t *testing.T) {
+			rootTrust := tomlRootTrust{RootTrustSource: src}
+			assert.NotPanics(t, func() {
+				assert.NoError(t, rootTrust.Expand(expand.NewExpansions()))
+			})
 		})
 	}
 }

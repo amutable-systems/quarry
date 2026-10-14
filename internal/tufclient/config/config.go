@@ -10,11 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 
 	"github.com/BurntSushi/toml"
 
@@ -24,83 +22,24 @@ import (
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
+// rootTrustSources is the set of [tufext.RootTrustSource] implementations that
+// can be used for root_trust in config files.
+var rootTrustSources = serde.NewUnion[tufext.RootTrustSource](
+	serde.UnionOptions{TagField: "type", Name: "root_trust"},
+	tufext.TofuRootTrust{},
+	tomlBundledRootTrust{},
+	tomlInlineRootTrust{},
+)
+
 // tomlRootTrust is a wrapper around [tufext.RootTrustSource] that allows for a
 // generic parsing of [tufext.RootTrustSource] implementations.
 type tomlRootTrust struct {
 	tufext.RootTrustSource
 }
 
-// errWrongType is a sentinel error returned from [parseTomlRootTrust] if the
-// generic type does not match the type of the TOML object.
-var errWrongType = errors.New("[internal error] wrong type")
-
-func parseTomlRootTrust[T tufext.RootTrustSource](data any) (tufext.RootTrustSource, error) {
-	rootTrust := *new(T)
-	trustType := rootTrust.Type()
-
-	// First see if the TOML data is a pure-name definition of a root type.
-	if name, ok := data.(string); ok {
-		if name != trustType {
-			// Not valid for this type.
-			return nil, errWrongType
-		}
-		// Name-based specifications are only valid for types which also accept
-		// empty TOML tables (usually empty structs but also structs with no
-		// required fields).
-		rootTrust, err := rootTrust.FromMap(map[string]any{})
-		if err != nil {
-			return nil, fmt.Errorf("root trust %q cannot be instantiated using a plain string: %w", trustType, err)
-		}
-		return rootTrust, nil
-	}
-
-	if table, ok := data.(map[string]any); ok {
-		// We need to make a shallow copy of the table because toml.Decoder
-		// internally will loop through the map after UnmarshalTOML is called
-		// to decide which keys were undecoded and so modifying the key will
-		// result in those keys being left marked as undecoded.
-		table = maps.Clone(table)
-
-		var gotType string
-		if err := serde.ParseMapKey(table, "type", &gotType); err != nil {
-			return nil, err
-		}
-		if gotType != trustType {
-			// Not valid for this type.
-			return nil, errWrongType
-		}
-
-		// Let the RootTrustSource parse the rest of the options.
-		rootTrust, err := rootTrust.FromMap(table)
-		if err != nil {
-			return nil, fmt.Errorf("root trust %q could not be parsed: %w", trustType, err)
-		}
-		return rootTrust, nil
-	}
-
-	return nil, fmt.Errorf("unsupported toml type %T for root_trust", data)
-}
-
-func (t *tomlRootTrust) UnmarshalTOML(data any) error {
-	for _, parser := range []func(any) (tufext.RootTrustSource, error){
-		parseTomlRootTrust[tufext.TofuRootTrust],
-		parseTomlRootTrust[tomlBundledRootTrust],
-		parseTomlRootTrust[tomlInlineRootTrust],
-	} {
-		rootTrust, err := parser(data)
-		if errors.Is(err, errWrongType) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("parse root_trust: %w", err)
-		}
-		t.RootTrustSource = rootTrust
-		return nil
-	}
-	if table, ok := data.(map[string]any); ok && table["type"] != "" {
-		return fmt.Errorf("unsupported root_trust type %q", table["type"])
-	}
-	return fmt.Errorf("invalid root_trust value: %v (%T)", data, data)
+func (t *tomlRootTrust) UnmarshalTOML(data any) (err error) {
+	t.RootTrustSource, err = rootTrustSources.DecodeTOML(data)
+	return err
 }
 
 // Expand applies the given [expand.Expansions] to the underlying
@@ -146,14 +85,11 @@ func (t tomlBundledRootTrust) Type() string { return "bundled" }
 
 func (t tomlBundledRootTrust) String() string { return t.Type() + ":" + t.Path }
 
-func (t tomlBundledRootTrust) FromMap(data map[string]any) (tufext.RootTrustSource, error) {
-	if err := serde.ParseMapKey(data, "path", &t.Path); err != nil {
-		return nil, err
+func (t *tomlBundledRootTrust) Validate() error {
+	if t.Path == "" {
+		return fmt.Errorf("%w %q", serde.ErrMissingField, "path")
 	}
-	if len(data) > 0 {
-		return nil, fmt.Errorf("unsupported fields: %v", slices.Collect(maps.Keys(data)))
-	}
-	return t, nil
+	return nil
 }
 
 func (tomlBundledRootTrust) IsRemote() bool { return false }
@@ -175,14 +111,11 @@ func (t tomlInlineRootTrust) String() string { return fmt.Sprintf("%s:%q", t.Typ
 
 func (tomlInlineRootTrust) IsRemote() bool { return false }
 
-func (t tomlInlineRootTrust) FromMap(data map[string]any) (tufext.RootTrustSource, error) {
-	if err := serde.ParseMapKey[string](data, "root.json", &t.RootJSON); err != nil {
-		return nil, err
+func (t *tomlInlineRootTrust) Validate() error {
+	if t.RootJSON == "" {
+		return fmt.Errorf("%w %q", serde.ErrMissingField, "root.json")
 	}
-	if len(data) > 0 {
-		return nil, fmt.Errorf("unsupported fields: %v", slices.Collect(maps.Keys(data)))
-	}
-	return t, nil
+	return nil
 }
 
 func (t tomlInlineRootTrust) FetchRoot(_ context.Context, _ *tufext.Repository) ([]byte, error) {
