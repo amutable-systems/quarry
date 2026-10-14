@@ -9,11 +9,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
 	"net/http"
-	"slices"
 
-	"go.amutable.dev/quarry/internal/serde"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 )
 
@@ -23,32 +20,13 @@ const (
 )
 
 // RootTrustSource represents a source of trust for the initial state of a
-// client's locally cached root.json.
+// client's locally cached root.json. Implementations are parsed from formats
+// like JSON and TOML (see internal/serde).
 type RootTrustSource interface {
 	// Type returns the self-defining string used when generically parsing
 	// [RootTrustSource] from formats like JSON and TOML.
 	Type() string
 	fmt.Stringer
-
-	// FromMap is a helper method called from parsers to fill [RootTrustSource]
-	// based on a pre-parsed map[string]any.
-	//
-	// We do not implement generic unmarshallers because when parsing a
-	// [RootTrustSource] you invariably need a wrapper structure to select the
-	// right underlying implementation. Types that wish to permit
-	// name-only definitions in configuration files need to accept empty maps
-	// to [FromMap].
-	//
-	// Unfortunately, we cannot do this generically (i.e., there doesn't appear
-	// to be a way to have a generic requirement to operate on a type whose
-	// pointer implements an interface) so we need to return a
-	// [RootTrustSource] (which is a copy of the object itself).
-	//
-	// TODO: Move this to internal/serde and make it more generic.
-	FromMap(data map[string]any) (RootTrustSource, error)
-
-	// TODO: We should have a ToMap that can be used to do somewhat generic
-	// serialisation in internal/serde?
 
 	// IsRemote indicates whether the root source is to be fetched from a
 	// remote resource. Callers can use this as a hint for whether some errors
@@ -66,22 +44,13 @@ type TofuRootTrust struct {
 	// TODO: UnrecognizedFields?
 }
 
-var _ RootTrustSource = &TofuRootTrust{}
+var _ RootTrustSource = TofuRootTrust{}
 
 // Type returns the self-defining string used when generically parsing
 // [RootTrustSource] from formats like JSON and TOML.
 func (TofuRootTrust) Type() string { return "insecure-tofu" }
 
 func (t TofuRootTrust) String() string { return t.Type() }
-
-// FromMap is a helper method called from parsers to fill [RootTrustSource]
-// based on a pre-parsed map[string]any.
-func (t TofuRootTrust) FromMap(data map[string]any) (RootTrustSource, error) {
-	if len(data) > 0 {
-		return nil, fmt.Errorf("unsupported fields: %v", slices.Collect(maps.Keys(data)))
-	}
-	return t, nil
-}
 
 // IsRemote indicates whether the root source is to be fetched from a remote
 // resource. It is always true for [TofuRootTrust].
@@ -143,18 +112,6 @@ func (t InlineRootTrust) String() string { return fmt.Sprintf("%s:%q", t.Type(),
 // IsRemote indicates whether the root source is to be fetched from a remote
 // resource. It is always false for [InlineRootTrust].
 func (InlineRootTrust) IsRemote() bool { return false }
-
-// FromMap is a helper method called from parsers to fill [RootTrustSource]
-// based on a pre-parsed map[string]any.
-func (t InlineRootTrust) FromMap(data map[string]any) (RootTrustSource, error) {
-	if err := serde.ParseMapKey(data, "root.json", &t.RootJSON); err != nil {
-		return nil, err
-	}
-	if len(data) > 0 {
-		return nil, fmt.Errorf("unsupported fields: %v", slices.Collect(maps.Keys(data)))
-	}
-	return t, nil
-}
 
 // FetchRoot for [InlineRootTrust] returns the inlined root.json data and
 // cannot return an error.
