@@ -4,7 +4,7 @@ When distributing images with Quarry, there are two key roles: *publisher* and
 *client*. While Quarry has a fairly rich Go API for both of these roles, it is
 simplest to get started using some of our command-line tools:
 
- * `hardhat` is an experimental that can be used by *publishers*. It provides
+ * `hardhat` is an experimental tool that can be used by *publishers*. It provides
    tools for creating and manage repositories and their associated keys.
  * `quarry client` is a fairly generic [TUF][] *client* that supports our
    extensions. It primarily provides mechanisms for fetching individual and
