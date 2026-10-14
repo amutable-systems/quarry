@@ -924,3 +924,58 @@ func TestTxnCommit_Twice_DoesNotDestroyFirstCommit(t *testing.T) {
 	assert.Equal(t, firstSnap.Version, liveSnap.Version)
 	assert.Equal(t, firstSnap.Hashes, liveSnap.Hashes)
 }
+
+// ----- RequireTimestampVersion -------------------------------------------
+
+// commitTarget publishes one target in its own transaction, as another
+// publisher would.
+func commitTarget(ctx context.Context, t *testing.T, bs *bootstrap, path string) *tufext.SignedTimestamp {
+	t.Helper()
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+	require.NoError(t, tx.Apply(ctx, addTargetOp(path, 1)))
+	_, err = tx.Sign(ctx, bs.store)
+	require.NoError(t, err)
+	ts, err := bs.repo.TxnCommit(ctx, tx)
+	require.NoError(t, err)
+	return ts
+}
+
+func TestRequireTimestampVersion_Current(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+	base := currentTimestamp(ctx, t, bs.repo).Signed.Version
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+	require.NoError(t, tx.Apply(ctx, tufrepo.RequireTimestampVersion(base)))
+}
+
+// A publisher computes its new targets from the repository it read, and only
+// starts the transaction afterwards. Another publisher committing in between is
+// invisible to TxnCommit's check, so the stale base has to be caught here, or
+// the other publisher's targets are silently dropped.
+func TestRequireTimestampVersion_ChangedBeforeTxnStart(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+	base := currentTimestamp(ctx, t, bs.repo).Signed.Version
+
+	racing := commitTarget(ctx, t, bs, "t/racing.bin")
+	require.NotEqual(t, base, racing.Signed.Version)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+	err = tx.Apply(ctx, tufrepo.RequireTimestampVersion(base))
+	require.ErrorIs(t, err, tufrepo.ErrClobberedTransaction)
+	assert.ErrorContains(t, err, fmt.Sprintf("expected timestamp version %d, found %d", base, racing.Signed.Version))
+}
+
+func TestRequireTimestampVersion_ZeroRejectsExistingTimestamp(t *testing.T) {
+	ctx := context.Background()
+	bs := bootstrapRepo(t)
+
+	tx, err := bs.repo.TxnStart(ctx)
+	require.NoError(t, err)
+	err = tx.Apply(ctx, tufrepo.RequireTimestampVersion(0))
+	require.ErrorIs(t, err, tufrepo.ErrClobberedTransaction)
+}
