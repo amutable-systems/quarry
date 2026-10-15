@@ -135,6 +135,76 @@ func TestAddQuarryTargets_Confext(t *testing.T) {
 	}
 }
 
+func TestParseConfextFileName(t *testing.T) {
+	for path, want := range map[string][2]string{
+		"nodeconfig_20260814T154500Z.confext.raw":  {"nodeconfig", "20260814T154500Z"},
+		"out/edge-gw_1.2+3.confext.raw":            {"edge-gw", "1.2+3"},
+		"/abs/path/to/gw-certs_v1_rc1.confext.raw": {"gw-certs", "v1_rc1"},
+	} {
+		name, version, ok := parseConfextFileName(path)
+		require.True(t, ok, path)
+		assert.Equal(t, want[0], name, path)
+		assert.Equal(t, want[1], version, path)
+	}
+	for _, path := range []string{
+		"nodeconfig.confext.raw",       // no version
+		"_1.confext.raw",               // no name
+		"nodeconfig_.confext.raw",      // empty version
+		"a+b_1.confext.raw",            // systemd would cut the name at "+"
+		"a b_1.confext.raw",            // breaks a definition line
+		"docker_1.sysext.raw",          // not a confext
+		"nodeconfig_1.raw",             // not a confext
+		"nodeconfig_1.confext.raw.sig", // not the image
+		"nodeconfig_a/b.confext.raw",   // "/" in the version
+	} {
+		_, _, ok := parseConfextFileName(path)
+		assert.False(t, ok, path)
+	}
+}
+
+// A confext DDI among the files gets its component derived from its name,
+// with the version from its file name on the image only.
+func TestDeriveConfextDirs(t *testing.T) {
+	none := func(string) bool { return false }
+	dirs, versions := deriveConfextDirs(nil, []string{
+		"nodeconfig_2.confext.raw",
+		"AmutableOS_26.08.20_x86-64.efi",
+		"nodeconfig_1.confext.raw",
+		"sub/edge-gw_7.confext.raw",
+	}, none)
+	assert.Equal(t, []*quarryTransferDir{
+		{dir: "sysupdate.edge-gw.d", sources: []string{"confext:edge-gw"}},
+		{dir: "sysupdate.nodeconfig.d", sources: []string{"confext:nodeconfig"}},
+	}, dirs, "one component per confext name, in name order")
+	assert.Equal(t, map[string]string{
+		"nodeconfig_1.confext.raw":  "1",
+		"nodeconfig_2.confext.raw":  "2",
+		"sub/edge-gw_7.confext.raw": "7",
+	}, versions)
+
+	// An explicit directory for the component wins over the derived one,
+	// and the version is still recorded.
+	explicit := []*quarryTransferDir{{dir: "sysupdate.nodeconfig.d", sources: []string{"/defs"}}}
+	dirs, versions = deriveConfextDirs(explicit, []string{"nodeconfig_1.confext.raw"}, none)
+	assert.Equal(t, explicit, dirs)
+	assert.Equal(t, map[string]string{"nodeconfig_1.confext.raw": "1"}, versions)
+
+	// Definitions merged in from an earlier targets.json are left alone.
+	merged := func(target string) bool { return target == ".quarry/sysupdate.nodeconfig.d/50-nodeconfig.transfer" }
+	dirs, _ = deriveConfextDirs(nil, []string{"nodeconfig_1.confext.raw"}, merged)
+	assert.Empty(t, dirs)
+
+	// Pass the derived directories through the real layout to be sure
+	// the generated names are what quarry-sysupdate reads.
+	dirs, _ = deriveConfextDirs(nil, []string{"nodeconfig_1.confext.raw"}, none)
+	builder := tufext.NewTargetsBuilder()
+	require.NoError(t, addQuarryTargets(builder, dirs))
+	assert.Contains(t, inlineString(t, builder, ".quarry/sysupdate.nodeconfig.d/50-nodeconfig.transfer"),
+		"MatchPattern=**/nodeconfig_@v.confext.raw\n")
+	assert.Equal(t, "[Component]\nDescription=nodeconfig\n",
+		inlineString(t, builder, ".quarry/sysupdate.nodeconfig.d/nodeconfig.component"))
+}
+
 func TestSetQuarryCustomVersion(t *testing.T) {
 	builder := tufext.NewTargetsBuilder()
 	target, err := addInlineBytes(builder, "x", []byte("x"))

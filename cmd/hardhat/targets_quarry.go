@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -34,6 +35,10 @@ func quarryTargetsFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:  "custom-version",
 			Usage: "set custom.quarry.version on every target outside " + transferlayout.Prefix,
+		},
+		&cli.BoolFlag{
+			Name:  "no-confext-transfers",
+			Usage: "do not derive sysupdate definitions from <file> arguments named <name>_<version>.confext.raw. By default each such confext DDI is published with the generated transfer of \"--quarry-transfer-dir sysupdate.<name>.d=" + confextSourcePrefix + "<name>\" and custom.quarry.version=<version>, unless that component directory is given explicitly or the targets already hold its definitions",
 		},
 	}
 }
@@ -104,6 +109,66 @@ MatchPattern=` + name + `_@v.raw
 Mode=0644
 InstancesMax=2
 `)
+}
+
+// confextSuffix is the file name suffix of a confext DDI.
+const confextSuffix = ".confext.raw"
+
+// parseConfextFileName returns the name and version of a confext DDI
+// "<name>_<version>.confext.raw" given by file. ok is false for any other
+// file name. The name ends at the first "_", as systemd reads it, and may not
+// contain "+" either, at which systemd stops as well.
+func parseConfextFileName(file string) (name, version string, ok bool) {
+	base, found := strings.CutSuffix(path.Base(file), confextSuffix) //nolint:forbidigo // lexical target path
+	if !found {
+		return "", "", false
+	}
+	name, version, found = strings.Cut(base, "_")
+	if !found || name == "" || version == "" {
+		return "", "", false
+	}
+	if !transferlayout.ValidPathComponent(name) || strings.Contains(name, "+") || hasSpaceOrControl(name) ||
+		!transferlayout.ValidPathComponent(version) || hasSpaceOrControl(version) {
+		return "", "", false
+	}
+	return name, version, true
+}
+
+// deriveConfextDirs adds a generated definitions directory for every confext
+// DDI among paths to dirs, and returns the resulting dirs together with the
+// version each such target carries in its file name. A component directory
+// given explicitly wins over the derived one, and a component whose generated
+// transfer exists already (merged in from an earlier targets.json, say) is
+// left alone, so re-publishing an image never doubles its definitions.
+func deriveConfextDirs(dirs []*quarryTransferDir, paths []string, exists func(target string) bool) ([]*quarryTransferDir, map[string]string) {
+	explicit := map[string]bool{}
+	for _, entry := range dirs {
+		explicit[entry.dir] = true
+	}
+	versions := map[string]string{}
+	names := map[string]bool{}
+	for _, path := range paths {
+		name, version, ok := parseConfextFileName(path)
+		if !ok {
+			continue
+		}
+		versions[path] = version
+		names[name] = true
+	}
+	for _, name := range slices.Sorted(maps.Keys(names)) {
+		dir := transferlayout.ComponentDir(name)
+		if explicit[dir] {
+			continue
+		}
+		// The name passed the component rules in parseConfextFileName, so
+		// the path cannot fail.
+		transfer, _ := transferlayout.TargetPath(dir, "50-"+name+".transfer")
+		if exists(transfer) {
+			continue
+		}
+		dirs = append(dirs, &quarryTransferDir{dir: dir, sources: []string{confextSourcePrefix + name}})
+	}
+	return dirs, versions
 }
 
 // readDefinitionSource adds the definition files of one source directory to

@@ -510,6 +510,13 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 
 		// TODO: Support adding delegations.
 
+		// Everything added below comes from the <file> arguments; the
+		// confext DDIs among them get their definitions derived.
+		included := make(map[string]bool, len(builder.TargetsType().Targets))
+		for path := range builder.TargetsType().Targets {
+			included[path] = true
+		}
+
 		for _, filename := range cmd.StringArgs("files") {
 			file, err := os.Open(filename) //nolint:forbidigo // user-controlled host path
 			if err != nil {
@@ -527,6 +534,24 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			}
 		}
 
+		var confextVersions map[string]string
+		if !cmd.Bool("no-confext-transfers") && !cmd.Bool("pre-hashed") {
+			var added []string
+			for path := range builder.TargetsType().Targets {
+				if !included[path] {
+					added = append(added, path)
+				}
+			}
+			before := len(quarry)
+			quarry, confextVersions = deriveConfextDirs(quarry, added, func(target string) bool {
+				_, ok := builder.TargetsType().Targets[target]
+				return ok
+			})
+			for _, entry := range quarry[before:] {
+				mustFprintf(os.Stderr, "publishing %s with generated sysupdate definitions in %s\n", entry.sources[0], entry.dir)
+			}
+		}
+
 		if err := addQuarryTargets(builder, quarry); err != nil {
 			return err
 		}
@@ -536,9 +561,16 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 				return err
 			}
 		}
-		// This comes after --custom-from because that replaces a target's
-		// whole "quarry" object. The .quarry/ targets are skipped
-		// because they are quarry metadata and belong to no version.
+		// Both come after --custom-from because that replaces a target's
+		// whole "quarry" object. A confext's version from its file name
+		// comes first, so an explicit --custom-version wins over it. The
+		// .quarry/ targets are skipped because they are quarry metadata
+		// and belong to no version.
+		for path, version := range confextVersions {
+			if err := setQuarryCustomVersion(builder.TargetsType().Targets[path], version); err != nil {
+				return fmt.Errorf("version of %s: %w", path, err)
+			}
+		}
 		if version := cmd.String("custom-version"); version != "" {
 			for path, target := range builder.TargetsType().Targets {
 				if strings.HasPrefix(path, transferlayout.Prefix) {
