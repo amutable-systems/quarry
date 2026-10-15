@@ -15,8 +15,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 
@@ -27,6 +29,10 @@ import (
 // TODO: Make these more configurable.
 const (
 	MaxRootBytes = 512_000 // 512k
+
+	// maxTargetsBytes is the maximum size of the targets.json of a bare
+	// targets repository (see [Repository.TargetsURL]).
+	maxTargetsBytes = 16 << 20 // 16 MiB
 )
 
 // RootTrustSource represents a source of trust for the initial state of a
@@ -199,8 +205,13 @@ func (tofuRootTrust) IsRemote() bool { return true }
 func (tofuRootTrust) FetchRoot(ctx context.Context, repo *Repository) (_ []byte, Err error) {
 	// The updater will bump the root.json to the latest version afterwards.
 	rootURL := repo.MetaRootURL.JoinPath("1.root.json")
+	return fetchJSON(ctx, rootURL, MaxRootBytes) // use same max as client
+}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", rootURL.String(), nil)
+// fetchJSON fetches the JSON document at the given URL and reads at most
+// maxBytes of it. A 404 response results in a wrapped [fs.ErrNotExist].
+func fetchJSON(ctx context.Context, docURL *url.URL, maxBytes int64) (_ []byte, Err error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", docURL.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("create http request: %w", err)
 	}
@@ -209,20 +220,20 @@ func (tofuRootTrust) FetchRoot(ctx context.Context, repo *Repository) (_ []byte,
 	client := http.DefaultClient
 	res, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch %s: %w", rootURL, err)
+		return nil, fmt.Errorf("fetch %s: %w", docURL, err)
 	}
 	if res.StatusCode >= 300 {
 		if res.Body != nil {
 			_ = res.Body.Close()
 		}
-		err := fmt.Errorf("fetch %s failed with status code %.3d", rootURL, res.StatusCode)
+		err := fmt.Errorf("fetch %s failed with status code %.3d", docURL, res.StatusCode)
 		if res.StatusCode == http.StatusNotFound {
 			// Emulate ENOENT for 404.
 			err = fmt.Errorf("%w: %w", err, fs.ErrNotExist)
 		}
 		return nil, err
 	}
-	rdr := http.MaxBytesReader(nil, res.Body, MaxRootBytes) // use same max as client
+	rdr := http.MaxBytesReader(nil, res.Body, maxBytes)
 	defer funchelpers.VerifyClose(&Err, rdr)
 
 	return io.ReadAll(rdr)
@@ -342,6 +353,24 @@ type Repository struct {
 	// DataRootURL is the base URL for the directory containing target data
 	// files.
 	DataRootURL *tomlURL `toml:"data_root_url"`
+
+	// TargetsURL, if set, makes this a "bare targets" repository. Its only
+	// metadata is the signed targets.json at this URL, verified against the
+	// targets keys of the trusted root.json. Without snapshot and timestamp
+	// there are no freshness guarantees. DataRootURL defaults to the
+	// directory of the targets file, and MetaRootURL is only used to fetch
+	// 1.root.json for insecure-tofu root_trust.
+	TargetsURL *tomlURL `toml:"targets_url"`
+}
+
+// IsBareTargets returns whether the repository is a bare signed targets file
+// rather than a full TUF repository (see [Repository.TargetsURL]).
+func (repo Repository) IsBareTargets() bool { return repo.TargetsURL != nil }
+
+// FetchTargets fetches the unverified targets.json of a bare targets
+// repository from [Repository.TargetsURL].
+func (repo Repository) FetchTargets(ctx context.Context) ([]byte, error) {
+	return fetchJSON(ctx, &repo.TargetsURL.URL, maxTargetsBytes)
 }
 
 const defaultOrderIndex = 100
@@ -491,6 +520,21 @@ func (cfg *Config) expandAndValidate() error {
 			return fmt.Errorf("repository %s has invalid meta_root_url value: %w", repo.Name, err)
 		}
 
+		if repo.TargetsURL != nil {
+			if err := repo.TargetsURL.Expand(subExpander); err != nil {
+				return fmt.Errorf("repository %s has invalid targets_url value: %w", repo.Name, err)
+			}
+			if repo.TargetsURL.Path == "" || strings.HasSuffix(repo.TargetsURL.Path, "/") {
+				return fmt.Errorf("repository %s has invalid targets_url value: %q does not name a file", repo.Name, repo.TargetsURL.String())
+			}
+			if repo.DataRootURL == nil {
+				// A bare targets file lists the files beside it.
+				dirURL := repo.TargetsURL.URL
+				dirURL.Path = path.Dir(dirURL.Path) //nolint:forbidigo // a URL path, not a file path
+				repo.DataRootURL = &tomlURL{rawString: dirURL.String()}
+			}
+		}
+
 		if repo.DataRootURL == nil {
 			// If unspecified, assume that the targets URL is a subdirectory of
 			// the metadata URL (this matches the stock go-tuf client
@@ -544,6 +588,7 @@ func (cfg *Config) merge(fragment *Config) error {
 		}
 		old.MetaRootURL = mergeURL(old.MetaRootURL, repo.MetaRootURL)
 		old.DataRootURL = mergeURL(old.DataRootURL, repo.DataRootURL)
+		old.TargetsURL = mergeURL(old.TargetsURL, repo.TargetsURL)
 	}
 	return nil
 }
