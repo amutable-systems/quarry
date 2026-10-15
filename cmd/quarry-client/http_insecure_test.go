@@ -612,7 +612,7 @@ func TestHTTPSHA256SUMS(t *testing.T) {
 }
 
 // Targets that systemd-sysupdate cannot consume are left out of SHA256SUMS:
-// quarry's own extension targets (transfer definitions, machine tags) and
+// quarry's own extension targets (transfer definitions) and
 // paths that sysupdate would reject or misinterpret. Targets in subdirectories
 // are fine.
 func TestHTTPSHA256SUMS_Filtered(t *testing.T) {
@@ -624,7 +624,6 @@ func TestHTTPSHA256SUMS_Filtered(t *testing.T) {
 		srv.AddTarget(t, "sysexts/"+sysextTarget, bytes.NewReader(nestedSysext)),
 		// Consumed by quarry-sysupdate itself.
 		testrepo.AddTargetOp(xsysupdate.TransferFilePrefix+"AmutableOS.transfer", newTargetFiles([]byte("[Transfer]\n"))),
-		testrepo.AddTargetOp(xsysupdate.TagsPrefix+"channel", newTargetFiles([]byte("nightly\n"))),
 		// Paths sysupdate must never see.
 		testrepo.AddTargetOp("/"+efiTarget, newTargetFiles([]byte("absolute path"))),
 		testrepo.AddTargetOp("../"+efiTarget, newTargetFiles([]byte("parent directory"))),
