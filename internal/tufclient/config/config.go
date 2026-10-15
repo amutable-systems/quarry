@@ -21,6 +21,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"go.amutable.dev/quarry/internal/expand"
+	"go.amutable.dev/quarry/internal/identityagent"
 	"go.amutable.dev/quarry/internal/third_party/funchelpers"
 )
 
@@ -206,8 +207,7 @@ func (tofuRootTrust) FetchRoot(ctx context.Context, repo *Repository) (_ []byte,
 	}
 	req.Header.Set("Accept", "application/json")
 
-	client := http.DefaultClient
-	res, err := client.Do(req)
+	res, err := repo.HTTPClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", rootURL, err)
 	}
@@ -342,6 +342,43 @@ type Repository struct {
 	// DataRootURL is the base URL for the directory containing target data
 	// files.
 	DataRootURL *tomlURL `toml:"data_root_url"`
+
+	// Auth says how requests to the MetaRootURL host authenticate. Nil means
+	// no authentication.
+	Auth *RepoAuth `toml:"auth"`
+
+	// httpClient is shared by every config that authenticates with the same
+	// audience and host (see [identityagent.Client]).
+	httpClient *http.Client
+}
+
+// HTTPClient returns the client to fetch this repository's files with.
+func (repo Repository) HTTPClient() *http.Client {
+	if repo.httpClient == nil {
+		return http.DefaultClient
+	}
+	return repo.httpClient
+}
+
+// RepoAuth is a repository's auth table. The only type is "wimse": each
+// request is signed as this machine with a WIT for Audience from the
+// identity agent at Varlink (see [identityagent.Transport]).
+type RepoAuth struct {
+	Type     string `toml:"type"`
+	Audience string `toml:"audience"`
+	Varlink  string `toml:"varlink"`
+}
+
+func (auth *RepoAuth) httpClient(host string) (*http.Client, error) {
+	switch {
+	case auth == nil:
+		return http.DefaultClient, nil
+	case auth.Type != "wimse":
+		return nil, fmt.Errorf("unsupported auth type %q", auth.Type)
+	case auth.Audience == "":
+		return nil, errors.New(`auth type "wimse" needs an audience`)
+	}
+	return identityagent.Client(auth.Audience, host, auth.Varlink), nil
 }
 
 const defaultOrderIndex = 100
@@ -501,6 +538,12 @@ func (cfg *Config) expandAndValidate() error {
 		if err := repo.DataRootURL.Expand(subExpander); err != nil {
 			return fmt.Errorf("repository %s has invalid data_root_url value: %w", repo.Name, err)
 		}
+
+		client, err := repo.Auth.httpClient(repo.MetaRootURL.Host)
+		if err != nil {
+			return fmt.Errorf("repository %s has invalid auth value: %w", repo.Name, err)
+		}
+		repo.httpClient = client
 	}
 	return nil
 }
@@ -544,6 +587,9 @@ func (cfg *Config) merge(fragment *Config) error {
 		}
 		old.MetaRootURL = mergeURL(old.MetaRootURL, repo.MetaRootURL)
 		old.DataRootURL = mergeURL(old.DataRootURL, repo.DataRootURL)
+		if repo.Auth != nil {
+			old.Auth = repo.Auth
+		}
 	}
 	return nil
 }
