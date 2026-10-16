@@ -12,11 +12,25 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"go.amutable.dev/quarry/internal/tufext"
 )
 
 const uuidPat = `[0-9a-f]{32}`
 
 var uuidRe = regexp.MustCompile(`^` + uuidPat + `$`)
+
+// repoURLs returns the effective metadata and target data root URLs of repo,
+// including any defaults derived by [tufext.Repository].
+func repoURLs(t *testing.T, repo *Repository) (metaRootURL, dataRootURL string) {
+	t.Helper()
+	extRepo := repo.AsRepository()
+	meta, err := extRepo.RootURL()
+	require.NoError(t, err)
+	data, err := extRepo.DataURL()
+	require.NoError(t, err)
+	return meta.String(), data.String()
+}
 
 func repoBlock(rootTrust string) string {
 	return `
@@ -32,44 +46,44 @@ func TestParseConfig_RootTrust_Valid(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		rootTrust string
-		want      RootTrustSource
+		want      tufext.RootTrustSource
 	}{
 		{
 			name:      "TofuPlainString",
 			rootTrust: `root_trust = "insecure-tofu"`,
-			want:      tofuRootTrust{},
+			want:      tufext.TofuRootTrust{},
 		},
 		{
 			name:      "TofuInlineTable",
 			rootTrust: `root_trust = { type = "insecure-tofu" }`,
-			want:      tofuRootTrust{},
+			want:      tufext.TofuRootTrust{},
 		},
 		{
 			name:      "BundledInlineTable",
 			rootTrust: `root_trust = { type = "bundled", path = "/etc/root.json" }`,
-			want:      bundledRootTrust{Path: "/etc/root.json"},
+			want:      tomlBundledRootTrust{Path: "/etc/root.json"},
 		},
 		{
 			name:      "BundledEmptyPath",
 			rootTrust: `root_trust = { type = "bundled", path = "" }`,
-			want:      bundledRootTrust{Path: ""},
+			want:      tomlBundledRootTrust{Path: ""},
 		},
 		{
 			name:      "InlineInlineTable",
 			rootTrust: `root_trust = { type = "inline", "root.json" = '{"signed": {}}' }`,
-			want:      inlineRootTrust{RootJSON: `{"signed": {}}`},
+			want:      tomlInlineRootTrust{RootJSON: `{"signed": {}}`},
 		},
 		{
 			name:      "InlineEmptyRootJSON",
 			rootTrust: `root_trust = { type = "inline", "root.json" = "" }`,
-			want:      inlineRootTrust{RootJSON: ""},
+			want:      tomlInlineRootTrust{RootJSON: ""},
 		},
 		{
 			// Unlike bundled paths, inline root.json data is exempt from
 			// %-expansion, so % sequences must be preserved verbatim.
 			name:      "InlinePercentNotExpanded",
 			rootTrust: `root_trust = { type = "inline", "root.json" = '{"pct": "100%Z"}' }`,
-			want:      inlineRootTrust{RootJSON: `{"pct": "100%Z"}`},
+			want:      tomlInlineRootTrust{RootJSON: `{"pct": "100%Z"}`},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -202,7 +216,7 @@ type = "inline"
 	require.Contains(t, conf.Repos, "example")
 	require.NotNil(t, conf.Repos["example"].RootTrust)
 	assert.Equal(t,
-		inlineRootTrust{RootJSON: "{\"signed\": {\"_type\": \"root\", \"version\": 1}}\n"},
+		tomlInlineRootTrust{RootJSON: "{\"signed\": {\"_type\": \"root\", \"version\": 1}}\n"},
 		conf.Repos["example"].RootTrust.RootTrustSource)
 }
 
@@ -320,10 +334,32 @@ root_trust = "insecure-tofu"
 `))
 	require.NoError(t, err)
 	repo := conf.Repos["updates.example.com/alpha"]
-	require.NotNil(t, repo.MetaRootURL)
-	assert.Equal(t, "https://updates.example.com/alpha", repo.MetaRootURL.String())
-	require.NotNil(t, repo.DataRootURL)
-	assert.Equal(t, "https://updates.example.com/alpha/targets", repo.DataRootURL.String())
+	assert.Nil(t, repo.MetaRootURL) // not specified
+	assert.Nil(t, repo.DataRootURL) // not specified
+	metaRootURL, dataRootURL := repoURLs(t, repo)
+	assert.Equal(t, "https://updates.example.com/alpha", metaRootURL)
+	assert.Equal(t, "https://updates.example.com/alpha/targets", dataRootURL)
+}
+
+// A repository name that is not a valid URL is only an error if the metadata
+// URL has to be derived from it.
+func TestParseConfig_DefaultMetaRootURL_InvalidName(t *testing.T) {
+	_, err := Parse(strings.NewReader(`
+config_version = 1
+[repo."bad name"]
+root_trust = "insecure-tofu"
+`))
+	require.ErrorContains(t, err, "invalid default url")
+
+	conf, err := Parse(strings.NewReader(`
+config_version = 1
+[repo."bad name"]
+root_trust = "insecure-tofu"
+meta_root_url = "https://example.com/meta"
+`))
+	require.NoError(t, err)
+	_, dataRootURL := repoURLs(t, conf.Repos["bad name"])
+	assert.Equal(t, "https://example.com/meta/targets", dataRootURL)
 }
 
 func TestParseConfig_DefaultDataRootURL(t *testing.T) {
@@ -336,8 +372,9 @@ meta_root_url = "https://meta.example.com/sub"
 	require.NoError(t, err)
 	repo := conf.Repos["example"]
 	assert.Equal(t, "https://meta.example.com/sub", repo.MetaRootURL.String())
-	require.NotNil(t, repo.DataRootURL)
-	assert.Equal(t, "https://meta.example.com/sub/targets", repo.DataRootURL.String())
+	assert.Nil(t, repo.DataRootURL) // not specified
+	_, dataRootURL := repoURLs(t, repo)
+	assert.Equal(t, "https://meta.example.com/sub/targets", dataRootURL)
 }
 
 func TestParseConfig_CustomURLs(t *testing.T) {
@@ -426,12 +463,13 @@ data_root_url = "https://beta.example.com/data"
 
 	require.Contains(t, conf.Repos, "alpha")
 	assert.Equal(t, "alpha", conf.Repos["alpha"].Name)
-	assert.Equal(t, tofuRootTrust{}, conf.Repos["alpha"].RootTrust.RootTrustSource)
-	assert.Equal(t, "https://alpha.example.com/targets", conf.Repos["alpha"].DataRootURL.String())
+	assert.Equal(t, tufext.TofuRootTrust{}, conf.Repos["alpha"].RootTrust.RootTrustSource)
+	_, alphaDataRootURL := repoURLs(t, conf.Repos["alpha"])
+	assert.Equal(t, "https://alpha.example.com/targets", alphaDataRootURL)
 
 	require.Contains(t, conf.Repos, "beta")
 	assert.Equal(t, "beta", conf.Repos["beta"].Name)
-	assert.Equal(t, bundledRootTrust{Path: "/etc/beta-root.json"}, conf.Repos["beta"].RootTrust.RootTrustSource)
+	assert.Equal(t, tomlBundledRootTrust{Path: "/etc/beta-root.json"}, conf.Repos["beta"].RootTrust.RootTrustSource)
 	assert.Equal(t, "https://beta.example.com/data", conf.Repos["beta"].DataRootURL.String())
 }
 
@@ -495,7 +533,7 @@ func TestParseConfig_ExampleFile(t *testing.T) {
 	assert.Nil(t, repo.RawOrderIndex) // not specified
 	assert.Equal(t, int64(100), repo.OrderIndex())
 	assert.Equal(t,
-		bundledRootTrust{Path: `/usr/share/amutable/quarry/trusted/updates.example.com-base\x2dos-nightly-root.json`},
+		tomlBundledRootTrust{Path: `/usr/share/amutable/quarry/trusted/updates.example.com-base\x2dos-nightly-root.json`},
 		repo.RootTrust.RootTrustSource)
 	assert.Equal(t, "https://updates.example.com/update", repo.MetaRootURL.String())
 	assert.Equal(t, "https://updates.example.com/update", repo.DataRootURL.String())
@@ -503,21 +541,21 @@ func TestParseConfig_ExampleFile(t *testing.T) {
 
 // [tomlRootTrust.UnmarshalTOML]'s parser-dispatch loop relies on
 // [errWrongType] propagating from [parseTomlRootTrust] when the TOML data is
-// tagged for a different [RootTrustSource] type. Pin that contract here.
+// tagged for a different [tufext.RootTrustSource] type. Pin that contract here.
 func TestParseTomlRootTrust_WrongType(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		fn   func(any) (RootTrustSource, error)
+		fn   func(any) (tufext.RootTrustSource, error)
 		data any
 	}{
-		{"TofuParser_BundledString", parseTomlRootTrust[tofuRootTrust], "bundled"},
-		{"TofuParser_BundledTable", parseTomlRootTrust[tofuRootTrust], map[string]any{"type": "bundled", "path": "/x"}},
-		{"BundledParser_TofuString", parseTomlRootTrust[bundledRootTrust], "insecure-tofu"},
-		{"BundledParser_TofuTable", parseTomlRootTrust[bundledRootTrust], map[string]any{"type": "insecure-tofu"}},
-		{"TofuParser_InlineTable", parseTomlRootTrust[tofuRootTrust], map[string]any{"type": "inline", "root.json": "{}"}},
-		{"BundledParser_InlineTable", parseTomlRootTrust[bundledRootTrust], map[string]any{"type": "inline", "root.json": "{}"}},
-		{"InlineParser_TofuString", parseTomlRootTrust[inlineRootTrust], "insecure-tofu"},
-		{"InlineParser_BundledTable", parseTomlRootTrust[inlineRootTrust], map[string]any{"type": "bundled", "path": "/x"}},
+		{"TofuParser_BundledString", parseTomlRootTrust[tufext.TofuRootTrust], "bundled"},
+		{"TofuParser_BundledTable", parseTomlRootTrust[tufext.TofuRootTrust], map[string]any{"type": "bundled", "path": "/x"}},
+		{"BundledParser_TofuString", parseTomlRootTrust[tomlBundledRootTrust], "insecure-tofu"},
+		{"BundledParser_TofuTable", parseTomlRootTrust[tomlBundledRootTrust], map[string]any{"type": "insecure-tofu"}},
+		{"TofuParser_InlineTable", parseTomlRootTrust[tufext.TofuRootTrust], map[string]any{"type": "inline", "root.json": "{}"}},
+		{"BundledParser_InlineTable", parseTomlRootTrust[tomlBundledRootTrust], map[string]any{"type": "inline", "root.json": "{}"}},
+		{"InlineParser_TofuString", parseTomlRootTrust[tomlInlineRootTrust], "insecure-tofu"},
+		{"InlineParser_BundledTable", parseTomlRootTrust[tomlInlineRootTrust], map[string]any{"type": "bundled", "path": "/x"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := tc.fn(tc.data)
@@ -528,7 +566,7 @@ func TestParseTomlRootTrust_WrongType(t *testing.T) {
 
 func TestInlineRootTrust_FetchRoot(t *testing.T) {
 	const rootJSON = `{"signed": {"_type": "root"}}`
-	data, err := inlineRootTrust{RootJSON: rootJSON}.FetchRoot(t.Context(), nil)
+	data, err := tomlInlineRootTrust{RootJSON: rootJSON}.FetchRoot(t.Context(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, []byte(rootJSON), data) //nolint:testifylint // we are doing a direct byte-for-byte comparison here
 }
@@ -613,8 +651,11 @@ data_root_url = ""
 
 	repo := cfg.Repos["example.com/base-os"]
 	require.NotNil(t, repo)
-	assert.Equal(t, "https://example.com/base-os", repo.MetaRootURL.String())
-	assert.Equal(t, "https://example.com/base-os/targets", repo.DataRootURL.String())
+	assert.Nil(t, repo.MetaRootURL) // reset to default
+	assert.Nil(t, repo.DataRootURL) // reset to default
+	metaRootURL, dataRootURL := repoURLs(t, repo)
+	assert.Equal(t, "https://example.com/base-os", metaRootURL)
+	assert.Equal(t, "https://example.com/base-os/targets", dataRootURL)
 }
 
 func TestMerge_EmptyURLResetsOnFirstDefinition(t *testing.T) {
@@ -627,7 +668,9 @@ meta_root_url = ""
 
 	repo := cfg.Repos["example.com/base-os"]
 	require.NotNil(t, repo)
-	assert.Equal(t, "https://example.com/base-os", repo.MetaRootURL.String())
+	assert.Nil(t, repo.MetaRootURL) // reset to default
+	metaRootURL, _ := repoURLs(t, repo)
+	assert.Equal(t, "https://example.com/base-os", metaRootURL)
 }
 
 func TestMerge_UnsetURLKeepsOverride(t *testing.T) {
@@ -835,9 +878,10 @@ meta_root_url = "https://example.com/100%25-uptime/%2A/%aF"
 	repo := conf.Repos["example"]
 	require.NotNil(t, repo)
 	assert.Equal(t, "https://example.com/100%25-uptime/%2A/%aF", repo.MetaRootURL.String())
-	// data_root_url is defaulted from the expanded meta URL, so the %XX
-	// sequences pass through a second Expand pass.
-	assert.Equal(t, "https://example.com/100%25-uptime/%2A/%aF/targets", repo.DataRootURL.String())
+	// data_root_url is derived from the expanded meta URL, so the %XX
+	// sequences must survive the URL join.
+	_, dataRootURL := repoURLs(t, repo)
+	assert.Equal(t, "https://example.com/100%25-uptime/%2A/%aF/targets", dataRootURL)
 }
 
 func TestParseConfig_Expand_URL_PerRepoR(t *testing.T) {
@@ -895,7 +939,7 @@ meta_root_url = "https://example.com"
 			require.NoError(t, err)
 			repo := conf.Repos["example.com/foo"]
 			require.NotNil(t, repo)
-			bundled, ok := repo.RootTrust.RootTrustSource.(bundledRootTrust)
+			bundled, ok := repo.RootTrust.RootTrustSource.(tomlBundledRootTrust)
 			require.True(t, ok)
 			if tc.wantPathRe != "" {
 				assert.Regexp(t, tc.wantPathRe, bundled.Path)
@@ -1095,14 +1139,14 @@ cache_dir = "%m"`,
 func TestRootTrustSource_String(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		src  RootTrustSource
+		src  tufext.RootTrustSource
 		want string
 	}{
-		{"Tofu", tofuRootTrust{}, "insecure-tofu"},
-		{"Bundled", bundledRootTrust{Path: "/etc/root.json"}, "bundled:/etc/root.json"},
-		{"BundledEmptyPath", bundledRootTrust{}, "bundled:"},
-		{"Inline", inlineRootTrust{RootJSON: `{"a": 1}`}, `inline:"{\"a\": 1}"`},
-		{"InlineEmpty", inlineRootTrust{}, `inline:""`},
+		{"Tofu", tufext.TofuRootTrust{}, "insecure-tofu"},
+		{"Bundled", tomlBundledRootTrust{Path: "/etc/root.json"}, "bundled:/etc/root.json"},
+		{"BundledEmptyPath", tomlBundledRootTrust{}, "bundled:"},
+		{"Inline", tomlInlineRootTrust{RootJSON: `{"a": 1}`}, `inline:"{\"a\": 1}"`},
+		{"InlineEmpty", tomlInlineRootTrust{}, `inline:""`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, tc.src.String())
