@@ -179,9 +179,34 @@ func updateCustom(target *tufmetadata.TargetFiles, update func(fields map[string
 	return nil
 }
 
+// addIncludedOverrideURLs points the targets of an --include-from file at
+// dataRootURL. A target with inline data needs no URL because its bytes are
+// in the metadata, and a target that already has an override URL keeps it.
+func addIncludedOverrideURLs(targets map[string]*tufmetadata.TargetFiles, dataRootURL *url.URL) error {
+	for path, target := range targets {
+		ext := tufext.TargetFilesExt(target)
+		inline, err := ext.InlineData()
+		if err != nil {
+			return fmt.Errorf("target %s: %w", path, err)
+		}
+		if inline != nil {
+			continue
+		}
+		existing, err := ext.OverrideURL()
+		if err != nil {
+			return fmt.Errorf("target %s: %w", path, err)
+		}
+		if existing != nil {
+			continue
+		}
+		ext.WithOverrideURL(dataRootURL.JoinPath(path))
+	}
+	return nil
+}
+
 const dataRootURLCtxKey ctxKey = "--data-root-url"
 
-func ctxDataRoolURL(ctx context.Context) *url.URL {
+func ctxDataRootURL(ctx context.Context) *url.URL {
 	return ctxext.Value[*url.URL](ctx, dataRootURLCtxKey)
 }
 
@@ -221,7 +246,7 @@ func getContentLength(ctx context.Context, url *url.URL) (int64, error) {
 }
 
 func addPrehashedToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalPath string, sumFile *os.File) error {
-	dataRootURL := ctxDataRoolURL(ctx)
+	dataRootURL := ctxDataRootURL(ctx)
 	extOverrideURL := ctxExtOverrideURL(ctx)
 
 	if filepath.Join("/", logicalPath) == "/" { //nolint:forbidigo // lexical paths
@@ -356,11 +381,11 @@ var targetsCommand = withKeystoreFlagUnless(&cli.Command{
 		},
 		&cli.BoolFlag{
 			Name:  "ext-override-url",
-			Usage: "when using --data-root-url --pre-hashed, add an override URL to each target file to make clients fetch from --data-root-url",
+			Usage: "with --data-root-url, add an override URL to make clients fetch from --data-root-url, for each --pre-hashed file and for each --include-from target without inline data or an override URL",
 		},
 		&cli.StringFlag{
 			Name:  "data-root-url",
-			Usage: "base url for target files (with --pre-hashed this allows you to generate a target.json entirely from a SHA256SUMS file)",
+			Usage: "base url for target files (with --pre-hashed this allows you to generate a target.json entirely from a SHA256SUMS file, and with --ext-override-url the --include-from targets point there)",
 		},
 		&cli.BoolFlag{
 			Name:    "pre-hashed",
@@ -413,8 +438,8 @@ var targetsCommand = withKeystoreFlagUnless(&cli.Command{
 	},
 	Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 		if urlStr := cmd.String("data-root-url"); urlStr != "" {
-			if !cmd.Bool("pre-hashed") {
-				return nil, fmt.Errorf("--data-root-url doesn't make sense without --pre-hashed")
+			if !cmd.Bool("pre-hashed") && !cmd.Bool("ext-override-url") {
+				return nil, fmt.Errorf("--data-root-url doesn't make sense without --pre-hashed or --ext-override-url")
 			}
 			rootURL, err := url.Parse(urlStr)
 			if err != nil {
@@ -424,7 +449,7 @@ var targetsCommand = withKeystoreFlagUnless(&cli.Command{
 		}
 		if cmd.Bool("ext-override-url") {
 			if !cmd.IsSet("data-root-url") {
-				return nil, fmt.Errorf("--ext-override-url doesn't make sense without --data-root-url (and --pre-hashed)")
+				return nil, fmt.Errorf("--ext-override-url doesn't make sense without --data-root-url")
 			}
 			ctx = context.WithValue(ctx, extOverrideURLCtxKey, true)
 		}
@@ -511,6 +536,11 @@ var targetsCommand = withKeystoreFlagUnless(&cli.Command{
 			// TODO: Support delegations...
 			if targets.Signed.Delegations != nil {
 				return fmt.Errorf("--include-from=%s file is unsupported: hardhat does not yet support delegations", includePath)
+			}
+			if ctxExtOverrideURL(ctx) {
+				if err := addIncludedOverrideURLs(targets.Signed.Targets, ctxDataRootURL(ctx)); err != nil {
+					return fmt.Errorf("--include-from=%q: %w", includePath, err)
+				}
 			}
 			// Copy all of the target file specifications into the builder,
 			// including any possible extension fields!
