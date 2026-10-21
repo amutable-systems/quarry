@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"cyphar.com/go-pathrs"
 	"github.com/opencontainers/go-digest"
@@ -329,7 +330,7 @@ func addPrehashedToTargets(ctx context.Context, builder *tufext.TargetsBuilder, 
 	return nil
 }
 
-var targetsCommand = withKeystoreFlag(&cli.Command{
+var targetsCommand = withKeystoreFlagUnless(&cli.Command{
 	Name:  "targets",
 	Usage: "generate a TUF targets.json (or delegated target) file",
 	Flags: append([]cli.Flag{
@@ -400,6 +401,12 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 						Usage:   "use the given keys to sign the targets file",
 					},
 				},
+				{
+					&cli.BoolFlag{
+						Name:  "unsigned",
+						Usage: "write the targets file without signatures and, unless --expire-after is set, with the zero time as its expiry, for a consumer that signs it itself (needs no --keystore)",
+					},
+				},
 			},
 			Required: true,
 		},
@@ -447,6 +454,8 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 
 		var keyIDs []string
 		switch {
+		case cmd.Bool("unsigned"):
+			// No keys, so the targets file gets no signatures.
 		case cmd.IsSet("from-root"):
 			rootPath := cmd.String("from-root")
 
@@ -463,7 +472,7 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		case cmd.IsSet("keyid"):
 			keyIDs = cmd.StringSlice("keyid")
 		default:
-			return fmt.Errorf("one of --from-root or --keyid must be set")
+			return fmt.Errorf("one of --from-root, --keyid or --unsigned must be set")
 		}
 
 		keys := make([]*keystore.GenericKey, 0, len(keyIDs))
@@ -554,6 +563,11 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		if err != nil {
 			return fmt.Errorf("failed to sign targets data: %w", err)
 		}
+		// Nothing verifies an unsigned file, so nothing checks its expiry
+		// either. The zero time says so, unless --expire-after asks for one.
+		if cmd.Bool("unsigned") && !cmd.IsSet("expire-after") {
+			signed.Signed.Expires = time.Time{}
+		}
 		payload, err := cjson.EncodeCanonical(signed)
 		if err != nil {
 			return fmt.Errorf("failed to encode targets data: %w", err)
@@ -569,4 +583,4 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		}
 		return nil
 	},
-})
+}, "unsigned")
