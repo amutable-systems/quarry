@@ -26,16 +26,31 @@ type ctxKey string
 const keystoreCtxKey ctxKey = "--keystore"
 
 func withKeystoreFlag(cmd *cli.Command) *cli.Command {
+	return withKeystoreFlagUnless(cmd, "")
+}
+
+// withKeystoreFlagUnless is withKeystoreFlag for a command that needs no
+// keystore when its boolean flag unless is set. Without that flag, the
+// keystore is required as usual.
+func withKeystoreFlagUnless(cmd *cli.Command, unless string) *cli.Command {
 	cmd.Flags = append(cmd.Flags,
 		&cli.StringFlag{
 			Name:      "keystore",
 			Usage:     "path to the key store of signing keys",
-			Required:  true,
+			Required:  unless == "",
 			TakesFile: true,
 			Value:     "/var/lib/quarry/keystore",
 			Sources:   cli.EnvVars("QUARRY_KEYSTORE"),
 		})
 	cmd.Before = cliext.WrapBeforeFuncs(cmd.Before, func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
+		if unless != "" {
+			if cmd.Bool(unless) {
+				return ctx, nil
+			}
+			if !cmd.IsSet("keystore") {
+				return nil, fmt.Errorf("--keystore is required without --%s", unless)
+			}
+		}
 		keystorePath := cmd.String("keystore")
 		if err := os.MkdirAll(keystorePath, 0o700); err != nil { //nolint:forbidigo // user-controlled host path
 			return nil, fmt.Errorf("invalid keystore: could not create directory: %w", err)
