@@ -245,12 +245,22 @@ read -ra builder_keyids <<<"$(jq -rM '.signed.roles.targets.keyids[]' <"$root_js
 builder_sign_flags=("${builder_keyids[@]/#/--keyid=}")
 hardhat_targets_flags+=("${builder_sign_flags[@]}")
 
+# The repository state everything below is computed from. Another publisher may
+# commit before we do; snapshot then refuses to commit instead of silently
+# dropping what they published. Only timestamp.json is rewritten in place, so
+# read it just once; the versioned files it leads to never change.
+base_timestamp_version=0
+if [ -f "$REPO_DIR/timestamp.json" ]; then
+	base_timestamp_json="$(mktempfile timestamp.json)"
+	cp "$REPO_DIR/timestamp.json" "$base_timestamp_json"
+	base_timestamp_version="$(jq -rM '.signed.version' <"$base_timestamp_json")"
+fi
+
 if [ -n "$merge_old_targets" ]; then
 	# Figure out the latest targets.json.
-	latest_timestamp_json="$REPO_DIR/timestamp.json"
 	# If the repository was just initialised, we skip this.
-	if [ -f "$latest_timestamp_json" ]; then
-		latest_snapshot_json="$REPO_DIR/$(jq -rM '.signed.meta["snapshot.json"].version' <"$latest_timestamp_json").snapshot.json"
+	if [ "$base_timestamp_version" != 0 ]; then
+		latest_snapshot_json="$REPO_DIR/$(jq -rM '.signed.meta["snapshot.json"].version' <"$base_timestamp_json").snapshot.json"
 		latest_targets_json="$REPO_DIR/$(jq -rM '.signed.meta["targets.json"].version' <"$latest_snapshot_json").targets.json"
 		hardhat_targets_flags+=("--include-from=$latest_targets_json")
 	else
@@ -310,4 +320,5 @@ PUBLISHER_KEYSTORE="$KEY_DIR/quarryd-keys"
 hardhat repoctl snapshot \
 	--keystore="$PUBLISHER_KEYSTORE" \
 	--repo-metadir="$REPO_DIR" \
+	--if-timestamp-version="$base_timestamp_version" \
 	targets="$targets_json"

@@ -554,6 +554,33 @@ func InitTxn(initRoot *tufext.SignedRoot) *Transaction {
 // since [Repository.TxnStart].
 var ErrClobberedTransaction = errors.New("transaction rejected because repository state has changed")
 
+// RequireTimestampVersion returns a [TxnOp] that fails with
+// [ErrClobberedTransaction] unless the transaction started from the timestamp
+// with the given version, or from a repository without a timestamp if version
+// is 0.
+//
+// [Repository.TxnCommit] only detects changes made after [Repository.TxnStart].
+// A caller which computed the new role data from an earlier read of the
+// repository (such as merging the previous targets) uses this to extend that
+// check back to its read: timestamp versions are never reused, as
+// [Repository.TxnCommit] writes each one without clobbering.
+func RequireTimestampVersion(version int64) TxnOp {
+	return NewTxnOp(
+		fmt.Sprintf("require timestamp version %d", version),
+		func(_ context.Context, tx *Transaction) error {
+			var current int64
+			if tx.timestamp != nil {
+				current = tx.timestamp.Signed.Version
+			}
+			if current != version {
+				return fmt.Errorf("%w: expected timestamp version %d, found %d",
+					ErrClobberedTransaction, version, current)
+			}
+			return nil
+		},
+	)
+}
+
 // ErrInvalidTransactionState is returned from [Repository.TxnCommit] if a
 // transaction has an internally invalid state that means it cannot committed
 // to a repository.
