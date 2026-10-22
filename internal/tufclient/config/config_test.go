@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"go.amutable.dev/quarry/internal/identityagent"
 )
 
 const uuidPat = `[0-9a-f]{32}`
@@ -1109,4 +1112,52 @@ func TestRootTrustSource_String(t *testing.T) {
 			assert.Equal(t, strings.SplitN(tc.want, ":", 2)[0], tc.src.Type())
 		})
 	}
+}
+
+func TestParseConfig_Auth(t *testing.T) {
+	conf, err := Parse(strings.NewReader(`
+config_version = 1
+[repo.signed]
+root_trust = "insecure-tofu"
+meta_root_url = "https://customerdata.example:8443/machine-id/abc"
+auth = { type = "wimse", audience = "urn:amutable:quarry-worker", varlink = "unix:/run/test.sock" }
+
+[repo.plain]
+root_trust = "insecure-tofu"
+`))
+	require.NoError(t, err)
+
+	transport, ok := conf.Repos["signed"].HTTPClient().Transport.(*identityagent.Transport)
+	require.True(t, ok, "a wimse repo signs its requests")
+	assert.Equal(t, "urn:amutable:quarry-worker", transport.Audience)
+	assert.Equal(t, "customerdata.example:8443", transport.Host)
+	assert.Equal(t, "unix:/run/test.sock", transport.SocketURI)
+
+	assert.Same(t, http.DefaultClient, conf.Repos["plain"].HTTPClient())
+}
+
+func TestParseConfig_AuthInvalid(t *testing.T) {
+	for auth, wantErr := range map[string]string{
+		`{ type = "basic" }`:                 `unsupported auth type "basic"`,
+		`{ type = "wimse" }`:                 `auth type "wimse" needs an audience`,
+		`{ type = "wimse", audiance = "x" }`: "audiance",
+	} {
+		t.Run(auth, func(t *testing.T) {
+			_, err := Parse(strings.NewReader("config_version = 1\n[repo.r]\nroot_trust = \"insecure-tofu\"\nauth = " + auth + "\n"))
+			require.ErrorContains(t, err, wantErr)
+		})
+	}
+}
+
+func TestMerge_AuthAddedByDropIn(t *testing.T) {
+	cfg := mergeFragments(t, `
+config_version = 1
+[repo."example.com/m"]
+root_trust = "insecure-tofu"
+`, `
+config_version = 1
+[repo."example.com/m"]
+auth = { type = "wimse", audience = "urn:amutable:quarry-worker" }
+`)
+	assert.Equal(t, &RepoAuth{Type: "wimse", Audience: "urn:amutable:quarry-worker"}, cfg.Repos["example.com/m"].Auth)
 }
