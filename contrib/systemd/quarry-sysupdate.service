@@ -7,12 +7,6 @@
 Description=Quarry-Based Automatic System Update
 Wants=network-online.target
 After=network-online.target
-# Features gated on machine tags (SuggestOnMachineTag=) become enabled only
-# when `systemd-sysupdate enable-feature --feature-suggested` runs, which is
-# what systemd-sysupdate-auto-enable.service does. Run it ahead of every
-# update: a tag that arrives with this run's confext is picked up by the next.
-Wants=systemd-sysupdate-auto-enable.service
-After=systemd-sysupdate-auto-enable.service
 
 # For containers we assume that the manager will handle updates. And we likely
 # can't even access our backing block device anyway.
