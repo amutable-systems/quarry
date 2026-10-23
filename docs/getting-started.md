@@ -392,8 +392,8 @@ directly, but for those who are interested:
    local HTTP server as a source in transfer files.
 
  * `quarry sysupdate update` wraps `systemd-sysupdate` and does some pre-update
-   and post-update steps (such as installing tags and instantiating transfer
-   files from the TUF repository).
+   and post-update steps (such as instantiating transfer files from the TUF
+   repository).
 
 In most cases, you should avoid interacting with these tools -- these are
 intended to be used by a `systemd-sysupdate`-managed operating system directly.

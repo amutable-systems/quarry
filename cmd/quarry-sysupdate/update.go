@@ -5,12 +5,13 @@ package sysupdate
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/urfave/cli/v3"
 
+	"go.amutable.dev/quarry/internal/hostnamed"
 	"go.amutable.dev/quarry/internal/third_party/assert"
 	"go.amutable.dev/quarry/internal/tufclient"
 	"go.amutable.dev/quarry/internal/xsysupdate"
@@ -23,14 +24,6 @@ var updateCommand = withExtensionDirFlag(withQuarryUserFlag(withQuarryProxyFlag(
 		exts := xsysupdate.ExtensionSet{
 			&xsysupdate.TransferFileExtension{
 				OverrideSourcePathURL: ctxQuarryProxyURL(ctx),
-			},
-			&xsysupdate.TagsExtension{
-				// TODO: There is no ownership model for machine tags yet, so
-				// as a temporary workaround we take full control of the acp.*
-				// and amutable.* tag namespaces. These tags always exactly
-				// match the set shipped by the configured repositories, and
-				// tags outside them are never touched.
-				AllowedNamespaces: []string{"acp.", "amutable."},
 			},
 		}
 		ctx, err := exts.DoInit(ctx)
@@ -106,35 +99,45 @@ var updateCommand = withExtensionDirFlag(withQuarryUserFlag(withQuarryProxyFlag(
 		// the extension application, clean up the successfully installed
 		// components, and force-downgrade to the old versions.
 
-		components, err := listComponents(ctx)
-		if err != nil {
-			return fmt.Errorf("get list of sysupdate components: %w", err)
+		if err := sysupdateAll(ctx); err != nil {
+			return err
 		}
-		slog.Info("Spawning 'systemd-sysupdate update'...",
-			"components", components)
-		var errs []error
-		for _, component := range components {
-			if err := sysupdate(ctx, component); err != nil {
-				slog.Error("sysupdate for component failed.",
-					"err", err.Error(), "component", component)
-				// FIXME: If we hit an error, continue on because we don't have
-				// a decent revert story at the moment.
-				errs = append(errs, err)
-			}
-		}
-		if err := errors.Join(errs...); err != nil {
-			return fmt.Errorf("sysupdate failed: %w", err)
-		}
-		slog.Info("'systemd-sysupdate update' completed.")
 
 		if err := exts.Close(); err != nil {
 			return fmt.Errorf("post-update extension cleanup: %w", err)
+		}
+
+		// A merged confext may ship tags.d(5) files, which systemd applies as
+		// part of the refresh. Features gated on those tags were evaluated
+		// with the old tags above, so they need another update pass.
+		tagsBefore, err := hostnamed.CurrentTags(ctx, "")
+		if err != nil {
+			return fmt.Errorf("fetch machine tags before refresh: %w", err)
 		}
 
 		// Do online-reload of sysexts and confexts.
 		slog.Info("Trigger online-reload of new components.")
 		if err := sysupdateRefresh(ctx); err != nil {
 			return fmt.Errorf("online-reload components: %w", err)
+		}
+
+		tagsAfter, err := hostnamed.CurrentTags(ctx, "")
+		if err != nil {
+			return fmt.Errorf("fetch machine tags after refresh: %w", err)
+		}
+		if slices.Equal(tagsBefore, tagsAfter) {
+			return nil
+		}
+		slog.Info("Machine tags changed by refresh, running a second update pass.",
+			"before", tagsBefore, "after", tagsAfter)
+		if err := enableSuggested(ctx); err != nil {
+			return err
+		}
+		if err := sysupdateAll(ctx); err != nil {
+			return err
+		}
+		if err := sysupdateRefresh(ctx); err != nil {
+			return fmt.Errorf("online-reload components after second pass: %w", err)
 		}
 
 		return nil
