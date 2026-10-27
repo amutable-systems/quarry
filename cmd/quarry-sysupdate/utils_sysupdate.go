@@ -53,6 +53,40 @@ func sysupdate(ctx context.Context, component string) error {
 	return systemdcmd.Call(ctx, "sysupdate", args...)
 }
 
+// sysupdateAll runs "systemd-sysupdate update" for every component.
+func sysupdateAll(ctx context.Context) error {
+	components, err := listComponents(ctx)
+	if err != nil {
+		return fmt.Errorf("get list of sysupdate components: %w", err)
+	}
+	slog.Info("Spawning 'systemd-sysupdate update'...",
+		"components", components)
+	var errs []error
+	for _, component := range components {
+		if err := sysupdate(ctx, component); err != nil {
+			slog.Error("sysupdate for component failed.",
+				"err", err.Error(), "component", component)
+			// FIXME: If we hit an error, continue on because we don't have
+			// a decent revert story at the moment.
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("sysupdate failed: %w", err)
+	}
+	slog.Info("'systemd-sysupdate update' completed.")
+	return nil
+}
+
+// enableSuggested enables the components and features whose SuggestOn*
+// conditions now hold, e.g. after the machine tags changed.
+func enableSuggested(ctx context.Context) error {
+	if err := systemdcmd.Call(ctx, "systemctl", "start", "systemd-sysupdate-auto-enable.service"); err != nil {
+		return fmt.Errorf("failed to trigger systemd-sysupdate-auto-enable service: %w", err)
+	}
+	return nil
+}
+
 func sysupdateRefresh(ctx context.Context) error {
 	errs := []error{
 		// systemd-confext refresh
