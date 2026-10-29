@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"cyphar.com/go-pathrs"
 	"github.com/opencontainers/go-digest"
@@ -31,6 +33,7 @@ import (
 	"go.amutable.dev/quarry/internal/keystore"
 	"go.amutable.dev/quarry/internal/linux"
 	"go.amutable.dev/quarry/internal/pathrsext"
+	"go.amutable.dev/quarry/internal/transferlayout"
 	"go.amutable.dev/quarry/internal/tufext"
 )
 
@@ -101,9 +104,109 @@ func hashToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalP
 	return nil
 }
 
+// maxInlineSize bounds the contents the --quarry-* options embed into
+// targets.json. Inline data is meant for tiny metadata files, not payloads.
+const maxInlineSize = 64 << 10
+
+// addInlineBytes adds data as a target file with its contents inlined.
+func addInlineBytes(builder *tufext.TargetsBuilder, logicalPath string, data []byte) (*tufmetadata.TargetFiles, error) {
+	if int64(len(data)) > maxInlineSize {
+		return nil, fmt.Errorf("target %s is too large (%d bytes) to be inlined (limit %d bytes)", logicalPath, len(data), maxInlineSize)
+	}
+	target, err := builder.AddTargetFile(logicalPath, int64(len(data)), hashAlgorithm.FromBytes(data))
+	if err != nil {
+		return nil, fmt.Errorf("add file %s to targets data: %w", logicalPath, err)
+	}
+	tufext.TargetFilesExt(target).WithInlineData(data)
+	return target, nil
+}
+
+// applyCustomFrom merges the per-target "custom" objects from the given JSON
+// file ({"<target path>": {<custom fields>}}) into the targets. Every path
+// must name a target that was already added, so that a typo cannot silently
+// drop metadata. No path may be under .quarry/ because the
+// --quarry-* options own that metadata. Existing custom fields are kept unless
+// overridden by key.
+func applyCustomFrom(builder *tufext.TargetsBuilder, path string) error {
+	data, err := os.ReadFile(path) //nolint:forbidigo // user-controlled host path
+	if err != nil {
+		return fmt.Errorf("--custom-from=%q file is invalid: %w", path, err)
+	}
+	customs, err := jsonutils.Parse[map[string]map[string]json.RawMessage](data)
+	if err != nil {
+		return fmt.Errorf("--custom-from=%q file is invalid json: %w", path, err)
+	}
+	targets := builder.TargetsType().Targets
+	for targetPath, custom := range customs {
+		if strings.HasPrefix(targetPath, transferlayout.Prefix) {
+			return fmt.Errorf("--custom-from=%q: target %q is quarry metadata, which --custom-from must not change", path, targetPath)
+		}
+		target, ok := targets[targetPath]
+		if !ok {
+			return fmt.Errorf("--custom-from=%q: target %q does not exist", path, targetPath)
+		}
+		err := updateCustom(target, func(fields map[string]json.RawMessage) error {
+			maps.Copy(fields, custom)
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("--custom-from=%q: target %q: %w", path, targetPath, err)
+		}
+	}
+	return nil
+}
+
+// updateCustom lets update change the fields of a target's custom object and
+// stores the result. A missing or null custom object is an empty one.
+func updateCustom(target *tufmetadata.TargetFiles, update func(fields map[string]json.RawMessage) error) error {
+	fields := map[string]json.RawMessage{}
+	if target.Custom != nil {
+		if err := json.Unmarshal(*target.Custom, &fields); err != nil {
+			return fmt.Errorf("existing custom data is not an object: %w", err)
+		}
+	}
+	if fields == nil { // "custom": null
+		fields = map[string]json.RawMessage{}
+	}
+	if err := update(fields); err != nil {
+		return err
+	}
+	encoded, err := jsonutils.MarshalNoEscapeHTML(fields)
+	if err != nil {
+		return fmt.Errorf("encode custom data: %w", err)
+	}
+	target.Custom = (*json.RawMessage)(&encoded)
+	return nil
+}
+
+// addIncludedOverrideURLs points the targets of an --include-from file at
+// dataRootURL. A target with inline data needs no URL because its bytes are
+// in the metadata, and a target that already has an override URL keeps it.
+func addIncludedOverrideURLs(targets map[string]*tufmetadata.TargetFiles, dataRootURL *url.URL) error {
+	for path, target := range targets {
+		ext := tufext.TargetFilesExt(target)
+		inline, err := ext.InlineData()
+		if err != nil {
+			return fmt.Errorf("target %s: %w", path, err)
+		}
+		if inline != nil {
+			continue
+		}
+		existing, err := ext.OverrideURL()
+		if err != nil {
+			return fmt.Errorf("target %s: %w", path, err)
+		}
+		if existing != nil {
+			continue
+		}
+		ext.WithOverrideURL(dataRootURL.JoinPath(path))
+	}
+	return nil
+}
+
 const dataRootURLCtxKey ctxKey = "--data-root-url"
 
-func ctxDataRoolURL(ctx context.Context) *url.URL {
+func ctxDataRootURL(ctx context.Context) *url.URL {
 	return ctxext.Value[*url.URL](ctx, dataRootURLCtxKey)
 }
 
@@ -143,7 +246,7 @@ func getContentLength(ctx context.Context, url *url.URL) (int64, error) {
 }
 
 func addPrehashedToTargets(ctx context.Context, builder *tufext.TargetsBuilder, logicalPath string, sumFile *os.File) error {
-	dataRootURL := ctxDataRoolURL(ctx)
+	dataRootURL := ctxDataRootURL(ctx)
 	extOverrideURL := ctxExtOverrideURL(ctx)
 
 	if filepath.Join("/", logicalPath) == "/" { //nolint:forbidigo // lexical paths
@@ -252,10 +355,10 @@ func addPrehashedToTargets(ctx context.Context, builder *tufext.TargetsBuilder, 
 	return nil
 }
 
-var targetsCommand = withKeystoreFlag(&cli.Command{
+var targetsCommand = withKeystoreFlagUnless(&cli.Command{
 	Name:  "targets",
 	Usage: "generate a TUF targets.json (or delegated target) file",
-	Flags: []cli.Flag{
+	Flags: append([]cli.Flag{
 		&cli.StringFlag{
 			Name:      "output",
 			Aliases:   []string{"o"},
@@ -271,13 +374,18 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			Name:  "include-from",
 			Usage: "include targets defined in the given targets.json files (later files take precedence, with <files> arguments taking highest precedence)",
 		},
+		&cli.StringSliceFlag{
+			Name:      "custom-from",
+			Usage:     "merge per-target \"custom\" objects from the given JSON file ({\"<target path>\": {...}}), where every path must name a target",
+			TakesFile: true,
+		},
 		&cli.BoolFlag{
 			Name:  "ext-override-url",
-			Usage: "when using --data-root-url --pre-hashed, add an override URL to each target file to make clients fetch from --data-root-url",
+			Usage: "with --data-root-url, add an override URL to make clients fetch from --data-root-url, for each --pre-hashed file and for each --include-from target without inline data or an override URL",
 		},
 		&cli.StringFlag{
 			Name:  "data-root-url",
-			Usage: "base url for target files (with --pre-hashed this allows you to generate a target.json entirely from a SHA256SUMS file)",
+			Usage: "base url for target files (with --pre-hashed this allows you to generate a target.json entirely from a SHA256SUMS file, and with --ext-override-url the --include-from targets point there)",
 		},
 		&cli.BoolFlag{
 			Name:    "pre-hashed",
@@ -289,7 +397,7 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			Name:  "expire-after",
 			Usage: "configure the expiry of the targets file (duration relative to --ref-time)",
 		},
-	},
+	}, quarryTargetsFlags()...),
 	Arguments: []cli.Argument{
 		// TODO: This doesn't work if you have pre-hashed values.
 		// TODO: This won't work if you have enough files to hit the
@@ -318,14 +426,20 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 						Usage:   "use the given keys to sign the targets file",
 					},
 				},
+				{
+					&cli.BoolFlag{
+						Name:  "unsigned",
+						Usage: "write the targets file without signatures and, unless --expire-after is set, with the zero time as its expiry, for a consumer that signs it itself (needs no --keystore)",
+					},
+				},
 			},
 			Required: true,
 		},
 	},
 	Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 		if urlStr := cmd.String("data-root-url"); urlStr != "" {
-			if !cmd.Bool("pre-hashed") {
-				return nil, fmt.Errorf("--data-root-url doesn't make sense without --pre-hashed")
+			if !cmd.Bool("pre-hashed") && !cmd.Bool("ext-override-url") {
+				return nil, fmt.Errorf("--data-root-url doesn't make sense without --pre-hashed or --ext-override-url")
 			}
 			rootURL, err := url.Parse(urlStr)
 			if err != nil {
@@ -335,7 +449,7 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		}
 		if cmd.Bool("ext-override-url") {
 			if !cmd.IsSet("data-root-url") {
-				return nil, fmt.Errorf("--ext-override-url doesn't make sense without --data-root-url (and --pre-hashed)")
+				return nil, fmt.Errorf("--ext-override-url doesn't make sense without --data-root-url")
 			}
 			ctx = context.WithValue(ctx, extOverrideURLCtxKey, true)
 		}
@@ -343,6 +457,13 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		store := ctxKeystore(ctx)
+
+		// This happens before creating --output so that bad options leave it
+		// alone.
+		quarry, err := quarrySpecFromFlags(cmd)
+		if err != nil {
+			return err
+		}
 
 		var output io.Writer
 		if outPath := cmd.String("output"); outPath != "-" {
@@ -358,6 +479,8 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 
 		var keyIDs []string
 		switch {
+		case cmd.Bool("unsigned"):
+			// No keys, so the targets file gets no signatures.
 		case cmd.IsSet("from-root"):
 			rootPath := cmd.String("from-root")
 
@@ -374,7 +497,7 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		case cmd.IsSet("keyid"):
 			keyIDs = cmd.StringSlice("keyid")
 		default:
-			return fmt.Errorf("one of --from-root or --keyid must be set")
+			return fmt.Errorf("one of --from-root, --keyid or --unsigned must be set")
 		}
 
 		keys := make([]*keystore.GenericKey, 0, len(keyIDs))
@@ -414,6 +537,11 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			if targets.Signed.Delegations != nil {
 				return fmt.Errorf("--include-from=%s file is unsupported: hardhat does not yet support delegations", includePath)
 			}
+			if ctxExtOverrideURL(ctx) {
+				if err := addIncludedOverrideURLs(targets.Signed.Targets, ctxDataRootURL(ctx)); err != nil {
+					return fmt.Errorf("--include-from=%q: %w", includePath, err)
+				}
+			}
 			// Copy all of the target file specifications into the builder,
 			// including any possible extension fields!
 			maps.Copy(builder.TargetsType().Targets, targets.Signed.Targets)
@@ -438,9 +566,37 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 			}
 		}
 
+		if err := addQuarryTargets(builder, quarry); err != nil {
+			return err
+		}
+
+		for _, customPath := range cmd.StringSlice("custom-from") {
+			if err := applyCustomFrom(builder, customPath); err != nil {
+				return err
+			}
+		}
+		// This comes after --custom-from because that replaces a target's
+		// whole "quarry" object. The .quarry/ targets are skipped
+		// because they are quarry metadata and belong to no version.
+		if version := cmd.String("custom-version"); version != "" {
+			for path, target := range builder.TargetsType().Targets {
+				if strings.HasPrefix(path, transferlayout.Prefix) {
+					continue
+				}
+				if err := setQuarryCustomVersion(target, version); err != nil {
+					return fmt.Errorf("--custom-version: %s: %w", path, err)
+				}
+			}
+		}
+
 		signed, err := builder.SignWith(ctx, store, keys...)
 		if err != nil {
 			return fmt.Errorf("failed to sign targets data: %w", err)
+		}
+		// Nothing verifies an unsigned file, so nothing checks its expiry
+		// either. The zero time says so, unless --expire-after asks for one.
+		if cmd.Bool("unsigned") && !cmd.IsSet("expire-after") {
+			signed.Signed.Expires = time.Time{}
 		}
 		payload, err := cjson.EncodeCanonical(signed)
 		if err != nil {
@@ -457,4 +613,4 @@ var targetsCommand = withKeystoreFlag(&cli.Command{
 		}
 		return nil
 	},
-})
+}, "unsigned")
